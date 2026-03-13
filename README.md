@@ -1,15 +1,26 @@
 # novel_downloader
 
-小説家になろう・カクヨムの作品を一括ダウンロードし、**青空文庫書式テキスト**（.txt）と**縦書き ePub3**（.epub）に変換するコマンドラインツールです。
+小説投稿サイトの作品を一括ダウンロードし、**青空文庫書式テキスト**（.txt）と**縦書き ePub3**（.epub）に変換するコマンドラインツールです。
 
 ローカルの青空文庫書式テキストから ePub3 を生成する機能も備えています。
 
+## 対応サイト
+
+| サイト | URL例 | 追加ライブラリ |
+|---|---|---|
+| [小説家になろう](https://syosetu.com/) | `https://ncode.syosetu.com/nXXXXxx/` | 不要（stdlib のみ） |
+| [カクヨム](https://kakuyomu.jp/) | `https://kakuyomu.jp/works/XXXXXXXXXX` | requests, beautifulsoup4 |
+| [アルファポリス](https://www.alphapolis.co.jp/) | `https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX` | requests, beautifulsoup4 |
+| [エブリスタ](https://estar.jp/) | `https://estar.jp/novels/XXXXXXXXX` | requests, beautifulsoup4 |
+| [野いちご](https://www.no-ichigo.jp/) | `https://www.no-ichigo.jp/book/nXXXXXX` | requests, beautifulsoup4 |
+| [ハーメルン](https://syosetu.org/) | `https://syosetu.org/novel/XXXXXXX/` | requests, beautifulsoup4, playwright |
+
 ## 機能
 
-- **小説家になろう** / **カクヨム** の全話を自動取得
+- 上記 6 サイトの全話を自動取得（URL から自動判別）
 - 青空文庫書式テキスト（.txt）出力
   - ルビ記法（`漢字《かんじ》`）を保持
-  - ヘッダーにあらすじ・底本URLを記載
+  - ヘッダーにあらすじ・底本 URL を記載
 - 縦書き ePub3（.epub）出力
   - PNG 表紙画像を自動生成（Pillow + 日本語フォントが必要）
   - 表紙背景色をオプションで指定可能
@@ -25,10 +36,19 @@
 
 ## インストール
 
-### 必須ライブラリ（カクヨム取得に必要）
+### 必須ライブラリ（なろう以外の取得に必要）
 
 ```bash
 pip install requests beautifulsoup4
+```
+
+### ハーメルン取得に必要な追加ライブラリ
+
+ハーメルンのエピソードページは Cloudflare の保護対象のため、ブラウザ自動化ライブラリが必要です。
+
+```bash
+pip install playwright
+python -m playwright install chromium
 ```
 
 ### 推奨ライブラリ（PNG 表紙生成に必要）
@@ -44,8 +64,6 @@ pip install Pillow
 ```
 
 ### 日本語フォント（PNG 表紙生成に必要）
-
-PNG 表紙を生成するには日本語 CJK フォントが必要です。
 
 **Ubuntu / Debian:**
 ```bash
@@ -66,7 +84,7 @@ sudo apt install fonts-ipafont
 
 ## 使い方
 
-### URLを指定してダウンロード
+### URL を指定してダウンロード
 
 ```bash
 # 小説家になろう
@@ -74,7 +92,21 @@ python novel_downloader.py https://ncode.syosetu.com/nXXXXxx/
 
 # カクヨム
 python novel_downloader.py https://kakuyomu.jp/works/XXXXXXXXXX
+
+# アルファポリス
+python novel_downloader.py https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX
+
+# エブリスタ
+python novel_downloader.py https://estar.jp/novels/XXXXXXXXX
+
+# 野いちご
+python novel_downloader.py https://www.no-ichigo.jp/book/nXXXXXX
+
+# ハーメルン
+python novel_downloader.py https://syosetu.org/novel/XXXXXXX/
 ```
+
+話数ページの URL を指定した場合も、自動的に作品トップページへ正規化してから取得します。
 
 出力ファイル（作品タイトルをベースに自動命名）:
 ```
@@ -98,8 +130,8 @@ python novel_downloader.py --from-file 作品名.txt
 | `-o FILE` | タイトルから自動生成 | 出力ファイルのベース名（例: `-o mynovel` → `mynovel.txt` / `mynovel.epub`） |
 | `--delay SEC` | `1.5` | リクエスト間隔（秒） |
 | `--resume N` | `1` | 第 N 話から再開（なろうのみ） |
-| `--start N` | `1` | 取得開始話数 |
-| `--end N` | 最終話 | 取得終了話数 |
+| `--start N` | `1` | 取得開始話数（野いちごは章番号） |
+| `--end N` | 最終話 | 取得終了話数（野いちごは章番号） |
 | `--encoding ENC` | `utf-8` | テキスト出力エンコーディング（`utf-8` / `utf-8-sig` / `shift_jis` / `cp932`） |
 | `--no-epub` | — | ePub 出力を省略し、テキストのみ出力 |
 | `--cover-bg COLOR` | サイト依存 | 表紙背景色（`#RRGGBB` 形式） |
@@ -113,6 +145,10 @@ python novel_downloader.py --from-file 作品名.txt
 |---|---|
 | 小説家になろう | `#18b7cd` |
 | カクヨム | `#4BAAE0` |
+| アルファポリス | `#e05c2c` |
+| エブリスタ | `#00A0E9` |
+| 野いちご | `#FA8296` |
+| ハーメルン | `#6E654C` |
 | ローカルファイル | `#16234b` |
 
 ## 使用例
@@ -135,6 +171,9 @@ python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --start 1 --end 10
 
 # 表紙背景色を指定
 python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --cover-bg "#2d4073"
+
+# カクヨム（Shift_JIS で出力）
+python novel_downloader.py https://kakuyomu.jp/works/XXXXXXXXXX --encoding shift_jis
 
 # ローカルテキストから ePub 生成
 python novel_downloader.py --from-file mynovel.txt
