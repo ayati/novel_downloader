@@ -254,6 +254,7 @@ def _make_epub_css(font_name: str = "", font_filename: str = "") -> str:
 
 {font_face}/* ── 縦書き基本設定 ── */
 html {{
+  -epub-writing-mode: vertical-rl;
   -webkit-writing-mode: vertical-rl;
   writing-mode: vertical-rl;
   line-height: 2.0;
@@ -261,6 +262,7 @@ html {{
 }}
 
 body {{
+  -epub-writing-mode: vertical-rl;
   -webkit-writing-mode: vertical-rl;
   writing-mode: vertical-rl;
   margin: 1em;
@@ -340,13 +342,13 @@ _XHTML_TMPL = """\
 <html xmlns="http://www.w3.org/1999/xhtml"
       xmlns:epub="http://www.idpf.org/2007/ops"
       xml:lang="ja" lang="ja"
-      style="-webkit-writing-mode:vertical-rl; writing-mode:vertical-rl;">
+      style="-epub-writing-mode:vertical-rl; -webkit-writing-mode:vertical-rl; writing-mode:vertical-rl;">
 <head>
   <meta charset="UTF-8"/>
   <title>{title}</title>
   <link rel="stylesheet" type="text/css" href="css/novel.css"/>
 </head>
-<body>
+<body{epub_type}>
 {body}
 </body>
 </html>
@@ -538,7 +540,8 @@ def _make_cover_xhtml(title: str, author: str, synopsis: str,
         f'{source_html}\n'
         f'{syn_html}'
     )
-    return _XHTML_TMPL.format(title=_esc(title), body=body)
+    return _XHTML_TMPL.format(title=_esc(title), body=body,
+                               epub_type=' epub:type="frontmatter"')
 
 
 _VERTICAL_IMAGE_CSS = """\
@@ -555,14 +558,16 @@ body.fit_h {
   text-align: center;
 }
 
-span.img {
+span.img, figure.img {
   display: block;
   width: 100%;
   height: 100%;
   text-align: center;
+  margin: 0;
+  padding: 0;
 }
 
-span.img img {
+span.img img, figure.img img {
   width: auto;
   height: 100%;
   display: inline-block;
@@ -583,13 +588,18 @@ def _make_cover_image_xhtml(title: str, fmt: str = "png") -> str:
     return f"""\
 <?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:xml="http://www.w3.org/XML/1998/namespace" xml:lang="ja" lang="ja">
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:epub="http://www.idpf.org/2007/ops"
+      xml:lang="ja" lang="ja">
 <head>
-\t<link rel="stylesheet" type="text/css" href="../css/vertical_image.css"/>
-\t<title>{_esc(title)}</title>
+  <meta charset="UTF-8"/>
+  <link rel="stylesheet" type="text/css" href="../css/vertical_image.css"/>
+  <title>{_esc(title)}</title>
 </head>
-<body class="fit_h">
-<span class="img"><img src="{img_src}" alt="{_esc(title)}"/></span>
+<body epub:type="cover" class="fit_h">
+<figure epub:type="cover-image" class="img">
+  <img src="{img_src}" alt="{_esc(title)}"/>
+</figure>
 </body>
 </html>
 """
@@ -601,7 +611,8 @@ def _make_episode_xhtml(ep_title: str, body_text: str) -> str:
         f'<h2 class="ep-title">{_esc(ep_title)}</h2>\n'
         + _body_lines_to_xhtml(body_text)
     )
-    return _XHTML_TMPL.format(title=_esc(ep_title), body=body)
+    return _XHTML_TMPL.format(title=_esc(ep_title), body=body,
+                               epub_type=' epub:type="chapter"')
 
 
 def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
@@ -620,7 +631,8 @@ def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
         f'<p class="body-line">作成：{_esc(today)}</p>\n'
         f'</div>'
     )
-    return _XHTML_TMPL.format(title="奥付", body=body)
+    return _XHTML_TMPL.format(title="奥付", body=body,
+                               epub_type=' epub:type="backmatter"')
 
 
 def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
@@ -635,13 +647,15 @@ def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
     toc_items.append('<li><a href="colophon.xhtml">奥付</a></li>')
     toc_str = "\n    ".join(toc_items)
 
-    # landmarks: カバーページをリーダーが認識するための必須ナビ
+    # landmarks: カバー・本文開始・目次をリーダーが認識するための必須ナビ
     cover_href = "image-cover.xhtml" if cover_fmt else "cover.xhtml"
+    body_start = "ep0001.xhtml" if ep_titles else "cover.xhtml"
     landmarks = f"""\
 <nav epub:type="landmarks" id="landmarks">
   <ol>
-    <li><a epub:type="cover" href="{cover_href}">表紙</a></li>
-    <li><a epub:type="toc"   href="nav.xhtml">目次</a></li>
+    <li><a epub:type="cover"       href="{cover_href}">表紙</a></li>
+    <li><a epub:type="toc"         href="nav.xhtml">目次</a></li>
+    <li><a epub:type="bodymatter"  href="{body_start}">本文</a></li>
   </ol>
 </nav>"""
 
@@ -740,6 +754,9 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     <dc:language>ja</dc:language>
     <dc:date>{today}</dc:date>
     <meta property="dcterms:modified">{today}T00:00:00Z</meta>{cover_meta}
+    <meta property="rendition:layout">reflowable</meta>
+    <meta property="rendition:orientation">auto</meta>
+    <meta property="rendition:spread">none</meta>
   </metadata>
 
   <manifest>
