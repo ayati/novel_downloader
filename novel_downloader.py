@@ -1464,7 +1464,6 @@ class NarouEpisodeListParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.episodes    = []
-        self.total_count = 0
         self._in_ep_link = False
         self._ep_path    = ""
 
@@ -1481,19 +1480,12 @@ class NarouEpisodeListParser(HTMLParser):
             self._in_ep_link = False
 
     def handle_data(self, data):
-        s = data.strip()
-        if not s:
-            return
-
-        if not self.total_count:
-            m = re.search(r"全\s*(\d+)\s*(?:部分|エピソード)", s)
-            if m:
-                self.total_count = int(m.group(1))
-
         if self._in_ep_link and self._ep_path:
-            self.episodes.append((self._ep_path, s))
-            self._ep_path    = ""
-            self._in_ep_link = False
+            s = data.strip()
+            if s:
+                self.episodes.append((self._ep_path, s))
+                self._ep_path    = ""
+                self._in_ep_link = False
 
 
 def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -> tuple:
@@ -1513,14 +1505,14 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
         p.feed(html)
 
         if not p.episodes:
+            # エピソードが0件 → 最終ページを超えた
             break
 
         all_eps.extend(p.episodes)
         print(f"    → {len(p.episodes)} 話（累計 {len(all_eps)} 話）")
 
-        if p.total_count and len(all_eps) >= p.total_count:
-            break
         if len(p.episodes) < 100:
+            # 100件未満 → 最終ページ
             break
 
         page += 1
