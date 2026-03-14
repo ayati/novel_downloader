@@ -6,43 +6,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 概要
 
-単一ファイルの CLI ツール（`novel_downloader/novel_downloader.py`）。Python 3.10 以上が必要。小説家になろう・カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン・ノベマ！・ノベルアップ＋の作品をダウンロードし、以下を出力する：
+単一ファイルの CLI ツール（`novel_downloader.py`）。Python 3.10 以上が必要。小説家になろう・カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン・ノベマ！・ノベルアップ＋の作品をダウンロードし、以下を出力する：
 - 青空文庫書式テキスト（`.txt`）
 - 縦書き ePub3（`.epub`）
 
 `--from-file` オプションで、ローカルの青空文庫書式テキストから ePub3 を生成することも可能。
 
-> **注意:** `novel_downloader/` ディレクトリは独立した git リポジトリ（サブモジュール相当）。編集対象のファイルは `novel_downloader/novel_downloader.py`。
-
 ## 実行方法
 
 ```bash
 # なろうからダウンロード（stdlib のみ、追加ライブラリ不要）
-python novel_downloader/novel_downloader.py https://ncode.syosetu.com/nXXXXxx/
+python novel_downloader.py https://ncode.syosetu.com/nXXXXxx/
 
 # カクヨムからダウンロード
-python novel_downloader/novel_downloader.py https://kakuyomu.jp/works/XXXXXXXXXX
+python novel_downloader.py https://kakuyomu.jp/works/XXXXXXXXXX
 
 # アルファポリスからダウンロード
-python novel_downloader/novel_downloader.py https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX
+python novel_downloader.py https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX
 
 # エブリスタからダウンロード
-python novel_downloader/novel_downloader.py https://estar.jp/novels/XXXXXXXXX
+python novel_downloader.py https://estar.jp/novels/XXXXXXXXX
 
 # 野いちごからダウンロード
-python novel_downloader/novel_downloader.py https://www.no-ichigo.jp/book/nXXXXXX
+python novel_downloader.py https://www.no-ichigo.jp/book/nXXXXXX
 
 # ハーメルンからダウンロード（playwright が必要）
-python novel_downloader/novel_downloader.py https://syosetu.org/novel/XXXXXXX/
+python novel_downloader.py https://syosetu.org/novel/XXXXXXX/
 
 # ノベマ！からダウンロード
-python novel_downloader/novel_downloader.py https://novema.jp/book/nXXXXXX
+python novel_downloader.py https://novema.jp/book/nXXXXXX
 
 # ノベルアップ＋からダウンロード
-python novel_downloader/novel_downloader.py https://novelup.plus/story/XXXXXXXXX
+python novel_downloader.py https://novelup.plus/story/XXXXXXXXX
 
 # ローカルテキストから ePub 生成
-python novel_downloader/novel_downloader.py --from-file mynovel.txt
+python novel_downloader.py --from-file mynovel.txt
 ```
 
 話数ページの URL を指定した場合も、自動的に作品トップページへ正規化してから取得する。
@@ -108,9 +106,35 @@ python novel_downloader/novel_downloader.py --from-file mynovel.txt
 
 12. **`main()`**：引数を解析し、`detect_site(url)` でサイトを判定 → 各 `run_*` 関数にディスパッチ。
 
+## ePub3 内部構造
+
+```
+mimetype
+META-INF/container.xml
+OEBPS/package.opf
+OEBPS/nav.xhtml
+OEBPS/css/novel.css
+OEBPS/css/vertical_image.css
+OEBPS/fonts/                 ← 埋め込みフォント（--font 指定時のみ）
+OEBPS/images/0000.png        ← 表紙画像（PNG または SVG）
+OEBPS/image-cover.xhtml      ← 画像表紙ページ（epub:type="cover"）
+OEBPS/cover.xhtml            ← タイトル・著者・あらすじページ
+OEBPS/ep0001.xhtml           ← 各話（epub:type="chapter"）
+OEBPS/ep0002.xhtml
+...
+OEBPS/colophon.xhtml         ← 奥付
+```
+
+縦書き（`writing-mode: vertical-rl`）。各 XHTML に `epub:type` を付与。楽天 Kobo リーダー向け互換対応済み。
+
 ## 主な規約
 
 - ルビ記法：テキスト内の `漢字《かんじ》` → XHTML では `<ruby>漢字<rt>かんじ</rt></ruby>`
 - 改ページ：テキスト内の `［＃改ページ］` → XHTML では `epub:type="pagebreak"`
+- ルビ自動判別：`《》` 内に漢字を含む場合は地の文として処理（ルビ誤変換を防止）
 - 表紙背景色のデフォルト：なろう `#18b7cd`、カクヨム `#4BAAE0`、アルファポリス `#e05c2c`、エブリスタ `#00A0E9`、野いちご `#FA8296`、ハーメルン `#6E654C`、ノベマ！ `#595757`、ノベルアップ＋ `#0CBF97`、ローカル `#16234b`
 - リクエスト間隔デフォルト 1.5 秒、リトライ最大 3 回（間隔 5 秒）
+
+## font/ ディレクトリ
+
+`font/` に OFL ライセンスのフォントファイル（`AyatiShowaSerif-Regular.otf` / `.ttf`）を同梱。`--font font/AyatiShowaSerif-Regular.otf` のように指定して ePub に埋め込める。
