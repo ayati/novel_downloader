@@ -69,7 +69,7 @@ python novel_downloader/novel_downloader.py --from-file mynovel.txt
 
 | ライブラリ | 用途 | インストール |
 |---|---|---|
-| `requests`, `beautifulsoup4` | カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン・ノベマ！ | `pip install requests beautifulsoup4` |
+| `requests`, `beautifulsoup4` | カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン・ノベマ！・ノベルアップ＋ | `pip install requests beautifulsoup4` |
 | `playwright` | ハーメルン（Cloudflare 回避） | `pip install playwright && python -m playwright install chromium` |
 | `Pillow` | PNG 表紙生成 | `pip install Pillow` または `sudo apt install python3-pillow` |
 | fonts-noto-cjk | PNG 表紙の日本語フォント | `sudo apt install fonts-noto-cjk` |
