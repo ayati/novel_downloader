@@ -40,6 +40,7 @@ novel_downloader.py
 対応サイト（URLモード）:
     小説家になろう  https://ncode.syosetu.com/nXXXXxx/
     カクヨム        https://kakuyomu.jp/works/XXXXXXXXXX
+    ノベマ！        https://novema.jp/book/nXXXXXX
 
 オプション:
     -o FILE          出力ベース名（省略時は作品タイトルから自動生成）
@@ -3160,6 +3161,423 @@ def run_noichigo(args):
 
 
 # ══════════════════════════════════════════
+#  ノベマ！スクレイパー
+# ══════════════════════════════════════════
+
+_NOVEMA_BASE = "https://novema.jp"
+_NOVEMA_HEADERS = {
+    "User-Agent": UA,
+    "Accept-Language": "ja,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://novema.jp/",
+}
+
+
+def novema_fetch(session, url, retries=3):
+    """ノベマ！のページを取得して (BeautifulSoup, html) を返す。"""
+    for attempt in range(retries):
+        try:
+            resp = session.get(url, timeout=30)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            return BeautifulSoup(resp.text, "html.parser"), resp.text
+        except Exception as e:
+            if attempt == retries - 1:
+                raise RuntimeError(f"取得失敗: {url} — {e}") from e
+            time.sleep(2)
+
+
+def novema_get_work_info(soup) -> dict:
+    """作品情報（タイトル・著者・あらすじ）を返す。"""
+    og_title = soup.find("meta", property="og:title")
+    title, author = "", ""
+    if og_title:
+        content = og_title.get("content", "")
+        # "タイトル　著者名／著 | ノベマ！" 形式
+        m = re.match(r"^(.+?)　([^　]+?)／著", content)
+        if m:
+            title  = m.group(1).strip()
+            author = m.group(2).strip()
+    if not title:
+        h2 = soup.find("div", class_="title")
+        if h2:
+            h2_tag = h2.find("h2")
+            title = h2_tag.get_text(strip=True) if h2_tag else h2.get_text(strip=True)
+    if not author:
+        name_div = soup.find("div", class_="name")
+        if name_div:
+            a_tag = name_div.find("a")
+            author = a_tag.get_text(strip=True) if a_tag else name_div.get_text(strip=True)
+
+    synopsis_div = soup.find("div", class_="bookSummary-01")
+    synopsis = synopsis_div.get_text(strip=True) if synopsis_div else ""
+
+    return {"title": title, "author": author, "description": synopsis}
+
+
+def novema_get_episode_list(soup) -> list:
+    """
+    エピソード一覧を [(page_num, episode_title), ...] で返す。
+    bookChapterList の2階層構造を解析する：
+      - 外側の <li> に内側の <ul><li> がある場合: 内側の各 <li><a> をエピソードとして収集
+      - 外側の <li> に内側の <ul><li> がない場合: 外側の <li><a> をエピソードとして収集
+    """
+    chapter_list = soup.find("div", class_="bookChapterList")
+    if not chapter_list:
+        # フォールバック: 全 <a> リンクからエピソードURLを収集
+        episodes = []
+        for a in chapter_list.find_all("a", href=True) if chapter_list else []:
+            href = a["href"]
+            m = re.search(r"/book/[^/]+/(\d+)$", href)
+            if m:
+                episodes.append((int(m.group(1)), a.get_text(strip=True)))
+        return episodes
+
+    episodes = []
+    outer_ul = chapter_list.find("ul")
+    if not outer_ul:
+        return []
+
+    for outer_li in outer_ul.find_all("li", recursive=False):
+        inner_ul = outer_li.find("ul")
+        inner_items = inner_ul.find_all("li", recursive=False) if inner_ul else []
+        if inner_items:
+            # 章グループ: 内側の各エピソードを収集
+            for inner_li in inner_items:
+                a = inner_li.find("a", href=True)
+                if a:
+                    href = a["href"]
+                    m = re.search(r"/book/[^/]+/(\d+)$", href)
+                    if m:
+                        episodes.append((int(m.group(1)), a.get_text(strip=True)))
+        else:
+            # 単独エピソード
+            a = outer_li.find("a", href=True)
+            if a:
+                href = a["href"]
+                m = re.search(r"/book/[^/]+/(\d+)$", href)
+                if m:
+                    episodes.append((int(m.group(1)), a.get_text(strip=True)))
+
+    return episodes
+
+
+def run_novema(args):
+    """ノベマ！小説のダウンロード処理。"""
+    if not _KAKUYOMU_AVAILABLE:
+        print("エラー: ノベマ！のダウンロードには requests と beautifulsoup4 が必要です。")
+        print("  pip install requests beautifulsoup4")
+        sys.exit(1)
+
+    work_url = args.url.rstrip("/")
+    wid_m = re.search(r"/book/([^/]+)$", work_url)
+    if not wid_m:
+        print(f"エラー: ノベマ！の作品URLとして認識できません: {work_url}")
+        sys.exit(1)
+    work_id = wid_m.group(1)
+
+    session = requests.Session()
+    session.headers.update(_NOVEMA_HEADERS)
+
+    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    top_soup, _ = novema_fetch(session, work_url)
+    info = novema_get_work_info(top_soup)
+    if info["title"]:
+        print(f"      タイトル    : {info['title']}")
+    if info["author"]:
+        print(f"      著者        : {info['author']}")
+
+    episodes = novema_get_episode_list(top_soup)
+    if not episodes:
+        print("エラー: エピソード一覧を取得できませんでした。")
+        sys.exit(1)
+    total_eps = len(episodes)
+    print(f"      エピソード数: {total_eps}")
+
+    start_ep = max(1, args.start or 1)
+    end_ep   = min(total_eps, args.end or total_eps)
+    target_eps = episodes[start_ep - 1:end_ep]
+    print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
+
+    sections      = []
+    epub_episodes = []
+    got_eps       = 0
+
+    for ep_i, (page_num, ep_title) in enumerate(target_eps, 1):
+        print(f"  [{ep_i:3d}/{len(target_eps)}] {ep_title}")
+        try:
+            ep_url  = f"{_NOVEMA_BASE}/book/{work_id}/{page_num}"
+            ep_soup, _ = novema_fetch(session, ep_url)
+            art = ep_soup.find("article", class_="bookText")
+            if art:
+                aside_inner = art.find("aside")
+                if aside_inner:
+                    aside_inner.decompose()
+                body_div = art.find("div")
+                if body_div:
+                    body = noichigo_html_to_aozora(body_div)
+                else:
+                    body = "（本文取得失敗）"
+            else:
+                body = "（本文取得失敗）"
+        except RuntimeError as e:
+            print(f"    [エラー] {e}")
+            body = "（取得失敗）"
+
+        body = normalize_tate(body)
+        sec_title = aozora_chapter_title(ep_title)
+        sections.append(f"{sec_title}\n\n{body}\n")
+        epub_episodes.append({"title": ep_title, "body": body})
+        got_eps += 1
+        if ep_i < len(target_eps):
+            time.sleep(args.delay)
+
+    print("[3/3] テキスト・ePub を生成中...")
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ノベマ！")
+
+    base      = args.output or safe_filename(info["title"], "novema_novel")
+    txt_path  = base + ".txt"
+    epub_path = base + ".epub"
+    write_file(txt_path, header, sections, colophon, args.encoding)
+
+    full_len = (len(header)
+                + sum(len(s) for s in sections)
+                + len(PAGE_BREAK) * max(len(sections) - 1, 0)
+                + len(colophon))
+    print(f"\n✅ テキスト出力完了: {txt_path}")
+    print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
+    print(f"   総文字数      : {full_len:,} 文字")
+
+    if not getattr(args, "no_epub", False):
+        print("📖 ePub生成中...")
+        build_epub(epub_path, info["title"], info["author"],
+                   info["description"],
+                   work_url, "ノベマ！", epub_episodes,
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "")
+        print(f"✅ ePub出力完了: {epub_path}")
+
+
+# ══════════════════════════════════════════
+#  ノベルアップ＋スクレイパー
+# ══════════════════════════════════════════
+
+_NOVELUP_BASE = "https://novelup.plus"
+_NOVELUP_HEADERS = {
+    "User-Agent": UA,
+    "Accept-Language": "ja,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://novelup.plus/",
+}
+
+
+def novelup_fetch(session, url, retries=3):
+    """ノベルアップ＋のページを取得して (BeautifulSoup, html) を返す。"""
+    for attempt in range(retries):
+        try:
+            resp = session.get(url, timeout=30)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            return BeautifulSoup(resp.text, "html.parser"), resp.text
+        except Exception as e:
+            if attempt == retries - 1:
+                raise RuntimeError(f"取得失敗: {url} — {e}") from e
+            time.sleep(2)
+
+
+def novelup_get_work_info(soup) -> dict:
+    """作品情報（タイトル・著者・あらすじ）を返す。"""
+    og_title = soup.find("meta", property="og:title")
+    title, author = "", ""
+    if og_title:
+        content = og_title.get("content", "")
+        # "タイトル（著者名） | 小説投稿サイトノベルアップ＋" 形式
+        m = re.match(r"^(.+?)（(.+?)）", content)
+        if m:
+            title  = m.group(1).strip()
+            author = m.group(2).strip()
+    if not title:
+        h1 = soup.find("h1", class_="storyTitle")
+        title = h1.get_text(strip=True) if h1 else ""
+    if not author:
+        a_author = soup.find("a", class_="storyAuthor")
+        author = a_author.get_text(strip=True) if a_author else ""
+
+    synopsis_div = soup.find("div", class_="novel_synopsis")
+    synopsis = synopsis_div.get_text(strip=True) if synopsis_div else ""
+
+    return {"title": title, "author": author, "description": synopsis}
+
+
+def novelup_get_episode_list(soup) -> list:
+    """
+    エピソード一覧を [(episode_id, episode_title), ...] で返す。
+    div.episodeList 内の div.episodeListItem a.episodeTitle から取得。
+    div.episodeListItem.chapter は章ヘッダーなのでスキップ。
+    """
+    ep_list_div = soup.find("div", class_="episodeList")
+    if not ep_list_div:
+        return []
+    episodes = []
+    for a in ep_list_div.find_all("a", class_="episodeTitle"):
+        href = a.get("href", "")
+        m = re.search(r"/story/[^/]+/(\d+)$", href)
+        if m:
+            episodes.append((m.group(1), a.get_text(strip=True)))
+    return episodes
+
+
+def novelup_html_to_aozora(content_p) -> str:
+    """本文 <p id="episode_content"> を青空文庫書式テキストに変換する。"""
+    # ルビ変換: <ruby><rb>漢字</rb><rp>(</rp><rt>かんじ</rt></ruby> → 漢字《かんじ》
+    for ruby in content_p.find_all("ruby"):
+        rb  = ruby.find("rb")
+        rt  = ruby.find("rt")
+        if rt:
+            base    = rb.get_text() if rb else ""
+            rt_text = rt.get_text()
+            ruby.replace_with(f"{base}《{rt_text}》")
+        else:
+            ruby.replace_with(ruby.get_text())
+
+    # テキスト取得（\n 区切りの段落）
+    text  = content_p.get_text()
+    lines = text.split("\n")
+    out_lines  = []
+    prev_blank = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped:
+            out_lines.append(stripped)
+            prev_blank = False
+        else:
+            if not prev_blank:
+                out_lines.append("")
+            prev_blank = True
+
+    while out_lines and out_lines[0] == "":
+        out_lines.pop(0)
+    while out_lines and out_lines[-1] == "":
+        out_lines.pop()
+
+    return "\n".join(out_lines)
+
+
+def novelup_get_episode_body(soup) -> str:
+    """エピソードページから本文（前書き＋本文＋後書き）を青空文庫書式で返す。"""
+    parts = []
+
+    foreword = soup.find("div", class_="novel_foreword")
+    if foreword:
+        text = foreword.get_text(strip=True)
+        if text:
+            parts.append(text)
+
+    content_p = soup.find("p", id="episode_content")
+    if content_p:
+        parts.append(novelup_html_to_aozora(content_p))
+    else:
+        parts.append("（本文取得失敗）")
+
+    afterword = soup.find("div", class_="novel_afterword")
+    if afterword:
+        text = afterword.get_text(strip=True)
+        if text:
+            parts.append(text)
+
+    return "\n\n".join(parts)
+
+
+def run_novelup(args):
+    """ノベルアップ＋小説のダウンロード処理。"""
+    if not _KAKUYOMU_AVAILABLE:
+        print("エラー: ノベルアップ＋のダウンロードには requests と beautifulsoup4 が必要です。")
+        print("  pip install requests beautifulsoup4")
+        sys.exit(1)
+
+    work_url = args.url.rstrip("/")
+    wid_m = re.search(r"/story/(\d+)$", work_url)
+    if not wid_m:
+        print(f"エラー: ノベルアップ＋の作品URLとして認識できません: {work_url}")
+        sys.exit(1)
+    work_id = wid_m.group(1)
+
+    session = requests.Session()
+    session.headers.update(_NOVELUP_HEADERS)
+
+    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    top_soup, _ = novelup_fetch(session, work_url)
+    info = novelup_get_work_info(top_soup)
+    if info["title"]:
+        print(f"      タイトル    : {info['title']}")
+    if info["author"]:
+        print(f"      著者        : {info['author']}")
+
+    episodes = novelup_get_episode_list(top_soup)
+    if not episodes:
+        print("エラー: エピソード一覧を取得できませんでした。")
+        sys.exit(1)
+    total_eps = len(episodes)
+    print(f"      エピソード数: {total_eps}")
+
+    start_ep = max(1, args.start or 1)
+    end_ep   = min(total_eps, args.end or total_eps)
+    target_eps = episodes[start_ep - 1:end_ep]
+    print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
+
+    sections      = []
+    epub_episodes = []
+    got_eps       = 0
+
+    for ep_i, (ep_id, ep_title) in enumerate(target_eps, 1):
+        print(f"  [{ep_i:3d}/{len(target_eps)}] {ep_title}")
+        try:
+            ep_url  = f"{_NOVELUP_BASE}/story/{work_id}/{ep_id}"
+            ep_soup, _ = novelup_fetch(session, ep_url)
+            body = novelup_get_episode_body(ep_soup)
+        except RuntimeError as e:
+            print(f"    [エラー] {e}")
+            body = "（取得失敗）"
+
+        body = normalize_tate(body)
+        sec_title = aozora_chapter_title(ep_title)
+        sections.append(f"{sec_title}\n\n{body}\n")
+        epub_episodes.append({"title": ep_title, "body": body})
+        got_eps += 1
+        if ep_i < len(target_eps):
+            time.sleep(args.delay)
+
+    print("[3/3] テキスト・ePub を生成中...")
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ノベルアップ＋")
+
+    base      = args.output or safe_filename(info["title"], "novelup_novel")
+    txt_path  = base + ".txt"
+    epub_path = base + ".epub"
+    write_file(txt_path, header, sections, colophon, args.encoding)
+
+    full_len = (len(header)
+                + sum(len(s) for s in sections)
+                + len(PAGE_BREAK) * max(len(sections) - 1, 0)
+                + len(colophon))
+    print(f"\n✅ テキスト出力完了: {txt_path}")
+    print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
+    print(f"   総文字数      : {full_len:,} 文字")
+
+    if not getattr(args, "no_epub", False):
+        print("📖 ePub生成中...")
+        build_epub(epub_path, info["title"], info["author"],
+                   info["description"],
+                   work_url, "ノベルアップ＋", epub_episodes,
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "")
+        print(f"✅ ePub出力完了: {epub_path}")
+
+
+# ══════════════════════════════════════════
 #  ファイルモード：テキスト解析・ePub生成
 # ══════════════════════════════════════════
 
@@ -3314,7 +3732,7 @@ def run_from_file(args):
 # ══════════════════════════════════════════
 
 def detect_site(url: str) -> str:
-    """URLからサイト種別を判定する。'narou' | 'kakuyomu' | 'alphapolis' | 'estar' | 'noichigo' | 'hameln' | 'unknown'"""
+    """URLからサイト種別を判定する。'narou' | 'kakuyomu' | 'alphapolis' | 'estar' | 'noichigo' | 'hameln' | 'novema' | 'unknown'"""
     parsed = urlparse(url)
     host   = parsed.netloc.lower()
     if "syosetu.com" in host:
@@ -3329,6 +3747,10 @@ def detect_site(url: str) -> str:
         return "noichigo"
     if "syosetu.org" in host:
         return "hameln"
+    if "novema.jp" in host:
+        return "novema"
+    if "novelup.plus" in host:
+        return "novelup"
     return "unknown"
 
 
@@ -3422,6 +3844,32 @@ def normalize_url(url: str, site: str) -> str:
             print(f"       正規化後: {top_url}")
             return top_url
 
+    elif site == "novema":
+        # /book/nXXX/NUM の形式はトップページへ正規化
+        m = re.match(
+            r"(https?://novema\.jp/book/[^/?#]+)/\d+/?$",
+            url.rstrip("/"), re.I
+        )
+        if m:
+            top_url = m.group(1)
+            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
+            print(f"       指定URL : {url}")
+            print(f"       正規化後: {top_url}")
+            return top_url
+
+    elif site == "novelup":
+        # /story/NNNNN/MMMMM の形式はトップページへ正規化
+        m = re.match(
+            r"(https?://novelup\.plus/story/\d+)/\d+/?$",
+            url.rstrip("/"), re.I
+        )
+        if m:
+            top_url = m.group(1)
+            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
+            print(f"       指定URL : {url}")
+            print(f"       正規化後: {top_url}")
+            return top_url
+
     return url
 
 
@@ -3506,6 +3954,10 @@ def main():
                 args.cover_bg = "#FA8296"
             elif site == "hameln":
                 args.cover_bg = "#6E654C"
+            elif site == "novema":
+                args.cover_bg = "#595757"
+            elif site == "novelup":
+                args.cover_bg = "#0CBF97"
             else:
                 args.cover_bg = "#18b7cd"
 
@@ -3527,6 +3979,12 @@ def main():
         elif site == "hameln":
             print("サイト判別: ハーメルン")
             run_hameln(args)
+        elif site == "novema":
+            print("サイト判別: ノベマ！")
+            run_novema(args)
+        elif site == "novelup":
+            print("サイト判別: ノベルアップ＋")
+            run_novelup(args)
         else:
             print("エラー: 対応しているURLを指定してください。")
             print("  小説家になろう: https://ncode.syosetu.com/nXXXXxx/")
@@ -3535,6 +3993,8 @@ def main():
             print("  エブリスタ    : https://estar.jp/novels/XXXXXXXXX")
             print("  野いちご      : https://www.no-ichigo.jp/book/nXXXXXX")
             print("  ハーメルン    : https://syosetu.org/novel/XXXXXXX/")
+            print("  ノベマ！      : https://novema.jp/book/nXXXXXX")
+            print("  ノベルアップ＋: https://novelup.plus/story/XXXXXXXXX")
             sys.exit(1)
 
 

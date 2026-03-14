@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 概要
 
-単一ファイルの CLI ツール（`novel_downloader.py`）。Python 3.10 以上が必要。小説家になろう・カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルンの作品をダウンロードし、以下を出力する：
+単一ファイルの CLI ツール（`novel_downloader.py`）。Python 3.10 以上が必要。小説家になろう・カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン・ノベマ！・ノベルアップ＋の作品をダウンロードし、以下を出力する：
 - 青空文庫書式テキスト（`.txt`）
 - 縦書き ePub3（`.epub`）
 
@@ -32,6 +32,12 @@ python novel_downloader.py https://www.no-ichigo.jp/book/nXXXXXX
 
 # ハーメルンからダウンロード（playwright が必要）
 python novel_downloader.py https://syosetu.org/novel/XXXXXXX/
+
+# ノベマ！からダウンロード
+python novel_downloader.py https://novema.jp/book/nXXXXXX
+
+# ノベルアップ＋からダウンロード
+python novel_downloader.py https://novelup.plus/story/XXXXXXXXX
 
 # ローカルテキストから ePub 生成
 python novel_downloader.py --from-file mynovel.txt
@@ -61,7 +67,7 @@ python novel_downloader.py --from-file mynovel.txt
 
 | ライブラリ | 用途 | インストール |
 |---|---|---|
-| `requests`, `beautifulsoup4` | カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン | `pip install requests beautifulsoup4` |
+| `requests`, `beautifulsoup4` | カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン・ノベマ！ | `pip install requests beautifulsoup4` |
 | `playwright` | ハーメルン（Cloudflare 回避） | `pip install playwright && python -m playwright install chromium` |
 | `Pillow` | PNG 表紙生成 | `pip install Pillow` または `sudo apt install python3-pillow` |
 | fonts-noto-cjk | PNG 表紙の日本語フォント | `sudo apt install fonts-noto-cjk` |
@@ -92,13 +98,17 @@ python novel_downloader.py --from-file mynovel.txt
 
 8. **ハーメルンスクレイパー**：`playwright` + `BeautifulSoup` を使用。トップページは `requests` で取得（CF保護なし）。エピソードページは Cloudflare Managed Challenge があるため、Playwright で各話ごとに新しい browser context を作成し 5 秒待機して取得。本文は `div#honbun`、前書きは `div#maegaki`、後書きは `div#atogaki`。エントリポイント：`run_hameln(args)`。
 
-9. **ローカルファイルモード**：`parse_aozora_text` で既存の青空文庫 `.txt` からタイトル・著者・あらすじを抽出し、`build_epub` に渡す。エントリポイント：`run_from_file(args)`。
+9. **ノベマ！スクレイパー**：`requests` + `BeautifulSoup` を使用。野いちごと同構造。`div.bookChapterList` の2階層 `<ul>` からエピソード一覧（章グループ内の個別エピソード、または単独エピソード）を取得し、各ページ（`/book/{work_id}/{page_num}`）を個別フェッチ。本文は `article.bookText > div`、`<br>` 区切り。`noichigo_html_to_aozora` を共用。エントリポイント：`run_novema(args)`。
 
-10. **`main()`**：引数を解析し、`detect_site(url)` でサイトを判定 → 各 `run_*` 関数にディスパッチ。
+10. **ノベルアップ＋スクレイパー**：`requests` + `BeautifulSoup` を使用。サーバーレンダリング。og:title から「タイトル（著者名）」形式で情報取得。`div.episodeList a.episodeTitle` からエピソード一覧取得。本文は `p#episode_content`（`\n` 区切り）、前書きは `div.novel_foreword`、後書きは `div.novel_afterword`。Ruby は `<rb>/<rt>` 形式。エントリポイント：`run_novelup(args)`。
+
+11. **ローカルファイルモード**：`parse_aozora_text` で既存の青空文庫 `.txt` からタイトル・著者・あらすじを抽出し、`build_epub` に渡す。エントリポイント：`run_from_file(args)`。
+
+12. **`main()`**：引数を解析し、`detect_site(url)` でサイトを判定 → 各 `run_*` 関数にディスパッチ。
 
 ## 主な規約
 
 - ルビ記法：テキスト内の `漢字《かんじ》` → XHTML では `<ruby>漢字<rt>かんじ</rt></ruby>`
 - 改ページ：テキスト内の `［＃改ページ］` → XHTML では `epub:type="pagebreak"`
-- 表紙背景色のデフォルト：なろう `#18b7cd`、カクヨム `#4BAAE0`、アルファポリス `#e05c2c`、エブリスタ `#00A0E9`、野いちご `#FA8296`、ハーメルン `#6E654C`、ローカル `#16234b`
+- 表紙背景色のデフォルト：なろう `#18b7cd`、カクヨム `#4BAAE0`、アルファポリス `#e05c2c`、エブリスタ `#00A0E9`、野いちご `#FA8296`、ハーメルン `#6E654C`、ノベマ！ `#595757`、ノベルアップ＋ `#0CBF97`、ローカル `#16234b`
 - リクエスト間隔デフォルト 1.5 秒、リトライ最大 3 回（間隔 5 秒）

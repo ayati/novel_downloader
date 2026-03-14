@@ -14,10 +14,12 @@
 | [エブリスタ](https://estar.jp/) | `https://estar.jp/novels/XXXXXXXXX` | requests, beautifulsoup4 |
 | [野いちご](https://www.no-ichigo.jp/) | `https://www.no-ichigo.jp/book/nXXXXXX` | requests, beautifulsoup4 |
 | [ハーメルン](https://syosetu.org/) | `https://syosetu.org/novel/XXXXXXX/` | requests, beautifulsoup4, playwright |
+| [ノベマ！](https://novema.jp/) | `https://novema.jp/book/nXXXXXX` | requests, beautifulsoup4 |
+| [ノベルアップ＋](https://novelup.plus/) | `https://novelup.plus/story/XXXXXXXXX` | requests, beautifulsoup4 |
 
 ## 機能
 
-- 上記 6 サイトの全話を自動取得（URL から自動判別）
+- 上記 8 サイトの全話を自動取得（URL から自動判別）
 - 青空文庫書式テキスト（.txt）出力
   - ルビ記法（`漢字《かんじ》`）を保持
   - ヘッダーにあらすじ・底本 URL を記載
@@ -107,6 +109,12 @@ python novel_downloader.py https://www.no-ichigo.jp/book/nXXXXXX
 
 # ハーメルン
 python novel_downloader.py https://syosetu.org/novel/XXXXXXX/
+
+# ノベマ！
+python novel_downloader.py https://novema.jp/book/nXXXXXX
+
+# ノベルアップ＋
+python novel_downloader.py https://novelup.plus/story/XXXXXXXXX
 ```
 
 話数ページの URL を指定した場合も、自動的に作品トップページへ正規化してから取得します。
@@ -153,6 +161,8 @@ python novel_downloader.py --from-file 作品名.txt
 | エブリスタ | `#00A0E9` |
 | 野いちご | `#FA8296` |
 | ハーメルン | `#6E654C` |
+| ノベマ！ | `#595757` |
+| ノベルアップ＋ | `#0CBF97` |
 | ローカルファイル | `#16234b` |
 
 ## 使用例
