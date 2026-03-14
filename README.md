@@ -26,6 +26,8 @@
   - 表紙背景色をオプションで指定可能
   - Pillow・フォント未インストール時は SVG 表紙で代替
   - フォントファイルを ePub 内に埋め込み可能（`--font`）
+  - 楽天 Kobo リーダー向け互換対応（縦書き・章目次・画像表紙）
+- ルビ自動判別：`《》` 内に漢字を含む場合は地の文として処理（ルビ誤変換を防止）
 - ローカルテキストファイルから ePub3 を生成（`--from-file`）
 - 途中再開機能（`--resume`、なろうのみ）
 - 取得話数の範囲指定（`--start` / `--end`）
@@ -228,18 +230,22 @@ OEBPS/package.opf
 OEBPS/nav.xhtml
 OEBPS/css/novel.css
 OEBPS/css/vertical_image.css
+OEBPS/fonts/                 ← 埋め込みフォント（--font 指定時のみ）
 OEBPS/images/0000.png        ← 表紙画像（PNG または SVG）
-OEBPS/image-cover.xhtml      ← 画像表紙ページ
+OEBPS/image-cover.xhtml      ← 画像表紙ページ（epub:type="cover"）
 OEBPS/cover.xhtml            ← タイトル・著者・あらすじページ
-OEBPS/ep0001.xhtml           ← 各話
+OEBPS/ep0001.xhtml           ← 各話（epub:type="chapter"）
 OEBPS/ep0002.xhtml
 ...
 OEBPS/colophon.xhtml         ← 奥付
 ```
 
-- 縦書き（`writing-mode: vertical-rl`）
+- 縦書き（`-epub-writing-mode` / `-webkit-writing-mode` / `writing-mode: vertical-rl`）
 - 游明朝 / ヒラギノ明朝 / Noto Serif CJK JP を優先したフォント指定
 - ルビ（`<ruby>` タグ）対応
+- 各 XHTML に `epub:type` を付与（`cover` / `frontmatter` / `chapter` / `backmatter`）
+- OPF に `rendition:layout` / `rendition:orientation` / `rendition:spread` メタデータを付与
+- nav.xhtml の landmarks に `bodymatter`（本文開始位置）エントリを記載
 
 ## ライセンス
 
