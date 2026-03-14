@@ -1,10 +1,12 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 このファイルは、リポジトリ内のコードを扱う Claude Code (claude.ai/code) へのガイダンスです。
 
 ## 概要
 
-単一ファイルの CLI ツール（`novel_downloader/novel_downloader.py`）。小説家になろう・カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルンの作品をダウンロードし、以下を出力する：
+単一ファイルの CLI ツール（`novel_downloader.py`）。Python 3.10 以上が必要。小説家になろう・カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルンの作品をダウンロードし、以下を出力する：
 - 青空文庫書式テキスト（`.txt`）
 - 縦書き ePub3（`.epub`）
 
@@ -13,33 +15,56 @@
 ## 実行方法
 
 ```bash
-# なろうからダウンロード
-python novel_downloader/novel_downloader.py https://ncode.syosetu.com/nXXXXxx/
+# なろうからダウンロード（stdlib のみ、追加ライブラリ不要）
+python novel_downloader.py https://ncode.syosetu.com/nXXXXxx/
 
-# カクヨムからダウンロード（requests + beautifulsoup4 が必要）
-python novel_downloader/novel_downloader.py https://kakuyomu.jp/works/XXXXXXXXXX
+# カクヨムからダウンロード
+python novel_downloader.py https://kakuyomu.jp/works/XXXXXXXXXX
 
-# アルファポリスからダウンロード（requests + beautifulsoup4 が必要）
-python novel_downloader/novel_downloader.py https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX
+# アルファポリスからダウンロード
+python novel_downloader.py https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX
 
-# エブリスタからダウンロード（requests + beautifulsoup4 が必要）
-python novel_downloader/novel_downloader.py https://estar.jp/novels/XXXXXXXXX
+# エブリスタからダウンロード
+python novel_downloader.py https://estar.jp/novels/XXXXXXXXX
 
-# 野いちごからダウンロード（requests + beautifulsoup4 が必要）
-python novel_downloader/novel_downloader.py https://www.no-ichigo.jp/book/nXXXXXX
+# 野いちごからダウンロード
+python novel_downloader.py https://www.no-ichigo.jp/book/nXXXXXX
 
-# ハーメルンからダウンロード（playwright + beautifulsoup4 が必要）
-python novel_downloader/novel_downloader.py https://syosetu.org/novel/XXXXXXX/
+# ハーメルンからダウンロード（playwright が必要）
+python novel_downloader.py https://syosetu.org/novel/XXXXXXX/
 
 # ローカルテキストから ePub 生成
-python novel_downloader/novel_downloader.py --from-file mynovel.txt
+python novel_downloader.py --from-file mynovel.txt
 ```
+
+話数ページの URL を指定した場合も、自動的に作品トップページへ正規化してから取得する。
+
+## オプション一覧
+
+| オプション | デフォルト | 説明 |
+|---|---|---|
+| `url` | — | 作品 URL（`--from-file` 指定時は省略可） |
+| `-o FILE` | タイトルから自動生成 | 出力ベース名（例: `-o mynovel` → `mynovel.txt` / `mynovel.epub`） |
+| `--delay SEC` | `1.5` | リクエスト間隔（秒） |
+| `--resume N` | `1` | 第 N 話から再開（なろうのみ） |
+| `--start N` | `1` | 取得開始話数（野いちごは章番号） |
+| `--end N` | 最終話 | 取得終了話数（野いちごは章番号） |
+| `--encoding ENC` | `utf-8` | テキスト出力エンコーディング（`utf-8` / `utf-8-sig` / `shift_jis` / `cp932`） |
+| `--no-epub` | — | ePub 出力を省略し、テキストのみ出力 |
+| `--cover-bg COLOR` | サイト依存 | 表紙背景色（`#RRGGBB` 形式） |
+| `--from-file FILE` | — | ローカルテキストから ePub3 を生成 |
+| `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
+| `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
+| `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。`body` のデフォルトフォントとして CSS に設定される |
 
 ## 依存ライブラリ
 
-- **カクヨム取得に必要：** `pip install requests beautifulsoup4`
-- **PNG 表紙生成に必要：** `pip install Pillow`（または `sudo apt install python3-pillow`）
-- **日本語フォント（PNG 表紙）：** `sudo apt install fonts-noto-cjk`
+| ライブラリ | 用途 | インストール |
+|---|---|---|
+| `requests`, `beautifulsoup4` | カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン | `pip install requests beautifulsoup4` |
+| `playwright` | ハーメルン（Cloudflare 回避） | `pip install playwright && python -m playwright install chromium` |
+| `Pillow` | PNG 表紙生成 | `pip install Pillow` または `sudo apt install python3-pillow` |
+| fonts-noto-cjk | PNG 表紙の日本語フォント | `sudo apt install fonts-noto-cjk` |
 
 すべてオプション扱いでフォールバックあり（なろうは stdlib のみで動作、Pillow 未インストール時は SVG 表紙で代替）。
 
@@ -61,15 +86,15 @@ python novel_downloader/novel_downloader.py --from-file mynovel.txt
 
 5. **アルファポリススクレイパー**（行 ~2072–）：`requests` + `BeautifulSoup` を使用。セッション Cookie 有無でサーバーのレスポンスが変わる：Cookie あり → 本文が `div#novelBody` に直接埋め込み、Cookie なし → JS の `.load()` で `/novel/episode_body` に AJAX POST。エントリポイント：`run_alphapolis(args)`。
 
-6. **エブリスタスクレイパー**：`requests` + `BeautifulSoup` を使用。ビューアページ（`/novels/{id}/viewer?page=N`）の `window.__NUXT__` に 15 件ずつ本文が `novelPageId:"NNN",body:"..."` 形式で埋め込まれる。page=1, 16, 31, … と 15 ページ刻みでバッチ取得。章タイトルは最初のバッチのナビセクション（`body:e` エントリ）から抽出。エントリポイント：`run_estar(args)`。
+6. **エブリスタスクレイパー**：`requests` + `BeautifulSoup` を使用。ビューアページ（`/novels/{id}/viewer?page=N`）の `window.__NUXT__` に 15 件ずつ本文が `novelPageId:"NNN",body:"..."` 形式で埋め込まれる。page=1, 16, 31, … と 15 ページ刻みでバッチ取得。エントリポイント：`run_estar(args)`。
 
-7. **野いちごスクレイパー**：`requests` + `BeautifulSoup` を使用。作品トップページの `div.bookChapterList` から章開始ページ番号と章タイトルを取得し、各ページ（`/book/{work_id}/{page_no}`）を個別フェッチ。本文は `article.bookText` 内の `<div>`（`<aside>` を除いた後）の `<br>` 区切りテキスト。章ごとに全ページを結合してエピソードとして出力。`--start`/`--end` は章番号で指定。エントリポイント：`run_noichigo(args)`。
+7. **野いちごスクレイパー**：`requests` + `BeautifulSoup` を使用。作品トップページの `div.bookChapterList` から章開始ページ番号と章タイトルを取得し、各ページ（`/book/{work_id}/{page_no}`）を個別フェッチ。`--start`/`--end` は章番号で指定。エントリポイント：`run_noichigo(args)`。
 
-8. **ハーメルンスクレイパー**：`playwright` + `BeautifulSoup` を使用。トップページは `requests` で取得（CF保護なし）。エピソードページは Cloudflare Managed Challenge があるため、Playwright で各話ごとに新しい browser context を作成し 5 秒待機して取得。本文は `div#honbun` 内の `<p>` タグ、前書きは `div#maegaki`、後書きは `div#atogaki`。Ruby は `<ruby><rb>…</rb><rt>…</rt></ruby>` 形式。エントリポイント：`run_hameln(args)`。起動に `pip install playwright && python -m playwright install chromium` が必要。
+8. **ハーメルンスクレイパー**：`playwright` + `BeautifulSoup` を使用。トップページは `requests` で取得（CF保護なし）。エピソードページは Cloudflare Managed Challenge があるため、Playwright で各話ごとに新しい browser context を作成し 5 秒待機して取得。本文は `div#honbun`、前書きは `div#maegaki`、後書きは `div#atogaki`。エントリポイント：`run_hameln(args)`。
 
 9. **ローカルファイルモード**：`parse_aozora_text` で既存の青空文庫 `.txt` からタイトル・著者・あらすじを抽出し、`build_epub` に渡す。エントリポイント：`run_from_file(args)`。
 
-10. **`main()`**：引数を解析し、`detect_site(url)` でサイトを判定 → `run_narou`・`run_kakuyomu`・`run_alphapolis`・`run_estar`・`run_noichigo`・`run_hameln`・`run_from_file` のいずれかにディスパッチ。
+10. **`main()`**：引数を解析し、`detect_site(url)` でサイトを判定 → 各 `run_*` 関数にディスパッチ。
 
 ## 主な規約
 

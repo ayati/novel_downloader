@@ -54,6 +54,7 @@ novel_downloader.py
     --from-file FILE ローカルテキストファイルからePub3を生成（URLモード不要）
     --title TITLE    タイトルを上書き（--from-file 使用時）
     --author AUTHOR  著者名を上書き（--from-file 使用時）
+    --font FILE      ePub本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）
 """
 
 import sys
@@ -224,89 +225,113 @@ def write_file(filename: str, header: str, sections: list, colophon: str,
 
 # ── ePub内部で使うXML/HTMLテンプレート ──────────────────────────
 
-_EPUB_CSS = """\
+def _make_epub_css(font_name: str = "", font_filename: str = "") -> str:
+    """
+    ePub本文用CSSを生成する。
+    font_name / font_filename が指定された場合は @font-face を挿入し、
+    body の font-family の先頭に追加する。
+    """
+    font_face = ""
+    if font_name and font_filename:
+        ext = Path(font_filename).suffix.lower()
+        fmt_map = {".otf": "opentype", ".ttf": "truetype",
+                   ".woff": "woff", ".woff2": "woff2"}
+        fmt = fmt_map.get(ext, "opentype")
+        font_face = (
+            f'@font-face {{\n'
+            f'  font-family: "{font_name}";\n'
+            f'  src: url("../fonts/{font_filename}") format("{fmt}");\n'
+            f'  font-weight: normal;\n'
+            f'  font-style: normal;\n'
+            f'}}\n\n'
+        )
+        custom_family = f'"{font_name}", '
+    else:
+        custom_family = ""
+
+    return f"""\
 @charset "UTF-8";
 
-/* ── 縦書き基本設定 ── */
-html {
+{font_face}/* ── 縦書き基本設定 ── */
+html {{
   -webkit-writing-mode: vertical-rl;
   writing-mode: vertical-rl;
   line-height: 2.0;
   font-size: 1em;
-}
+}}
 
-body {
+body {{
   -webkit-writing-mode: vertical-rl;
   writing-mode: vertical-rl;
   margin: 1em;
-  font-family: "游明朝", "YuMincho", "ヒラギノ明朝 ProN", "HiraMinProN-W3",
+  font-family: {custom_family}"游明朝", "YuMincho", "ヒラギノ明朝 ProN", "HiraMinProN-W3",
                "Noto Serif CJK JP", serif;
-}
+}}
 
 /* ── 表紙 ── */
-.cover-title {
+.cover-title {{
   font-size: 1.8em;
   font-weight: bold;
   margin-bottom: 1em;
   text-align: center;
-}
+}}
 
-.cover-author {
+.cover-author {{
   font-size: 1.1em;
   text-align: center;
   margin-bottom: 2em;
-}
+}}
 
-.cover-synopsis {
+.cover-synopsis {{
   font-size: 0.9em;
   margin-top: 2em;
   border-top: 1px solid #999;
   padding-top: 1em;
-}
+}}
 
 /* ── 本文 ── */
-h2.ep-title {
+h2.ep-title {{
   font-size: 1.3em;
   font-weight: bold;
   margin-bottom: 1.5em;
   border-bottom: 1px solid #ccc;
   padding-bottom: 0.3em;
-}
+}}
 
-p.body-line {
+p.body-line {{
   margin: 0;
   text-indent: 1em;
-}
+}}
 
-p.body-blank {
+p.body-blank {{
   margin: 0;
   height: 1em;
-}
+}}
 
 /* ── 奥付 ── */
-.colophon {
+.colophon {{
   font-size: 0.85em;
   border-top: 1px solid #999;
   padding-top: 1em;
   margin-top: 2em;
-}
+}}
 
 /* ── リンク共通 ── */
-a {
+a {{
   color: #4a6fa5;
   text-decoration: underline;
-}
+}}
 
-a:visited {
+a:visited {{
   color: #7a5fa5;
-}
+}}
 
 /* 表紙ページのソースリンク */
-.cover-source {
+.cover-source {{
   font-size: 0.85em;
   margin-top: 2em;
   text-align: center;
-}
+}}
 """
 
 _XHTML_TMPL = """\
@@ -621,10 +646,11 @@ def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
 
 
 def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
-              cover_fmt: str = "") -> str:
+              cover_fmt: str = "", font_filename: str = "") -> str:
     """
     OPF（package.opf）を生成する。
     cover_fmt: "png" | "svg" | "" (表紙画像なし)
+    font_filename: 埋め込みフォントのファイル名（例: "AyatiShowaSerif-Regular.otf"）
     """
     today = date.today().strftime("%Y-%m-%d")
 
@@ -632,6 +658,16 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
         '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
         '<item id="css" href="css/novel.css" media-type="text/css"/>',
     ]
+
+    if font_filename:
+        ext = Path(font_filename).suffix.lower()
+        mime_map = {".otf": "font/otf", ".ttf": "font/ttf",
+                    ".woff": "font/woff", ".woff2": "font/woff2"}
+        font_mime = mime_map.get(ext, "font/otf")
+        manifest_items.append(
+            f'<item id="embedded-font" href="fonts/{font_filename}"'
+            f' media-type="{font_mime}"/>'
+        )
 
     if cover_fmt == "png":
         manifest_items += [
@@ -1142,6 +1178,7 @@ def build_epub(
     site_name: str,
     episodes: list,          # [{"title": str, "body": str}, ...]
     cover_bg: str = "#16234b",
+    font_path: str = "",
 ):
     """
     縦書きePub3ファイルを生成する。
@@ -1165,6 +1202,10 @@ def build_epub(
     # 表紙画像を生成（PNG優先、失敗時SVG）。常に (bytes, fmt) を返す
     cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
 
+    # 埋め込みフォントの準備
+    font_filename = Path(font_path).name if font_path else ""
+    font_name = Path(font_path).stem if font_path else ""
+
     with zipfile.ZipFile(epub_path, "w", zipfile.ZIP_DEFLATED) as zf:
         # mimetype は圧縮なし・先頭に配置（ePub仕様）
         zf.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip",
@@ -1181,16 +1222,23 @@ def build_epub(
 </container>
 """)
 
-        # package.opf（cover_fmt を渡して manifest/spine を決定）
+        # package.opf（cover_fmt / font_filename を渡して manifest/spine を決定）
         zf.writestr("OEBPS/package.opf",
-                    _make_opf(title, author, book_id, ep_titles, cover_fmt))
+                    _make_opf(title, author, book_id, ep_titles, cover_fmt,
+                              font_filename=font_filename))
 
         # nav.xhtml
         zf.writestr("OEBPS/nav.xhtml",
                     _make_nav_xhtml(title, ep_titles, cover_fmt))
 
-        # 本文CSS
-        zf.writestr("OEBPS/css/novel.css", _EPUB_CSS)
+        # 本文CSS（フォント指定あり時は @font-face を追加）
+        zf.writestr("OEBPS/css/novel.css",
+                    _make_epub_css(font_name, font_filename))
+
+        # 埋め込みフォント
+        if font_path:
+            with open(font_path, "rb") as _ff:
+                zf.writestr(f"OEBPS/fonts/{font_filename}", _ff.read())
 
         # 画像表紙 → spine 1ページ目（常に生成）
         zf.writestr("OEBPS/css/vertical_image.css", _VERTICAL_IMAGE_CSS)
@@ -1697,7 +1745,8 @@ def run_narou(args):
         print(f"📖 ePub生成中...")
         build_epub(epub_path, title, author, synopsis,
                    base_url, "小説家になろう", epub_episodes,
-                   cover_bg=args.cover_bg)
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "")
         print(f"✅ ePub出力完了: {epub_path}")
 
     if resume_from == 1:
@@ -2071,7 +2120,8 @@ def run_kakuyomu(args):
         build_epub(epub_path, info["title"], info["author"],
                    info.get("description", ""),
                    work_url, "カクヨム", epub_episodes,
-                   cover_bg=args.cover_bg)
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "")
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -2354,7 +2404,8 @@ def run_alphapolis(args):
         build_epub(epub_path, info["title"], info["author"],
                    info.get("description", ""),
                    work_url, "アルファポリス", epub_episodes,
-                   cover_bg=args.cover_bg)
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "")
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -2558,7 +2609,8 @@ def run_estar(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "エブリスタ", epub_episodes,
-                   cover_bg=args.cover_bg)
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "")
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -2800,7 +2852,8 @@ def run_hameln(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ハーメルン", epub_episodes,
-                   cover_bg=args.cover_bg)
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "")
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -3031,7 +3084,8 @@ def run_noichigo(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "野いちご", epub_episodes,
-                   cover_bg=args.cover_bg)
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "")
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -3180,7 +3234,8 @@ def run_from_file(args):
 
     print(f"📖 ePub生成中...")
     build_epub(epub_path, title, author, synopsis,
-               "", "ローカルファイル", episodes, cover_bg=cover_bg)
+               "", "ローカルファイル", episodes, cover_bg=cover_bg,
+               font_path=getattr(args, "font", "") or "")
     print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -3351,6 +3406,9 @@ def main():
                         help="タイトルを上書き（--from-file 使用時）")
     parser.add_argument("--author", dest="author_override", default=None, metavar="AUTHOR",
                         help="著者名を上書き（--from-file 使用時）")
+    parser.add_argument("--font", dest="font", default=None, metavar="FILE",
+                        help="ePub本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。"
+                             "指定したフォントを body のデフォルトフォントとして CSS に設定する")
 
     args = parser.parse_args()
 

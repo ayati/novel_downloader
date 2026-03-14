@@ -25,6 +25,7 @@
   - PNG 表紙画像を自動生成（Pillow + 日本語フォントが必要）
   - 表紙背景色をオプションで指定可能
   - Pillow・フォント未インストール時は SVG 表紙で代替
+  - フォントファイルを ePub 内に埋め込み可能（`--font`）
 - ローカルテキストファイルから ePub3 を生成（`--from-file`）
 - 途中再開機能（`--resume`、なろうのみ）
 - 取得話数の範囲指定（`--start` / `--end`）
@@ -138,6 +139,7 @@ python novel_downloader.py --from-file 作品名.txt
 | `--from-file FILE` | — | ローカルテキストファイルから ePub3 を生成 |
 | `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
 | `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
+| `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf / .ttf / .woff / .woff2） |
 
 ### 表紙背景色のデフォルト値
 
@@ -180,6 +182,10 @@ python novel_downloader.py --from-file mynovel.txt
 
 # タイトル・著者を指定して ePub 生成
 python novel_downloader.py --from-file mynovel.txt --title "作品タイトル" --author "著者名"
+
+# フォントを埋め込んで ePub 生成
+python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --font MyFont.otf
+python novel_downloader.py --from-file mynovel.txt --font MyFont.otf
 ```
 
 ## 出力テキスト形式
