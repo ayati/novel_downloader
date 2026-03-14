@@ -435,6 +435,11 @@ def _resolve_ruby_base(preceding: str) -> tuple[str, str]:
     return preceding[:i], preceding[i:]
 
 
+def _has_kanji(text: str) -> bool:
+    """テキスト内に漢字（CJK文字）が含まれるかを返す。"""
+    return any(_char_class(ch) == 0 for ch in text)
+
+
 def _apply_ruby_auto(text: str) -> str:
     """
     青空文庫ルビ記法を処理してXHTML ruby タグに変換する。
@@ -442,6 +447,11 @@ def _apply_ruby_auto(text: str) -> str:
     - 明示記号あり: |ベース《よみ》  → <ruby>ベース<rt>よみ</rt></ruby>
     - 明示記号なし: ベース《よみ》   → 《》直前の同一文字種ブロックを
                                          自動検出してルビベースとする
+
+    ルビでない《》の判定（地の文として《》をそのまま出力）:
+      - 《》内に漢字が含まれる場合（例: 《この部屋に誰かが潜んでいる》）
+      - 有効なルビベースが見つからない場合（行頭・句読点直後など）
+
     テキストは _esc() 済みを想定しない（この関数内でエスケープする）。
     """
     result = []
@@ -452,22 +462,32 @@ def _apply_ruby_auto(text: str) -> str:
     for m in pattern.finditer(text):
         chunk = text[pos:m.start()]
         if m.group(1) is not None:
-            # "|ベース《よみ》" 形式：chunk はそのままエスケープして出力
+            # "|ベース《よみ》" 形式：明示的ルビ指定はそのまま適用
             result.append(_esc(chunk))
             result.append(
                 f"<ruby>{_esc(m.group(1))}<rt>{_esc(m.group(2))}</rt></ruby>"
             )
         else:
-            # "《よみ》" のみ：chunk の末尾から文字種境界でベースを切り出す
-            before, base = _resolve_ruby_base(chunk)
-            result.append(_esc(before))
-            if base:
-                result.append(
-                    f"<ruby>{_esc(base)}<rt>{_esc(m.group(3))}</rt></ruby>"
-                )
+            yomi = m.group(3)
+            # 《》内に漢字が含まれる → ルビではなく地の文
+            if _has_kanji(yomi):
+                result.append(_esc(chunk))
+                result.append(_esc(f"《{yomi}》"))
             else:
-                # ベースが空（行頭直後など）は読みだけ出力してルビなし扱い
-                result.append(_esc(m.group(3)))
+                # "《よみ》" のみ：chunk の末尾から文字種境界でベースを切り出す
+                before, base = _resolve_ruby_base(chunk)
+                # ベースが句読点・記号類（クラス9）のみの場合も地の文扱い
+                if base and all(_char_class(ch) == 9 for ch in base):
+                    base = ""
+                    before = chunk
+                result.append(_esc(before))
+                if base:
+                    result.append(
+                        f"<ruby>{_esc(base)}<rt>{_esc(yomi)}</rt></ruby>"
+                    )
+                else:
+                    # 有効なルビベースなし → 《》ごと地の文として出力
+                    result.append(_esc(f"《{yomi}》"))
         pos = m.end()
     result.append(_esc(text[pos:]))
     return "".join(result)
