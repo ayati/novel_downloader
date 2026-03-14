@@ -1538,8 +1538,10 @@ class NarouEpisodeParser(HTMLParser):
         self._view_depth    = 0
         self._in_p          = False
         self._cur_para      = []
-        self._in_rb         = False
-        self._in_rt         = False
+        self._in_ruby       = False  # <ruby>...</ruby> 内
+        self._in_rb         = False  # <rb>...</rb> 内（明示ルビベース）
+        self._in_rt         = False  # <rt>...</rt> 内（ルビ読み）
+        self._in_rp         = False  # <rp>...</rp> 内（非対応ブラウザ向け括弧）
         self._rb_buf        = ""
         self._rt_buf        = ""
 
@@ -1548,11 +1550,15 @@ class NarouEpisodeParser(HTMLParser):
         cls = d.get("class", "")
         id_ = d.get("id",    "")
 
-        if tag == "p" and cls == "novel_subtitle":
+        # 旧サイト: class="novel_subtitle"
+        # 新サイト: class="p-novel__title" 等
+        if tag == "p" and (cls == "novel_subtitle" or "p-novel__title" in cls):
             self._in_subtitle = True
             return
 
-        if tag == "div" and cls == "novel_view":
+        # 旧サイト: class="novel_view"
+        # 新サイト: class="js-novel-text p-novel__text" 等
+        if tag == "div" and (cls == "novel_view" or "p-novel__text" in cls):
             self._in_novel_view = True
             self._view_depth    = 1
             return
@@ -1568,12 +1574,20 @@ class NarouEpisodeParser(HTMLParser):
             if self._in_p:
                 if tag == "br":
                     self._cur_para.append("\n")
+                elif tag == "ruby":
+                    # <ruby>ベース<rt>よみ</rt></ruby> 形式（<rb>なし）に対応
+                    self._in_ruby = True
+                    self._rb_buf  = ""
+                    self._rt_buf  = ""
                 elif tag == "rb":
                     self._in_rb  = True
                     self._rb_buf = ""
                 elif tag == "rt":
                     self._in_rt  = True
                     self._rt_buf = ""
+                elif tag == "rp":
+                    # <rp> は非対応ブラウザ向けの括弧：内容を無視する
+                    self._in_rp = True
 
     def handle_endtag(self, tag):
         if tag == "p" and self._in_subtitle:
@@ -1594,7 +1608,14 @@ class NarouEpisodeParser(HTMLParser):
                 return
 
             if self._in_p:
-                if tag == "rb":
+                if tag == "ruby":
+                    # <rt>なしで終了した場合はベーステキストだけ出力
+                    if self._rb_buf:
+                        self._cur_para.append(self._rb_buf)
+                    self._in_ruby = False
+                    self._rb_buf  = ""
+                    self._rt_buf  = ""
+                elif tag == "rb":
                     self._in_rb = False
                 elif tag == "rt":
                     self._in_rt = False
@@ -1604,21 +1625,44 @@ class NarouEpisodeParser(HTMLParser):
                         self._cur_para.append(ruby)
                     self._rb_buf = ""
                     self._rt_buf = ""
+                elif tag == "rp":
+                    self._in_rp = False
 
     def handle_data(self, data):
         if self._in_subtitle:
             self.subtitle += data
             return
         if self._in_novel_view and self._in_p:
-            if self._in_rb:
+            if self._in_rp:
+                pass  # <rp> 内の括弧は無視
+            elif self._in_rb:
                 self._rb_buf += data
             elif self._in_rt:
                 self._rt_buf += data
+            elif self._in_ruby:
+                # <rb>なし形式: <ruby>ベース<rt>よみ</rt> のベース部分を蓄積
+                self._rb_buf += data
             else:
                 self._cur_para.append(data)
 
     def get_text(self) -> str:
         return "\n".join(self.paragraphs)
+
+
+def _ruby_inner_to_aozora(inner: str) -> str:
+    """
+    <ruby>...</ruby> の中身を青空文庫ルビ記法「ベース《よみ》」に変換する。
+    <rb>ベース</rb><rt>よみ</rt> と ベース<rt>よみ</rt>（<rb>なし）の両形式に対応。
+    """
+    rt_m = re.search(r"<rt>(.*?)</rt>", inner, re.DOTALL)
+    if not rt_m:
+        return re.sub(r"<[^>]+>", "", inner)
+    reading = re.sub(r"<[^>]+>", "", rt_m.group(1)).strip()
+    # <rp>...</rp> と <rt>...</rt> ブロックを除去してベーステキストを取得
+    base = re.sub(r"<rp>.*?</rp>", "", inner, flags=re.DOTALL)
+    base = re.sub(r"<rt>.*?</rt>", "", base, flags=re.DOTALL)
+    base = re.sub(r"<[^>]+>", "", base).strip()
+    return f"{base}《{reading}》" if reading else base
 
 
 def narou_extract_body_fallback(html: str) -> str:
@@ -1629,14 +1673,11 @@ def narou_extract_body_fallback(html: str) -> str:
     )
     lines = []
     for p_html in raw_ps:
-        def ruby_replace(m):
-            rb = re.sub(r"<[^>]+>", "", m.group(1))
-            rt = re.sub(r"<[^>]+>", "", m.group(2))
-            return f"{rb}《{rt}》" if rt else rb
-
+        # <ruby>...</ruby> ブロック全体を青空文庫ルビ記法に変換
         p_html = re.sub(
-            r"<rb>(.*?)</rb>.*?<rt>(.*?)</rt>",
-            ruby_replace, p_html, flags=re.DOTALL
+            r"<ruby>(.*?)</ruby>",
+            lambda m: _ruby_inner_to_aozora(m.group(1)),
+            p_html, flags=re.DOTALL
         )
         clean = re.sub(r"<br\s*/?>", "\n", p_html)
         clean = re.sub(r"<[^>]+>", "", clean)
