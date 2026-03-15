@@ -4639,11 +4639,11 @@ def main():
             elif site == "novelup":
                 args.cover_bg = "#0CBF97"
             elif site == "sutekibungei":
-                args.cover_bg = "#6B3FA0"
+                args.cover_bg = "#E4097D"
             elif site == "days":
-                args.cover_bg = "#1B3A6B"
+                args.cover_bg = "#CBA13F"
             elif site == "aozora":
-                args.cover_bg = "#5B4033"
+                args.cover_bg = "#000066"
             else:
                 args.cover_bg = "#18b7cd"
 
