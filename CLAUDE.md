@@ -138,3 +138,50 @@ OEBPS/colophon.xhtml         ← 奥付
 ## font/ ディレクトリ
 
 `font/` に OFL ライセンスのフォントファイル（`AyatiShowaSerif-Regular.otf` / `.ttf`）を同梱。`--font font/AyatiShowaSerif-Regular.otf` のように指定して ePub に埋め込める。
+
+## 動作確認
+
+テストスイートは存在しないため、手動で動作確認する：
+
+```bash
+# なろう（stdlib のみ、追加ライブラリ不要）
+python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --no-epub
+
+# ローカルテキストから ePub 生成（出力済みの .txt を使い回せる）
+python novel_downloader.py --from-file <出力済み.txt>
+
+# ePub 構造確認（zipfile として展開可能）
+python -c "import zipfile; zipfile.ZipFile('<出力.epub>').extractall('/tmp/epub_check')"
+```
+
+## 新スクレイパー追加手順
+
+1. `detect_site(url)` にサイト判定条件を追加（`return "サイト名"` 形式）
+2. `run_サイト名(args)` 関数を実装し、`aozora_header()` / `aozora_chapter_title()` / `aozora_colophon()` で青空文庫テキストを組み立てて `write_file()` + `build_epub()` を呼ぶ
+3. `main()` の `dispatch` 辞書に `"サイト名": run_サイト名` を追記
+4. CLAUDE.md のアーキテクチャセクションと依存ライブラリ表を更新
+
+## 青空文庫テキスト出力形式
+
+```
+作品タイトル
+著者名
+
+【あらすじ】
+あらすじ本文
+
+底本URL：https://...
+-------------------------------------------------------
+【テキスト中に現れる記号について】
+《》：ルビ（例）漢字《かんじ》
+...
+-------------------------------------------------------
+
+［＃「第一話タイトル」は大見出し］
+第一話タイトル
+［＃「第一話タイトル」は大見出し終わり］
+
+本文...
+
+［＃改ページ］
+```
