@@ -16,10 +16,14 @@
 | [ハーメルン](https://syosetu.org/) | `https://syosetu.org/novel/XXXXXXX/` | requests, beautifulsoup4, playwright |
 | [ノベマ！](https://novema.jp/) | `https://novema.jp/book/nXXXXXX` | requests, beautifulsoup4 |
 | [ノベルアップ＋](https://novelup.plus/) | `https://novelup.plus/story/XXXXXXXXX` | requests, beautifulsoup4 |
+| [ステキブンゲイ](https://sutekibungei.com/) | `https://sutekibungei.com/novels/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` | requests, beautifulsoup4 |
+| [NOVEL DAYS](https://novel.daysneo.com/) | `https://novel.daysneo.com/works/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.html` | requests, beautifulsoup4 |
+| [青空文庫](https://www.aozora.gr.jp/)（旧） | `https://www.aozora.gr.jp/cards/XXXXXX/cardXXXXXX.html` | 不要（stdlib のみ） |
+| [青空文庫](https://www.aozora-renewal.cloud/)（新） | `https://www.aozora-renewal.cloud/cards/XXXXXX/cardXXXXXX.html` | 不要（stdlib のみ） |
 
 ## 機能
 
-- 上記 8 サイトの全話を自動取得（URL から自動判別）
+- 上記各サイトの全話を自動取得（URL から自動判別）
 - 青空文庫書式テキスト（.txt）出力
   - ルビ記法（`漢字《かんじ》`）を保持
   - ヘッダーにあらすじ・底本 URL を記載
@@ -115,6 +119,16 @@ python novel_downloader.py https://novema.jp/book/nXXXXXX
 
 # ノベルアップ＋
 python novel_downloader.py https://novelup.plus/story/XXXXXXXXX
+
+# ステキブンゲイ
+python novel_downloader.py https://sutekibungei.com/novels/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+
+# NOVEL DAYS
+python novel_downloader.py https://novel.daysneo.com/works/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.html
+
+# 青空文庫
+python novel_downloader.py https://www.aozora.gr.jp/cards/XXXXXX/cardXXXXXX.html
+python novel_downloader.py https://www.aozora-renewal.cloud/cards/XXXXXX/cardXXXXXX.html
 ```
 
 話数ページの URL を指定した場合も、自動的に作品トップページへ正規化してから取得します。
@@ -163,6 +177,9 @@ python novel_downloader.py --from-file 作品名.txt
 | ハーメルン | `#6E654C` |
 | ノベマ！ | `#595757` |
 | ノベルアップ＋ | `#0CBF97` |
+| ステキブンゲイ | `#6B3FA0` |
+| NOVEL DAYS | `#1B3A6B` |
+| 青空文庫 | `#5B4033` |
 | ローカルファイル | `#16234b` |
 
 ## 使用例
