@@ -66,12 +66,13 @@ python novel_downloader.py --from-file mynovel.txt
 | `--start N` | `1` | 取得開始話数（野いちごは章番号） |
 | `--end N` | 最終話 | 取得終了話数（野いちごは章番号） |
 | `--encoding ENC` | `utf-8` | テキスト出力エンコーディング（`utf-8` / `utf-8-sig` / `shift_jis` / `cp932`） |
+| `--newline MODE` | `os` | テキスト出力の改行コード（`os`=実行環境標準 / `lf`=LF / `crlf`=CRLF） |
 | `--no-epub` | — | ePub 出力を省略し、テキストのみ出力 |
 | `--cover-bg COLOR` | サイト依存 | 表紙背景色（`#RRGGBB` 形式） |
 | `--from-file FILE` | — | ローカルテキストから ePub3 を生成 |
 | `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
 | `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
-| `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。`body` のデフォルトフォントとして CSS に設定される |
+| `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。`body` のデフォルトフォントとして CSS に設定される。ファイルが存在しない場合は警告を出して埋め込みなしで続行 |
 
 ## 依存ライブラリ
 
@@ -116,11 +117,11 @@ python novel_downloader.py --from-file mynovel.txt
 
 12. **NOVEL DAYS スクレイパー**（行 ~3776–4000）：`requests` + `BeautifulSoup` を使用。SSR で JS 不要（講談社運営）。タイトルは `div.detail h2`、著者は `div.author a span.f18px`、あらすじは `p.readmore`（`<br>` → 改行）。エピソード一覧は `div.contents ol li a[href*="/works/episode/"]`。本文は `div.episode div.inner`（`<br>` → 改行）。Ruby は `<rb>/<rt>/<rp>` 形式。エピソードURLが指定された場合は作品トップページリンクを自動検出。エントリポイント：`run_days`（行 3904）。
 
-13. **青空文庫スクレイパー**（行 ~4001–4225）：stdlib のみ（urllib + zipfile + re）で動作。旧サイト（`aozora.gr.jp`）・新サイト（`aozora-renewal.cloud`）の両方に対応。図書カードページからルビ付き ZIP（`_ruby_` 優先）の URL を抽出し、ZIP をダウンロード・展開。テキストファイルはエンコーディングを自動判定（ShiftJIS → CP932 → UTF-8 → EUC-JP）して UTF-8 に変換して保存。ePub 生成時は `aozora_text_to_episodes()` でタイトル・著者を先頭2非空行から、本文を区切り線ブロック後・底本情報前から抽出し、`［＃改ページ］` で章分割。`｜` ルビ開始記号を除去してから `build_epub()` に渡す。テキストページURL（`/files/{id}_{num}.html`）を指定した場合は図書カードページ URL へ正規化。エントリポイント：`run_aozora`（行 4173）。
+13. **青空文庫スクレイパー**（行 ~4001–4237）：stdlib のみ（urllib + zipfile + re）で動作。旧サイト（`aozora.gr.jp`）・新サイト（`aozora-renewal.cloud`）の両方に対応。図書カードページからルビ付き ZIP（`_ruby_` 優先）の URL を抽出し、ZIP をダウンロード・展開。テキストファイルはエンコーディングを自動判定（ShiftJIS → CP932 → UTF-8 → EUC-JP）して UTF-8 に変換して保存。ePub 生成時は `aozora_text_to_episodes()`（行 4113）でタイトル・著者を先頭2非空行から、本文を区切り線ブロック後・底本情報前から抽出し、`［＃改ページ］` で章分割。`｜` ルビ開始記号を除去してから `build_epub()` に渡す。テキストページURL（`/files/{id}_{num}.html`）を指定した場合は図書カードページ URL へ正規化。エントリポイント：`run_aozora`（行 4181）。
 
-14. **ローカルファイルモード**（行 ~4226–4375）：`parse_aozora_text`（行 4230）で既存の青空文庫 `.txt` からタイトル・著者・あらすじを抽出し、`build_epub` に渡す。エントリポイント：`run_from_file`（行 4313）。
+14. **ローカルファイルモード**（行 ~4238–4387）：`parse_aozora_text`（行 4238）で既存の青空文庫 `.txt` からタイトル・著者・あらすじを抽出し、`build_epub` に渡す。エントリポイント：`run_from_file`（行 4321）。
 
-15. **`main()`**（行 ~4376–4701）：`detect_site`（行 4380）でサイト判定、`normalize_url`（行 4409）で話数 URL → 作品トップ URL 正規化、`main()`（行 4556）で引数解析 → 各 `run_*` 関数にディスパッチ。
+15. **`main()`**（行 ~4388–4728）：`_host_matches`（行 4388）でドメイン判定ヘルパー（スプーフィング対策）、`detect_site`（行 4395）でサイト判定、`normalize_url`（行 4424）で話数 URL → 作品トップ URL 正規化、`main()`（行 4571）で引数解析 → 各 `run_*` 関数にディスパッチ。
 
 ## ePub3 内部構造
 

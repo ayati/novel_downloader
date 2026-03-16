@@ -214,9 +214,12 @@ def safe_filename(title: str, fallback: str = "novel") -> str:
 
 
 def write_file(filename: str, header: str, sections: list, colophon: str,
-               encoding: str = ENCODING):
-    """ヘッダー + 各話（改ページ区切り）+ 奥付 を書き出す。"""
-    with open(filename, "w", encoding=encoding) as f:
+               encoding: str = ENCODING, newline: str = "os"):
+    """ヘッダー + 各話（改ページ区切り）+ 奥付 を書き出す。
+    newline: 'os'=実行環境の標準改行コード / 'lf'=LF(\\n) / 'crlf'=CRLF(\\r\\n)
+    """
+    nl = None if newline == "os" else ("\r\n" if newline == "crlf" else "\n")
+    with open(filename, "w", encoding=encoding, newline=nl) as f:
         f.write(header)
         f.write(PAGE_BREAK.join(sections))
         f.write(colophon)
@@ -1233,6 +1236,10 @@ def build_epub(
     cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
 
     # 埋め込みフォントの準備（CSS注入対策: " \ 改行を除去）
+    if font_path and not os.path.isfile(font_path):
+        print(f"[警告] フォントファイルが見つかりません: {font_path}")
+        print("       埋め込みフォントなしで ePub を生成します。")
+        font_path = ""
     _css_unsafe = re.compile(r'["\\\n\r]')
     font_filename = _css_unsafe.sub("", Path(font_path).name) if font_path else ""
     font_name     = _css_unsafe.sub("", Path(font_path).stem) if font_path else ""
@@ -1789,13 +1796,13 @@ def run_narou(args):
         epub_episodes.append({"title": subtitle, "body": body})
 
         if idx % 50 == 0:
-            write_file(txt_path, header, sections, colophon, args.encoding)
+            write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
             print(f"    → 中間保存 ({idx}/{len(episodes)}話)")
 
         if idx < len(episodes):
             time.sleep(args.delay)
 
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
                 + sum(len(s) for s in sections)
@@ -2169,7 +2176,7 @@ def run_kakuyomu(args):
     base      = args.output or safe_filename(info["title"], "kakuyomu_novel")
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
                 + sum(len(s) for s in sections)
@@ -2453,7 +2460,7 @@ def run_alphapolis(args):
     base      = args.output or safe_filename(info["title"], "alphapolis_novel")
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
                 + sum(len(s) for s in sections)
@@ -2657,7 +2664,7 @@ def run_estar(args):
     base      = args.output or safe_filename(info["title"], "estar_novel")
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     got = sum(1 for p in target_pages if p in all_bodies)
     full_len = (len(header)
@@ -2901,7 +2908,7 @@ def run_hameln(args):
     base      = args.output or safe_filename(info["title"], "hameln_novel")
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
                 + sum(len(s) for s in sections)
@@ -3133,7 +3140,7 @@ def run_noichigo(args):
     base      = args.output or safe_filename(info["title"], "noichigo_novel")
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
                 + sum(len(s) for s in sections)
@@ -3333,7 +3340,7 @@ def run_novema(args):
     base      = args.output or safe_filename(info["title"], "novema_novel")
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
                 + sum(len(s) for s in sections)
@@ -3550,7 +3557,7 @@ def run_novelup(args):
     base      = args.output or safe_filename(info["title"], "novelup_novel")
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
                 + sum(len(s) for s in sections)
@@ -3754,7 +3761,7 @@ def run_sutekibungei(args):
     base      = args.output or safe_filename(info["title"], "suteki_novel")
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
                 + sum(len(s) for s in sections)
@@ -3979,7 +3986,7 @@ def run_days(args):
     base      = args.output or safe_filename(info["title"], "days_novel")
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
-    write_file(txt_path, header, sections, colophon, args.encoding)
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
                 + sum(len(s) for s in sections)
@@ -4599,6 +4606,10 @@ def main():
     parser.add_argument("--encoding", default="utf-8",
                         choices=["utf-8", "utf-8-sig", "shift_jis", "cp932"],
                         help="テキスト出力エンコーディング（デフォルト: utf-8）")
+    parser.add_argument("--newline", default="os",
+                        choices=["os", "lf", "crlf"],
+                        help="テキスト出力の改行コード（デフォルト: os=実行環境標準）"
+                             "。lf=LF(Unix形式) / crlf=CRLF(Windows形式)")
     parser.add_argument("--no-epub", dest="no_epub", action="store_true",
                         help="ePub出力を省略してテキストのみ出力する")
     parser.add_argument("--cover-bg", dest="cover_bg", default=None, metavar="COLOR",

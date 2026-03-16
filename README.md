@@ -37,6 +37,7 @@
 - ローカルテキストファイルから ePub3 を生成（`--from-file`）
 - 途中再開機能（`--resume`、なろうのみ）
 - 取得話数の範囲指定（`--start` / `--end`）
+- テキスト出力の改行コード指定（`--newline`：`os`=OS標準 / `lf` / `crlf`）
 
 ## 動作環境
 
@@ -158,12 +159,13 @@ python novel_downloader.py --from-file 作品名.txt
 | `--start N` | `1` | 取得開始話数（野いちごは章番号） |
 | `--end N` | 最終話 | 取得終了話数（野いちごは章番号） |
 | `--encoding ENC` | `utf-8` | テキスト出力エンコーディング（`utf-8` / `utf-8-sig` / `shift_jis` / `cp932`） |
+| `--newline MODE` | `os` | テキスト出力の改行コード（`os`=実行環境標準 / `lf`=LF / `crlf`=CRLF） |
 | `--no-epub` | — | ePub 出力を省略し、テキストのみ出力 |
 | `--cover-bg COLOR` | サイト依存 | 表紙背景色（`#RRGGBB` 形式） |
 | `--from-file FILE` | — | ローカルテキストファイルから ePub3 を生成 |
 | `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
 | `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
-| `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf / .ttf / .woff / .woff2） |
+| `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf / .ttf / .woff / .woff2）。ファイルが存在しない場合は警告を出して埋め込みなしで続行 |
 
 ### 表紙背景色のデフォルト値
 
@@ -205,6 +207,9 @@ python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --cover-bg "#2d407
 
 # カクヨム（Shift_JIS で出力）
 python novel_downloader.py https://kakuyomu.jp/works/XXXXXXXXXX --encoding shift_jis
+
+# Windows 向けに CRLF で出力
+python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --newline crlf
 
 # ローカルテキストから ePub 生成
 python novel_downloader.py --from-file mynovel.txt
