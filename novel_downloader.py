@@ -136,7 +136,7 @@ PAGE_BREAK = "\n\n［＃改ページ］\n\n"
 _TATE_TABLE = str.maketrans({"!": "！", "?": "？", "~": "〜"})
 _RE_ELLIPSIS   = re.compile(r"\.{3}")
 _RE_DASH       = re.compile(r"-{2,}")
-_RE_EXCL_SPACE = re.compile(r"([！？])([^」』）】\s])")
+_RE_EXCL_SPACE = re.compile(r"([！？])([^！？」』）】\s])")
 
 
 def _parse_hex_color(hex_str: str) -> tuple:
@@ -1232,9 +1232,10 @@ def build_epub(
     # 表紙画像を生成（PNG優先、失敗時SVG）。常に (bytes, fmt) を返す
     cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
 
-    # 埋め込みフォントの準備
-    font_filename = Path(font_path).name if font_path else ""
-    font_name = Path(font_path).stem if font_path else ""
+    # 埋め込みフォントの準備（CSS注入対策: " \ 改行を除去）
+    _css_unsafe = re.compile(r'["\\\n\r]')
+    font_filename = _css_unsafe.sub("", Path(font_path).name) if font_path else ""
+    font_name     = _css_unsafe.sub("", Path(font_path).stem) if font_path else ""
 
     with zipfile.ZipFile(epub_path, "w", zipfile.ZIP_DEFLATED) as zf:
         # mimetype は圧縮なし・先頭に配置（ePub仕様）
@@ -4377,31 +4378,38 @@ def run_from_file(args):
 #  エントリポイント
 # ══════════════════════════════════════════
 
+def _host_matches(host: str, domain: str) -> bool:
+    """host が domain またはその正規サブドメインかを判定する。
+    'in' 演算子による部分一致（例: evil.syosetu.com.attacker.com）を防ぐ。
+    """
+    return host == domain or host.endswith("." + domain)
+
+
 def detect_site(url: str) -> str:
     """URLからサイト種別を判定する。'narou' | 'kakuyomu' | 'alphapolis' | 'estar' | 'noichigo' | 'hameln' | 'novema' | 'unknown'"""
     parsed = urlparse(url)
     host   = parsed.netloc.lower()
-    if "syosetu.com" in host:
+    if _host_matches(host, "syosetu.com"):
         return "narou"
-    if "kakuyomu.jp" in host:
+    if _host_matches(host, "kakuyomu.jp"):
         return "kakuyomu"
-    if "alphapolis.co.jp" in host:
+    if _host_matches(host, "alphapolis.co.jp"):
         return "alphapolis"
-    if "estar.jp" in host:
+    if _host_matches(host, "estar.jp"):
         return "estar"
-    if "no-ichigo.jp" in host:
+    if _host_matches(host, "no-ichigo.jp"):
         return "noichigo"
-    if "syosetu.org" in host:
+    if _host_matches(host, "syosetu.org"):
         return "hameln"
-    if "novema.jp" in host:
+    if _host_matches(host, "novema.jp"):
         return "novema"
-    if "novelup.plus" in host:
+    if _host_matches(host, "novelup.plus"):
         return "novelup"
-    if "sutekibungei.com" in host:
+    if _host_matches(host, "sutekibungei.com"):
         return "sutekibungei"
-    if "novel.daysneo.com" in host:
+    if _host_matches(host, "novel.daysneo.com"):
         return "days"
-    if "aozora.gr.jp" in host or "aozora-renewal.cloud" in host:
+    if _host_matches(host, "aozora.gr.jp") or _host_matches(host, "aozora-renewal.cloud"):
         return "aozora"
     return "unknown"
 
