@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 出力ファイル（ダウンロード結果）
+*.txt
+*.epub
+
+# OS
+.DS_Store
+Thumbs.db
