@@ -213,6 +213,17 @@ def safe_filename(title: str, fallback: str = "novel") -> str:
     return (name[:60] if name else fallback)
 
 
+def _apply_output_dir(args, base: str) -> str:
+    """--output-dir が指定されていれば出力先ディレクトリを適用して返す。
+    ディレクトリが存在しない場合は自動作成する。
+    """
+    d = getattr(args, "output_dir", None)
+    if not d:
+        return base
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, Path(base).name)
+
+
 def write_file(filename: str, header: str, sections: list, colophon: str,
                encoding: str = ENCODING, newline: str = "os"):
     """ヘッダー + 各話（改ページ区切り）+ 奥付 を書き出す。
@@ -1741,7 +1752,7 @@ def run_narou(args):
     print(f"  作者     : {author}")
     print(f"  総話数   : {len(episodes)} 話")
 
-    base     = args.output or safe_filename(title, "narou_novel")
+    base     = _apply_output_dir(args, args.output or safe_filename(title, "narou_novel"))
     txt_path = base + ".txt"
     epub_path= base + ".epub"
     header   = aozora_header(title, author, synopsis, source_url=base_url)
@@ -2202,7 +2213,7 @@ def run_kakuyomu(args):
         sections.append(f"{sec_title}\n\n{body}\n")
         epub_episodes.append({"title": heading, "body": body})
 
-    base      = args.output or safe_filename(info["title"], "kakuyomu_novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "kakuyomu_novel"))
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -2487,7 +2498,7 @@ def run_alphapolis(args):
         sections.append(f"{sec_title}\n\n{body}\n")
         epub_episodes.append({"title": ep["title"], "body": body})
 
-    base      = args.output or safe_filename(info["title"], "alphapolis_novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "alphapolis_novel"))
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -2692,7 +2703,7 @@ def run_estar(args):
         sections.append(f"{sec_title}\n\n{body}\n")
         epub_episodes.append({"title": ep_title, "body": body})
 
-    base      = args.output or safe_filename(info["title"], "estar_novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "estar_novel"))
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -2937,7 +2948,7 @@ def run_hameln(args):
                              source_url=work_url)
     colophon = aozora_colophon(info["title"], work_url, "ハーメルン")
 
-    base      = args.output or safe_filename(info["title"], "hameln_novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "hameln_novel"))
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -3170,7 +3181,7 @@ def run_noichigo(args):
                              source_url=work_url)
     colophon = aozora_colophon(info["title"], work_url, "野いちご")
 
-    base      = args.output or safe_filename(info["title"], "noichigo_novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "noichigo_novel"))
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -3371,7 +3382,7 @@ def run_novema(args):
                              source_url=work_url)
     colophon = aozora_colophon(info["title"], work_url, "ノベマ！")
 
-    base      = args.output or safe_filename(info["title"], "novema_novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novema_novel"))
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -3589,7 +3600,7 @@ def run_novelup(args):
                              source_url=work_url)
     colophon = aozora_colophon(info["title"], work_url, "ノベルアップ＋")
 
-    base      = args.output or safe_filename(info["title"], "novelup_novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novelup_novel"))
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -3794,7 +3805,7 @@ def run_sutekibungei(args):
                              source_url=work_url)
     colophon = aozora_colophon(info["title"], work_url, "ステキブンゲイ")
 
-    base      = args.output or safe_filename(info["title"], "suteki_novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "suteki_novel"))
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -4020,7 +4031,7 @@ def run_days(args):
                              source_url=work_url)
     colophon = aozora_colophon(info["title"], work_url, "NOVEL DAYS")
 
-    base      = args.output or safe_filename(info["title"], "days_novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "days_novel"))
     txt_path  = base + ".txt"
     epub_path = base + ".epub"
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -4249,7 +4260,8 @@ def run_aozora(args):
     print(f"      ファイル名: {txt_filename}  エンコーディング: {enc}")
 
     # テキストファイルを UTF-8 に変換して保存
-    txt_path = (args.output + ".txt") if args.output else txt_filename
+    _aozora_base = _apply_output_dir(args, args.output or Path(txt_filename).stem)
+    txt_path = _aozora_base + ".txt"
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(text)
     print(f"\n✅ テキスト出力完了: {txt_path}  （{enc} → UTF-8 変換済み）")
@@ -4260,8 +4272,7 @@ def run_aozora(args):
         title  = ep_title  or info.get("title",  "（タイトル不明）")
         author = ep_author or info.get("author", "（著者不明）")
 
-        epub_path = (args.output + ".epub") if args.output \
-            else (Path(txt_path).stem + ".epub")
+        epub_path = _aozora_base + ".epub"
         build_epub(epub_path, title, author, "",
                    work_url, "青空文庫", episodes,
                    cover_bg=args.cover_bg,
@@ -4409,7 +4420,7 @@ def run_from_file(args):
     print(f"  作者     : {author}")
     print(f"  話数     : {len(episodes)} 話")
 
-    base      = args.output or safe_filename(title, "novel")
+    base      = _apply_output_dir(args, args.output or safe_filename(title, "novel"))
     epub_path = base + ".epub"
     cover_bg  = args.cover_bg or "#16234b"
 
@@ -4925,7 +4936,7 @@ def run_from_epub(args):
     print(f"  作者     : {author}")
     print(f"  話数     : {len(episodes)} 話")
 
-    base     = args.output or safe_filename(title, "novel")
+    base     = _apply_output_dir(args, args.output or safe_filename(title, "novel"))
     txt_path = base + ".txt"
 
     header   = aozora_header(title, author, synopsis, source_url)
@@ -5197,6 +5208,10 @@ def main():
     parser.add_argument("--toc-at-end", dest="toc_at_end", action="store_true",
                         help="目次ページを本文の後（奥付の後）に配置する。"
                              "デフォルトは表紙の直後・本文の前")
+    parser.add_argument("--output-dir", dest="output_dir", default=None, metavar="DIR",
+                        help="出力先ディレクトリを指定する（省略時はカレントディレクトリ）。"
+                             "指定したディレクトリが存在しない場合は自動作成する。"
+                             "ファイル名は従来通りタイトルから自動生成（-o と併用可）")
 
     args = parser.parse_args()
 
