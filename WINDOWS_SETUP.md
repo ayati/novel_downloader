@@ -13,8 +13,9 @@ novel_downloader を Windows で使うための環境設定手順です。
 4. [ライブラリのインストール](#4-ライブラリのインストール)
 5. [動作確認](#5-動作確認)
 6. [実際に使ってみる](#6-実際に使ってみる)
-7. [ハーメルンを使う場合の追加設定](#7-ハーメルンを使う場合の追加設定)
-8. [よくあるエラーと対処法](#8-よくあるエラーと対処法)
+7. [生成した ePub3 で読書する](#7-生成した-epub3-で読書する)
+8. [ハーメルンを使う場合の追加設定](#8-ハーメルンを使う場合の追加設定)
+9. [よくあるエラーと対処法](#9-よくあるエラーと対処法)
 
 ---
 
@@ -189,7 +190,61 @@ Windows 10/11 には MS 明朝・BIZ UDP 明朝などの日本語フォントが
 
 ---
 
-## 7. ハーメルンを使う場合の追加設定
+## 7. 生成した ePub3 で読書する
+
+生成した `.epub` ファイルは、以下のサービスに取り込むと PC・スマートフォンで快適に読めます。
+
+---
+
+### Google Play ブックス（おすすめ）
+
+PC のブラウザとスマホアプリの両方で読めるクラウドサービスです。
+
+**アップロード手順：**
+
+1. ブラウザで [https://play.google.com/books](https://play.google.com/books) を開く（Google アカウントでログイン）
+2. 右上の「ファイルをアップロード」をクリック
+3. 生成した `.epub` ファイルを選択してアップロード
+4. しばらくするとマイライブラリに追加される
+
+**読み方：**
+
+| 環境 | 方法 |
+|---|---|
+| PC（ブラウザ） | [play.google.com/books](https://play.google.com/books) でそのまま読める |
+| Android スマホ / タブレット | 「Google Play ブックス」アプリ（標準搭載）を開くと自動同期される |
+| iPhone / iPad | App Store で「Google Play ブックス」アプリをインストール後、同期される |
+
+> アップロードした本はクラウドに保存されるため、どのデバイスでも同じ本棚から読めます。
+> 縦書き・ルビともに正常に表示されます。
+
+---
+
+### Send to Kindle（Amazon Kindle）
+
+Amazon の Kindle 端末・アプリで読む方法です。
+
+**送信手順：**
+
+1. ブラウザで [https://www.amazon.co.jp/sendtokindle](https://www.amazon.co.jp/sendtokindle) を開く（Amazon アカウントでログイン）
+2. 「ファイルを選択」または画面にファイルをドラッグ＆ドロップ
+3. 送信先デバイス（Kindle 端末 / Kindle アプリ）を選択して「送信」
+4. 選択したデバイスに届く
+
+**読み方：**
+
+| 環境 | 方法 |
+|---|---|
+| Kindle 端末 | Wi-Fi 接続時に自動で届く |
+| PC（ブラウザ） | [read.amazon.co.jp](https://read.amazon.co.jp) で読める |
+| Android / iPhone / iPad | 「Amazon Kindle」アプリを開くと同期される |
+
+> novel_downloader が生成する ePub3 は iPad / iOS Kindle アプリの縦書き表示に対応しています。
+> Kindle 端末（E Ink）でも縦書き・ルビが正しく表示されます。
+
+---
+
+## 8. ハーメルンを使う場合の追加設定
 
 ハーメルン（syosetu.org）は Cloudflare による保護があるため、
 ブラウザ自動操作ライブラリ「Playwright」が別途必要です。
@@ -218,7 +273,7 @@ python novel_downloader.py https://syosetu.org/novel/XXXXXXX/
 
 ---
 
-## 8. よくあるエラーと対処法
+## 9. よくあるエラーと対処法
 
 ### `python は認識されていません`
 
