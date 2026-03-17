@@ -92,7 +92,7 @@ python novel_downloader.py --from-file mynovel.txt
 
 すべて 1 ファイルに集約されており、`# ══════` で区切られたセクションで構成される：
 
-1. **共通ユーティリティ**（行 ~115–223）：`normalize_tate`、`aozora_header/colophon/chapter_title`、`safe_filename`、`write_file` — 青空文庫書式テキストの共通処理。
+1. **共通ユーティリティ**（行 ~115–238）：`normalize_tate`、`aozora_header/colophon/chapter_title`、`safe_filename`、`_apply_output_dir`（行 216）、`write_file` — 青空文庫書式テキストの共通処理。`_apply_output_dir` は `--output-dir` を全 `run_*` 関数に横断適用するヘルパー。
 
 2. **ePub3 ビルダー**（行 ~228–1301）：stdlib の `zipfile` で ZIP を直接生成。主要関数：
    - `_apply_ruby_auto`（行 444）— 直前の漢字からルビ親文字を自動検出

@@ -178,6 +178,7 @@ python novel_downloader.py https://kakuyomu.jp/works/16817139555217983105
 |---|---|
 | テキストだけ欲しい（ePub 不要） | `python novel_downloader.py URL --no-epub` |
 | 出力ファイル名を指定したい | `python novel_downloader.py URL -o mynovel` |
+| 出力先フォルダを指定したい | `python novel_downloader.py URL --output-dir C:\Users\ユーザー名\novels` |
 | 途中から再開したい（なろう） | `python novel_downloader.py URL --resume 51` |
 | 特定の話数だけ取得したい | `python novel_downloader.py URL --start 1 --end 10` |
 | フォントを ePub に埋め込む | `python novel_downloader.py URL --font font\AyatiShowaSerif-Regular.ttf` |
@@ -312,10 +313,16 @@ python novel_downloader.py https://syosetu.org/novel/XXXXXXX/
 
 ### 出力ファイルがどこにあるかわからない
 
-コマンドを実行したフォルダ（作業フォルダ）に生成されます。
+`--output-dir` を指定しない場合は、コマンドを実行したフォルダ（作業フォルダ）に生成されます。
 コマンドプロンプトのタイトルバーや先頭行に表示されているパスが作業フォルダです。
 `C:\Users\（ユーザー名）\Documents\novel_downloader\` に作業フォルダを作った場合は
 そこに `作品タイトル.txt` と `作品タイトル.epub` が保存されます。
+
+出力先を固定したい場合は `--output-dir` で指定できます：
+```
+python novel_downloader.py URL --output-dir C:\Users\（ユーザー名）\Documents\novels
+```
+フォルダが存在しない場合は自動的に作成されます。
 
 ---
 
