@@ -96,34 +96,34 @@ python novel_downloader.py --from-file mynovel.txt
 2. **ePub3 ビルダー**（行 ~228–1301）：stdlib の `zipfile` で ZIP を直接生成。主要関数：
    - `_apply_ruby_auto`（行 444）— 直前の漢字からルビ親文字を自動検出
    - `_body_lines_to_xhtml`（行 497）— 青空文庫本文を XHTML（ruby タグ付き）に変換
-   - `make_cover_image`（行 1061）— PNG 表紙を生成（Pillow）、なければ SVG にフォールバック
-   - `build_epub`（行 1205）— XHTML / CSS / OPF を ZIP にまとめて ePub を組み立てる
+   - `make_cover_image`（行 1087）— PNG 表紙を生成（Pillow）、なければ SVG にフォールバック
+   - `build_epub`（行 1231）— XHTML / CSS / OPF を ZIP にまとめて ePub を組み立てる
 
-3. **なろうスクレイパー**（行 ~1302–1827）：stdlib `urllib` と独自 `HTMLParser` サブクラス（`NarouInfoParser`、`NarouEpisodeListParser`、`NarouEpisodeParser`）を使用。エントリポイント：`run_narou`（行 1693）。
+3. **なろうスクレイパー**（行 ~1303–1827）：stdlib `urllib` と独自 `HTMLParser` サブクラス（`NarouInfoParser`、`NarouEpisodeListParser`、`NarouEpisodeParser`）を使用。エントリポイント：`run_narou`（行 1721）。
 
-4. **カクヨムスクレイパー**（行 ~1828–2198）：`requests` + `BeautifulSoup` を使用。ページに埋め込まれた `__NEXT_DATA__` JSON からエピソード情報を取得し、取得できない場合は HTML パースにフォールバック。エントリポイント：`run_kakuyomu`（行 2095）。
+4. **カクヨムスクレイパー**（行 ~1828–2230）：`requests` + `BeautifulSoup` を使用。ページに埋め込まれた `__NEXT_DATA__` JSON からエピソード情報を取得し、取得できない場合は HTML パースにフォールバック。エントリポイント：`run_kakuyomu`（行 2124）。
 
-5. **アルファポリススクレイパー**（行 ~2199–2482）：`requests` + `BeautifulSoup` を使用。セッション Cookie 有無でサーバーのレスポンスが変わる：Cookie あり → 本文が `div#novelBody` に直接埋め込み、Cookie なし → JS の `.load()` で `/novel/episode_body` に AJAX POST。エントリポイント：`run_alphapolis`（行 2401）。
+5. **アルファポリススクレイパー**（行 ~2231–2480）：`requests` + `BeautifulSoup` を使用。セッション Cookie 有無でサーバーのレスポンスが変わる：Cookie あり → 本文が `div#novelBody` に直接埋め込み、Cookie なし → JS の `.load()` で `/novel/episode_body` に AJAX POST。エントリポイント：`run_alphapolis`（行 2431）。
 
-6. **エブリスタスクレイパー**（行 ~2483–2687）：`requests` + `BeautifulSoup` を使用。ビューアページ（`/novels/{id}/viewer?page=N`）の `window.__NUXT__` に 15 件ずつ本文が `novelPageId:"NNN",body:"..."` 形式で埋め込まれる。page=1, 16, 31, … と 15 ページ刻みでバッチ取得。エントリポイント：`run_estar`（行 2583）。
+6. **エブリスタスクレイパー**（行 ~2481–2720）：`requests` + `BeautifulSoup` を使用。ビューアページ（`/novels/{id}/viewer?page=N`）の `window.__NUXT__` に 15 件ずつ本文が `novelPageId:"NNN",body:"..."` 形式で埋め込まれる。page=1, 16, 31, … と 15 ページ刻みでバッチ取得。エントリポイント：`run_estar`（行 2614）。
 
-7. **ハーメルンスクレイパー**（行 ~2688–2930）：`playwright` + `BeautifulSoup` を使用。トップページは `requests` で取得（CF保護なし）。エピソードページは Cloudflare Managed Challenge があるため、Playwright で各話ごとに新しい browser context を作成し 5 秒待機して取得。本文は `div#honbun`、前書きは `div#maegaki`、後書きは `div#atogaki`。エントリポイント：`run_hameln`（行 2784）。
+7. **ハーメルンスクレイパー**（行 ~2721–2960）：`playwright` + `BeautifulSoup` を使用。トップページは `requests` で取得（CF保護なし）。エピソードページは Cloudflare Managed Challenge があるため、Playwright で各話ごとに新しい browser context を作成し 5 秒待機して取得。本文は `div#honbun`、前書きは `div#maegaki`、後書きは `div#atogaki`。エントリポイント：`run_hameln`（行 2816）。
 
-8. **野いちごスクレイパー**（行 ~2931–3162）：`requests` + `BeautifulSoup` を使用。作品トップページの `div.bookChapterList` から章開始ページ番号と章タイトルを取得し、各ページ（`/book/{work_id}/{page_no}`）を個別フェッチ。`--start`/`--end` は章番号で指定。エントリポイント：`run_noichigo`（行 3034）。
+8. **野いちごスクレイパー**（行 ~2961–3163）：`requests` + `BeautifulSoup` を使用。作品トップページの `div.bookChapterList` から章開始ページ番号と章タイトルを取得し、各ページ（`/book/{work_id}/{page_no}`）を個別フェッチ。`--start`/`--end` は章番号で指定。エントリポイント：`run_noichigo`（行 3067）。
 
-9. **ノベマ！スクレイパー**（行 ~3163–3362）：`requests` + `BeautifulSoup` を使用。野いちごと同構造。`div.bookChapterList` の2階層 `<ul>` からエピソード一覧（章グループ内の個別エピソード、または単独エピソード）を取得し、各ページ（`/book/{work_id}/{page_num}`）を個別フェッチ。本文は `article.bookText > div`、`<br>` 区切り。`noichigo_html_to_aozora` を共用。エントリポイント：`run_novema`（行 3265）。
+9. **ノベマ！スクレイパー**（行 ~3164–3363）：`requests` + `BeautifulSoup` を使用。野いちごと同構造。`div.bookChapterList` の2階層 `<ul>` からエピソード一覧（章グループ内の個別エピソード、または単独エピソード）を取得し、各ページ（`/book/{work_id}/{page_num}`）を個別フェッチ。本文は `article.bookText > div`、`<br>` 区切り。`noichigo_html_to_aozora`（行 3029）を共用。エントリポイント：`run_novema`（行 3299）。
 
-10. **ノベルアップ＋スクレイパー**（行 ~3363–3579）：`requests` + `BeautifulSoup` を使用。サーバーレンダリングで JS 不要。og:title から「タイトル（著者名）」形式で情報取得。`div.episodeList` 内の `a.episodeTitle` リンクからエピソード一覧取得。本文は `p#episode_content`（`\n` 区切り）、前書きは `div.novel_foreword`、後書きは `div.novel_afterword`。Ruby は `<rb>/<rt>` 形式。エントリポイント：`run_novelup`（行 3493）。
+10. **ノベルアップ＋スクレイパー**（行 ~3364–3580）：`requests` + `BeautifulSoup` を使用。サーバーレンダリングで JS 不要。og:title から「タイトル（著者名）」形式で情報取得。`div.episodeList` 内の `a.episodeTitle` リンクからエピソード一覧取得。本文は `p#episode_content`（`\n` 区切り）、前書きは `div.novel_foreword`、後書きは `div.novel_afterword`。Ruby は `<rb>/<rt>` 形式。エントリポイント：`run_novelup`（行 3528）。
 
-11. **ステキブンゲイスクレイパー**（行 ~3580–3783）：`requests` + `BeautifulSoup` を使用。Nuxt.js SSR で JS 不要。タイトルは og:title（" - ステキブンゲイ" サフィックスを除去）、あらすじは og:description、著者は `/users/` へのリンクテキスト（フォールバック: `window.__NUXT__` の `"name":"..."` パターン）。エピソード一覧は `a[href^="/novels/{uuid}/{uuid}"]` リンク。本文は `div#episodeBody`（`\n` 区切り）。Ruby は `<rb>/<rt>` 形式。エントリポイント：`run_sutekibungei`（行 3700）。
+11. **ステキブンゲイスクレイパー**（行 ~3581–3784）：`requests` + `BeautifulSoup` を使用。Nuxt.js SSR で JS 不要。タイトルは og:title（" - ステキブンゲイ" サフィックスを除去）、あらすじは og:description、著者は `/users/` へのリンクテキスト（フォールバック: `window.__NUXT__` の `"name":"..."` パターン）。エピソード一覧は `a[href^="/novels/{uuid}/{uuid}"]` リンク。本文は `div#episodeBody`（`\n` 区切り）。Ruby は `<rb>/<rt>` 形式。エントリポイント：`run_sutekibungei`（行 3736）。
 
-12. **NOVEL DAYS スクレイパー**（行 ~3784–4008）：`requests` + `BeautifulSoup` を使用。SSR で JS 不要（講談社運営）。タイトルは `div.detail h2`、著者は `div.author a span.f18px`、あらすじは `p.readmore`（`<br>` → 改行）。エピソード一覧は `div.contents ol li a[href*="/works/episode/"]`。本文は `div.episode div.inner`（`<br>` → 改行）。Ruby は `<rb>/<rt>/<rp>` 形式。エピソードURLが指定された場合は作品トップページリンクを自動検出。エントリポイント：`run_days`（行 3912）。
+12. **NOVEL DAYS スクレイパー**（行 ~3785–4057）：`requests` + `BeautifulSoup` を使用。SSR で JS 不要（講談社運営）。タイトルは `div.detail h2`、著者は `div.author a span.f18px`、あらすじは `p.readmore`（`<br>` → 改行）。エピソード一覧は `div.contents ol li a[href*="/works/episode/"]`。本文は `div.episode div.inner`（`<br>` → 改行）。Ruby は `<rb>/<rt>/<rp>` 形式。エピソードURLが指定された場合は作品トップページリンクを自動検出。エントリポイント：`run_days`（行 3949）。
 
-13. **青空文庫スクレイパー**（行 ~4001–4237）：stdlib のみ（urllib + zipfile + re）で動作。旧サイト（`aozora.gr.jp`）・新サイト（`aozora-renewal.cloud`）の両方に対応。図書カードページからルビ付き ZIP（`_ruby_` 優先）の URL を抽出し、ZIP をダウンロード・展開。テキストファイルはエンコーディングを自動判定（ShiftJIS → CP932 → UTF-8 → EUC-JP）して UTF-8 に変換して保存。ePub 生成時は `aozora_text_to_episodes()`（行 4113）でタイトル・著者を先頭2非空行から、本文を区切り線ブロック後・底本情報前から抽出し、`［＃改ページ］` で章分割。`｜` ルビ開始記号を除去してから `build_epub()` に渡す。テキストページURL（`/files/{id}_{num}.html`）を指定した場合は図書カードページ URL へ正規化。エントリポイント：`run_aozora`（行 4181）。
+13. **青空文庫スクレイパー**（行 ~4058–4276）：stdlib のみ（urllib + zipfile + re）で動作。旧サイト（`aozora.gr.jp`）・新サイト（`aozora-renewal.cloud`）の両方に対応。図書カードページからルビ付き ZIP（`_ruby_` 優先）の URL を抽出し、ZIP をダウンロード・展開。テキストファイルはエンコーディングを自動判定（ShiftJIS → CP932 → UTF-8 → EUC-JP）して UTF-8 に変換して保存。ePub 生成時は `aozora_text_to_episodes()`（行 4151）でタイトル・著者を先頭2非空行から、本文を区切り線ブロック後・底本情報前から抽出し、`［＃改ページ］` で章分割。`｜` ルビ開始記号を除去してから `build_epub()` に渡す。テキストページURL（`/files/{id}_{num}.html`）を指定した場合は図書カードページ URL へ正規化。エントリポイント：`run_aozora`（行 4219）。
 
-14. **ローカルファイルモード**（行 ~4238–4387）：`parse_aozora_text`（行 4238）で既存の青空文庫 `.txt` からタイトル・著者・あらすじを抽出し、`build_epub` に渡す。エントリポイント：`run_from_file`（行 4321）。
+14. **ローカルファイルモード**（行 ~4277–4427）：`parse_aozora_text`（行 4277）で既存の青空文庫 `.txt` からタイトル・著者・あらすじを抽出し、`build_epub` に渡す。エントリポイント：`run_from_file`（行 4360）。
 
-15. **ローカルePub3 → テキスト変換**（行 ~4550–4935）：stdlib のみ（`zipfile` + `re` + `html` + `zlib`）で動作。
+15. **ローカルePub3 → テキスト変換**（行 ~4428–4950）：stdlib のみ（`zipfile` + `re` + `html` + `zlib`）で動作。
    - `_read_streaming_zip()`：中央ディレクトリなしのストリーミング ZIP（Kindle 配信 ePub 等）をローカルヘッダ走査で読み込む
    - `_ZipLike`：`zipfile.ZipFile` 互換ラッパー（`_read_streaming_zip` の戻り値をラップ）
    - `_ruby_to_aozora()`：標準形式・Kobo `<span>` 分割形式の両方に対応した `<ruby>` → `《》` 変換

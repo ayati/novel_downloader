@@ -236,11 +236,18 @@ Amazon の Kindle 端末・アプリで読む方法です。
 | 環境 | 方法 |
 |---|---|
 | Kindle 端末 | Wi-Fi 接続時に自動で届く |
-| PC（ブラウザ） | [read.amazon.co.jp](https://read.amazon.co.jp) で読める |
 | Android / iPhone / iPad | 「Amazon Kindle」アプリを開くと同期される |
 
 > novel_downloader が生成する ePub3 は iPad / iOS Kindle アプリの縦書き表示に対応しています。
 > Kindle 端末（E Ink）でも縦書き・ルビが正しく表示されます。
+
+**送信済みファイルの削除：**
+
+不要になったパーソナルドキュメントは、PC ブラウザから「コンテンツと端末の管理」で削除できます。
+
+[https://www.amazon.co.jp/hz/mycd/digital-console/contentlist/pdocs/dateDsc/](https://www.amazon.co.jp/hz/mycd/digital-console/contentlist/pdocs/dateDsc/)
+
+削除したいタイトルの「…」メニューから「削除」を選択します。
 
 ---
 
