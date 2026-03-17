@@ -635,16 +635,25 @@ def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
 
 
 def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
-    """ナビゲーションドキュメント（nav.xhtml）を生成する。"""
-    # toc: 画像表紙ありなら image-cover を先頭リンクに
-    toc_items = []
+    """ナビゲーションドキュメント（nav.xhtml）を生成する。
+    表紙・タイトルページ・奥付はナンバリングなしのリンクのみ、
+    本文エピソードは 1 から始まる番号付きリストで表示する。
+    """
+    # 前付け（ナンバリングなし）
+    prelim_items = []
     if cover_fmt:
-        toc_items.append('<li><a href="image-cover.xhtml">表紙</a></li>')
-    toc_items.append('<li><a href="cover.xhtml">タイトルページ</a></li>')
+        prelim_items.append('<li class="toc-prelim"><a href="image-cover.xhtml">表紙</a></li>')
+    prelim_items.append('<li class="toc-prelim"><a href="cover.xhtml">タイトルページ</a></li>')
+
+    # 本文エピソード（番号付き、全項目に value を明示して採番を確定）
+    ep_items = []
     for i, t in enumerate(ep_titles):
-        toc_items.append(f'<li><a href="ep{i+1:04d}.xhtml">{_esc(t)}</a></li>')
-    toc_items.append('<li><a href="colophon.xhtml">奥付</a></li>')
-    toc_str = "\n    ".join(toc_items)
+        ep_items.append(f'<li value="{i+1}"><a href="ep{i+1:04d}.xhtml">{_esc(t)}</a></li>')
+
+    # 後付け（ナンバリングなし）
+    back_items = ['<li class="toc-prelim"><a href="colophon.xhtml">奥付</a></li>']
+
+    toc_str = "\n    ".join(prelim_items + ep_items + back_items)
 
     # landmarks: カバー・本文開始・目次をリーダーが認識するための必須ナビ
     cover_href = "image-cover.xhtml" if cover_fmt else "cover.xhtml"
@@ -664,7 +673,13 @@ def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
 <html xmlns="http://www.w3.org/1999/xhtml"
       xmlns:epub="http://www.idpf.org/2007/ops"
       xml:lang="ja" lang="ja">
-<head><meta charset="UTF-8"/><title>{_esc(title)}</title></head>
+<head><meta charset="UTF-8"/><title>{_esc(title)}</title>
+<link rel="stylesheet" type="text/css" href="css/novel.css"/>
+<style>
+  #toc ol {{ list-style: decimal; }}
+  #toc li.toc-prelim {{ list-style: none; }}
+</style>
+</head>
 <body>
 <nav epub:type="toc" id="toc">
   <h1>目次</h1>
@@ -679,11 +694,13 @@ def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
 
 
 def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
-              cover_fmt: str = "", font_filename: str = "") -> str:
+              cover_fmt: str = "", font_filename: str = "",
+              toc_at_end: bool = False) -> str:
     """
     OPF（package.opf）を生成する。
     cover_fmt: "png" | "svg" | "" (表紙画像なし)
     font_filename: 埋め込みフォントのファイル名（例: "AyatiShowaSerif-Regular.otf"）
+    toc_at_end: True のとき目次を奥付の後に配置（デフォルト: 表紙の後・本文の前）
     """
     today = date.today().strftime("%Y-%m-%d")
 
@@ -724,6 +741,10 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
         spine_items.append('<itemref idref="image-cover" linear="yes"/>')
     spine_items.append('<itemref idref="cover"/>')
 
+    # 目次を前配置（デフォルト）: 表紙の直後・本文の前
+    if not toc_at_end:
+        spine_items.append('<itemref idref="nav"/>')
+
     for i, _ in enumerate(ep_titles):
         n = i + 1
         manifest_items.append(
@@ -734,6 +755,10 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
         '<item id="colophon" href="colophon.xhtml" media-type="application/xhtml+xml"/>'
     )
     spine_items.append('<itemref idref="colophon"/>')
+
+    # 目次を後配置（--toc-at-end）: 奥付の後
+    if toc_at_end:
+        spine_items.append('<itemref idref="nav"/>')
 
     manifest_str = "\n    ".join(manifest_items)
     spine_str    = "\n    ".join(spine_items)
@@ -756,6 +781,7 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     <meta property="rendition:layout">reflowable</meta>
     <meta property="rendition:orientation">auto</meta>
     <meta property="rendition:spread">none</meta>
+    <meta name="primary-writing-mode" content="horizontal-rl"/>
   </metadata>
 
   <manifest>
@@ -1212,6 +1238,7 @@ def build_epub(
     episodes: list,          # [{"title": str, "body": str}, ...]
     cover_bg: str = "#16234b",
     font_path: str = "",
+    toc_at_end: bool = False,
 ):
     """
     縦書きePub3ファイルを生成する。
@@ -1263,7 +1290,8 @@ def build_epub(
         # package.opf（cover_fmt / font_filename を渡して manifest/spine を決定）
         zf.writestr("OEBPS/package.opf",
                     _make_opf(title, author, book_id, ep_titles, cover_fmt,
-                              font_filename=font_filename))
+                              font_filename=font_filename,
+                              toc_at_end=toc_at_end))
 
         # nav.xhtml
         zf.writestr("OEBPS/nav.xhtml",
@@ -1817,7 +1845,8 @@ def run_narou(args):
         build_epub(epub_path, title, author, synopsis,
                    base_url, "小説家になろう", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
     if resume_from == 1:
@@ -2192,7 +2221,8 @@ def run_kakuyomu(args):
                    info.get("description", ""),
                    work_url, "カクヨム", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -2476,7 +2506,8 @@ def run_alphapolis(args):
                    info.get("description", ""),
                    work_url, "アルファポリス", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -2681,7 +2712,8 @@ def run_estar(args):
                    info["description"],
                    work_url, "エブリスタ", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -2924,7 +2956,8 @@ def run_hameln(args):
                    info["description"],
                    work_url, "ハーメルン", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -3156,7 +3189,8 @@ def run_noichigo(args):
                    info["description"],
                    work_url, "野いちご", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -3356,7 +3390,8 @@ def run_novema(args):
                    info["description"],
                    work_url, "ノベマ！", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -3573,7 +3608,8 @@ def run_novelup(args):
                    info["description"],
                    work_url, "ノベルアップ＋", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -3777,7 +3813,8 @@ def run_sutekibungei(args):
                    info["description"],
                    work_url, "ステキブンゲイ", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -4002,7 +4039,8 @@ def run_days(args):
                    info["description"],
                    work_url, "NOVEL DAYS", epub_episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -4227,7 +4265,8 @@ def run_aozora(args):
         build_epub(epub_path, title, author, "",
                    work_url, "青空文庫", episodes,
                    cover_bg=args.cover_bg,
-                   font_path=getattr(args, "font", "") or "")
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -4377,8 +4416,532 @@ def run_from_file(args):
     print(f"📖 ePub生成中...")
     build_epub(epub_path, title, author, synopsis,
                "", "ローカルファイル", episodes, cover_bg=cover_bg,
-               font_path=getattr(args, "font", "") or "")
+               font_path=getattr(args, "font", "") or "",
+               toc_at_end=getattr(args, "toc_at_end", False))
     print(f"✅ ePub出力完了: {epub_path}")
+
+
+# ══════════════════════════════════════════
+#  ローカルePub3 → 青空文庫テキスト変換
+# ══════════════════════════════════════════
+
+def _ruby_to_aozora(text: str) -> str:
+    """
+    <ruby>…</ruby> を 親文字《ルビ》 形式に変換する共通ヘルパー。
+    標準形式 <ruby>漢字<rt>かんじ</rt></ruby> と
+    Kobo 形式 <ruby><span>編</span><rt>へん</rt><span>年</span><rt>ねん</rt>…</ruby>
+    の両方に対応する。
+    """
+    text = re.sub(r'<rp>[^<]*</rp>', '', text)
+
+    def _conv(m):
+        inner = m.group(1)
+        readings = re.findall(r'<rt>(.*?)</rt>', inner, re.DOTALL)
+        base = re.sub(r'<rt>.*?</rt>', '', inner, flags=re.DOTALL)
+        base = re.sub(r'<[^>]+>', '', base).strip()
+        return f"{base}《{''.join(readings)}》"
+
+    return re.sub(r'<ruby>(.*?)</ruby>', _conv, text, flags=re.DOTALL)
+
+
+def _epub_xhtml_to_episode(xhtml: str) -> tuple:
+    """
+    エピソードXHTMLを解析してエピソードタイトルと本文テキスト（青空文庫書式）を返す。
+    <ruby>漢字<rt>かんじ</rt></ruby> → 漢字《かんじ》 に逆変換。
+    Returns: (ep_title, body_text)
+    """
+    import html as _html
+
+    def strip_tags(text: str) -> str:
+        return re.sub(r'<[^>]+>', '', text)
+
+    ep_title = ""
+    m = re.search(r'<h2[^>]*class="ep-title"[^>]*>(.*?)</h2>', xhtml, re.DOTALL)
+    if m:
+        ep_title = _html.unescape(strip_tags(m.group(1))).strip()
+
+    body_lines = []
+    for pm in re.finditer(r'<p class="(body-line|body-blank)">(.*?)</p>', xhtml, re.DOTALL):
+        if pm.group(1) == "body-blank":
+            body_lines.append("")
+        else:
+            line = _ruby_to_aozora(pm.group(2))
+            line = strip_tags(line)
+            line = _html.unescape(line)
+            body_lines.append(line)
+
+    while body_lines and not body_lines[-1]:
+        body_lines.pop()
+
+    return ep_title, "\n".join(body_lines)
+
+
+def _epub_cover_to_synopsis(xhtml: str) -> str:
+    """cover.xhtml を解析してあらすじテキストを返す。"""
+    import html as _html
+
+    def strip_tags(text: str) -> str:
+        return re.sub(r'<[^>]+>', '', text)
+
+    syn_m = re.search(r'<div class="cover-synopsis">(.*?)</div>', xhtml, re.DOTALL)
+    if not syn_m:
+        return ""
+
+    lines = []
+    for pm in re.finditer(r'<p class="(body-line|body-blank)">(.*?)</p>', syn_m.group(1), re.DOTALL):
+        if pm.group(1) == "body-blank":
+            lines.append("")
+        else:
+            lines.append(_html.unescape(strip_tags(pm.group(2))).strip())
+    return "\n".join(lines).strip()
+
+
+def _epub_colophon_to_source(xhtml: str) -> tuple:
+    """
+    colophon.xhtml を解析して (source_url, site_name) を返す。
+    Returns: (source_url, site_name)
+    """
+    import html as _html
+
+    source_url = ""
+    site_name = ""
+
+    m = re.search(r'底本：「[^」]*」([^<\n]*)', xhtml)
+    if m:
+        site_name = _html.unescape(m.group(1)).strip()
+
+    m = re.search(r'<a href="([^"]+)"', xhtml)
+    if m:
+        source_url = _html.unescape(m.group(1))
+
+    return source_url, site_name
+
+
+def _epub_generic_to_text(xhtml: str) -> tuple:
+    """
+    汎用 XHTML を解析してエピソードタイトルと本文テキストを返す。
+    <ruby>漢字<rt>かんじ</rt></ruby> → 漢字《かんじ》 に変換。
+    Returns: (ep_title, body_text)
+    """
+    import html as _html
+
+    _BR = '\x00'  # <br> の一時プレースホルダ
+
+    def _process_inline(text: str) -> str:
+        """インライン HTML を青空文庫テキストに変換する共通処理。
+        <br> → 改行、それ以外のタグ内改行 → 空白（HTML 的空白正規化）。
+        """
+        # <br> → プレースホルダ（他の改行と区別）
+        text = re.sub(r'<br\s*/?>', _BR, text, flags=re.IGNORECASE)
+        # HTML 的空白正規化: タグ内の \r\n は表示上の空白に過ぎないため除去
+        text = re.sub(r'[\r\n]+', ' ', text)
+        # ruby → 《》 変換・タグ除去・実体参照復元
+        text = _ruby_to_aozora(text)
+        text = re.sub(r'<[^>]+>', '', text)
+        text = _html.unescape(text)
+        text = text.replace('\xa0', '')
+        # 複数空白（タブ含む）を1つにまとめる
+        text = re.sub(r'[ \t]+', ' ', text)
+        # 日本語文字に隣接するスペースを除去（HTML空白正規化の副産物）
+        text = re.sub(r' (?=[\u3000-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF])'
+                      r'|(?<=[\u3000-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]) ', '', text)
+        return text
+
+    # タイトル: h1/h2 優先、なければ <title> から
+    ep_title = ""
+    for tag in ('h1', 'h2'):
+        m = re.search(fr'<{tag}[^>]*>(.*?)</{tag}>', xhtml, re.DOTALL | re.IGNORECASE)
+        if m:
+            ep_title = _process_inline(m.group(1)).strip()
+            break
+    if not ep_title:
+        m = re.search(r'<title[^>]*>(.*?)</title>', xhtml, re.DOTALL | re.IGNORECASE)
+        if m:
+            ep_title = _process_inline(m.group(1)).strip()
+
+    # 本文: body 内の p タグを全収集
+    body_m = re.search(r'<body[^>]*>(.*?)</body>', xhtml, re.DOTALL | re.IGNORECASE)
+    body_src = body_m.group(1) if body_m else xhtml
+    body_lines = []
+    for pm in re.finditer(r'<p[^>]*>(.*?)</p>', body_src, re.DOTALL | re.IGNORECASE):
+        content = _process_inline(pm.group(1))
+        for line in content.split(_BR):
+            body_lines.append(line.rstrip())
+
+    while body_lines and not body_lines[-1]:
+        body_lines.pop()
+
+    return ep_title, "\n".join(body_lines)
+
+
+def _extract_synopsis_from_text(text: str) -> str:
+    """本文テキストから【あらすじ】ブロックを抽出する。"""
+    lines = text.split('\n')
+    synopsis_lines = []
+    in_synopsis = False
+    for line in lines:
+        stripped = line.strip()
+        if '【あらすじ】' in stripped:
+            in_synopsis = True
+            continue
+        if in_synopsis:
+            if re.match(r'【[^】]+】', stripped):
+                break
+            synopsis_lines.append(line)
+    return '\n'.join(synopsis_lines).strip()
+
+
+def _read_streaming_zip(path: str) -> dict:
+    """
+    中央ディレクトリ（Central Directory）を持たないストリーミングZIPを読み込む。
+    ローカルファイルヘッダを順に走査し、STORED/DEFLATE ファイルを解凍して
+    {filename: bytes} 辞書を返す。
+    """
+    import zlib as _zlib
+    import struct as _struct
+
+    with open(path, "rb") as _f:
+        data = _f.read()
+
+    files: dict = {}
+    pos = 0
+    n = len(data)
+
+    while pos <= n - 30:
+        if data[pos:pos + 4] != b'PK\x03\x04':
+            pos += 1
+            continue
+
+        # ローカルファイルヘッダ解析 (30バイト固定部)
+        flags      = _struct.unpack_from('<H', data, pos + 6)[0]
+        method     = _struct.unpack_from('<H', data, pos + 8)[0]
+        comp_size  = _struct.unpack_from('<I', data, pos + 18)[0]
+        fname_len  = _struct.unpack_from('<H', data, pos + 26)[0]
+        extra_len  = _struct.unpack_from('<H', data, pos + 28)[0]
+
+        header_end = pos + 30 + fname_len + extra_len
+        if header_end > n:
+            break
+
+        fname_raw = data[pos + 30: pos + 30 + fname_len]
+        try:
+            fname = fname_raw.decode('utf-8')
+        except UnicodeDecodeError:
+            fname = fname_raw.decode('cp437', errors='replace')
+
+        has_dd = bool(flags & 0x08)   # bit3: data descriptor 付き
+        pos = header_end               # データ開始位置
+
+        if method == 0:  # STORED
+            if has_dd and comp_size == 0:
+                # PK\x07\x08 または次の PK\x03\x04 まで
+                end = pos
+                while end <= n - 4:
+                    sig = data[end:end + 4]
+                    if sig == b'PK\x07\x08':
+                        files[fname] = data[pos:end]
+                        end += 16
+                        break
+                    if sig in (b'PK\x03\x04', b'PK\x01\x02', b'PK\x05\x06'):
+                        files[fname] = data[pos:end]
+                        break
+                    end += 1
+                else:
+                    files[fname] = data[pos:n]
+                    end = n
+                pos = end
+            else:
+                files[fname] = data[pos:pos + comp_size]
+                pos += comp_size
+                if has_dd:
+                    pos += 16 if data[pos:pos + 4] == b'PK\x07\x08' else 12
+
+        elif method == 8:  # DEFLATE
+            if has_dd and comp_size == 0:
+                # 圧縮サイズ不明: EOF まで解凍し unused_data で消費量を計算
+                remaining = data[pos:]
+                decomp = _zlib.decompressobj(wbits=-15)
+                try:
+                    out = decomp.decompress(remaining)
+                    consumed = len(remaining) - len(decomp.unused_data)
+                    pos += consumed
+                    files[fname] = out
+                except _zlib.error:
+                    files[fname] = b''
+                    nxt = data.find(b'PK\x03\x04', pos)
+                    pos = nxt if nxt != -1 else n
+                # data descriptor をスキップ
+                if pos <= n - 4 and data[pos:pos + 4] == b'PK\x07\x08':
+                    pos += 16
+                elif pos <= n - 12:
+                    pos += 12
+            else:
+                compressed = data[pos:pos + comp_size]
+                try:
+                    files[fname] = _zlib.decompress(compressed, wbits=-15)
+                except _zlib.error:
+                    files[fname] = b''
+                pos += comp_size
+                if has_dd:
+                    pos += 16 if data[pos:pos + 4] == b'PK\x07\x08' else 12
+
+        else:
+            # サポート外圧縮: 次の PK ヘッダまでスキップ
+            if has_dd and comp_size == 0:
+                nxt = pos
+                while nxt <= n - 4:
+                    if data[nxt:nxt + 4] in (b'PK\x03\x04', b'PK\x01\x02', b'PK\x05\x06'):
+                        break
+                    nxt += 1
+                pos = nxt
+            else:
+                pos += comp_size
+                if has_dd:
+                    pos += 16 if data[pos:pos + 4] == b'PK\x07\x08' else 12
+
+    return files
+
+
+class _ZipLike:
+    """_read_streaming_zip() の戻り値を zipfile.ZipFile 互換インタフェースでラップする。"""
+
+    def __init__(self, files: dict):
+        self._files = files
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def namelist(self) -> list:
+        return list(self._files.keys())
+
+    def read(self, name: str) -> bytes:
+        return self._files[name]
+
+
+def parse_epub(epub_path: str) -> tuple:
+    """
+    ePub3ファイルを解析して (title, author, synopsis, source_url, site_name, episodes) を返す。
+    このツールが出力した ePub3（ep*.xhtml 形式）を優先処理し、
+    それ以外の汎用 ePub3 は OPF spine 順に p タグを抽出するフォールバック処理を行う。
+    ストリーミングZIP（中央ディレクトリなし）には _read_streaming_zip でフォールバック。
+    episodes: [{"title": str, "body": str}, ...]
+    """
+    import html as _html
+
+    try:
+        _zip_ctx = zipfile.ZipFile(epub_path, "r")
+    except zipfile.BadZipFile:
+        _zip_ctx = _ZipLike(_read_streaming_zip(epub_path))
+
+    with _zip_ctx as zf:
+        namelist = zf.namelist()
+
+        # container.xml から OPF パスを取得
+        opf_path = "OEBPS/package.opf"
+        if "META-INF/container.xml" in namelist:
+            try:
+                container = zf.read("META-INF/container.xml").decode("utf-8")
+                m = re.search(r'full-path="([^"]+)"', container)
+                if m:
+                    opf_path = m.group(1)
+            except Exception:
+                pass
+
+        # OPF のディレクトリ（spine href を絶対パスに変換するため）
+        opf_dir = str(Path(opf_path).parent)
+        if opf_dir == ".":
+            opf_dir = ""
+
+        # OPF からタイトル・著者・manifest・spine を取得
+        title, author = "", ""
+        nav_href_rel = ""
+        spine_hrefs = []   # OPF 相対パス
+        manifest = {}      # id -> {"href": str, "props": str}
+
+        if opf_path in namelist:
+            opf = zf.read(opf_path).decode("utf-8")
+
+            m = re.search(r'<dc:title[^>]*>(.*?)</dc:title>', opf, re.DOTALL)
+            if m:
+                title = _html.unescape(m.group(1)).strip()
+            m = re.search(r'<dc:creator[^>]*>(.*?)</dc:creator>', opf, re.DOTALL)
+            if m:
+                author = _html.unescape(m.group(1)).strip()
+
+            for im in re.finditer(r'<item\b([^>]+?)/?>', opf, re.DOTALL):
+                attrs = im.group(1)
+                id_m    = re.search(r'\bid="([^"]+)"', attrs)
+                href_m  = re.search(r'\bhref="([^"]+)"', attrs)
+                props_m = re.search(r'\bproperties="([^"]+)"', attrs)
+                if id_m and href_m:
+                    props = props_m.group(1) if props_m else ""
+                    manifest[id_m.group(1)] = {"href": href_m.group(1), "props": props}
+                    if "nav" in props:
+                        nav_href_rel = href_m.group(1)
+
+            for sr in re.finditer(r'<itemref\b[^>]*\bidref="([^"]+)"', opf):
+                idref = sr.group(1)
+                if idref in manifest:
+                    spine_hrefs.append(manifest[idref]["href"])
+
+        def full_zip_path(rel_href: str) -> str:
+            """OPF 相対パス → ZIP 内フルパスに変換"""
+            return (opf_dir + "/" + rel_href) if opf_dir else rel_href
+
+        # nav ファイルを解析して {zip_path → chapter_title} マップを構築
+        # nav href は nav ファイル自身からの相対パスなので nav のディレクトリを基点にする
+        _NAV_SKIP_TITLES = frozenset({
+            "表紙", "カバー", "奥付", "目次", "CONTENTS", "TOC",
+            "ナビゲーション", "Navigation", "タイトルページ",
+        })
+        nav_title_map: dict = {}  # zip_path → chapter_title
+        if nav_href_rel:
+            nav_zip = full_zip_path(nav_href_rel)
+            nav_base = str(Path(nav_zip).parent)  # nav ファイルのあるディレクトリ
+            if nav_zip in namelist:
+                nav_xhtml = zf.read(nav_zip).decode("utf-8", errors="replace")
+                for nm in re.finditer(r'<a\b[^>]*href="([^"]+)"[^>]*>([^<]+)</a>',
+                                      nav_xhtml):
+                    href_raw   = nm.group(1)
+                    nav_label  = _html.unescape(nm.group(2)).strip()
+                    href_file  = href_raw.split('#')[0]  # アンカーを除去
+                    fp2 = (nav_base + "/" + href_file) if nav_base else href_file
+                    if fp2 not in nav_title_map:
+                        nav_title_map[fp2] = nav_label
+
+        # ── このツール独自形式かチェック（OEBPS/ep*.xhtml パターン） ──────
+        own_ep_paths = sorted(
+            n for n in namelist if re.match(r'OEBPS/ep\d+\.xhtml$', n)
+        )
+
+        if own_ep_paths:
+            synopsis = ""
+            if "OEBPS/cover.xhtml" in namelist:
+                synopsis = _epub_cover_to_synopsis(
+                    zf.read("OEBPS/cover.xhtml").decode("utf-8")
+                )
+            source_url, site_name = "", ""
+            if "OEBPS/colophon.xhtml" in namelist:
+                source_url, site_name = _epub_colophon_to_source(
+                    zf.read("OEBPS/colophon.xhtml").decode("utf-8")
+                )
+            episodes = []
+            for ep_path in own_ep_paths:
+                ep_title, body_text = _epub_xhtml_to_episode(
+                    zf.read(ep_path).decode("utf-8")
+                )
+                if ep_title or body_text:
+                    episodes.append({"title": ep_title, "body": body_text})
+
+        else:
+            # ── 汎用形式: OPF spine 順に p タグを抽出 ──────────────────
+            synopsis = ""
+            source_url, site_name = "", ""
+            episodes = []
+
+            # nav に「真のチャプターエントリ（skip対象でなく書名とも異なる）」が
+            # 2件以上あれば nav 完備と判断し、nav 未登録ファイルをスキップする
+            genuine_nav_count = sum(
+                1 for t in nav_title_map.values()
+                if t not in _NAV_SKIP_TITLES and t != title
+            )
+            nav_only_mode = genuine_nav_count >= 2
+
+            for href_rel in spine_hrefs:
+                if href_rel == nav_href_rel:
+                    continue
+                fp = full_zip_path(href_rel)
+                if fp not in namelist:
+                    continue
+
+                nav_title = nav_title_map.get(fp, "")
+
+                # nav にスキップ対象タイトル（表紙・奥付・目次等）として登録されていればスキップ
+                if nav_title in _NAV_SKIP_TITLES:
+                    continue
+
+                # nav 完備モードでは nav 未登録ファイルをスキップ
+                if nav_only_mode and not nav_title:
+                    continue
+
+                xhtml = zf.read(fp).decode("utf-8", errors="replace")
+                ep_title_detected, body_text = _epub_generic_to_text(xhtml)
+
+                if not body_text.strip():
+                    continue
+
+                # 【あらすじ】を含むページからあらすじを抽出してスキップ
+                if "【あらすじ】" in body_text:
+                    synopsis = _extract_synopsis_from_text(body_text)
+                    continue
+
+                # nav タイトルが書名と異なる場合に優先、それ以外は検出タイトルを使用
+                ep_title = (nav_title if nav_title and nav_title != title
+                            else ep_title_detected)
+
+                # fallback モードで本文が極端に少ない先頭ページをスキップ
+                if not nav_only_mode and not nav_title \
+                        and len(body_text.strip()) < 100 and not episodes:
+                    continue
+
+                episodes.append({"title": ep_title, "body": body_text})
+
+    return title, author, synopsis, source_url, site_name, episodes
+
+
+def run_from_epub(args):
+    """
+    ローカルePub3ファイルを読み込んで青空文庫書式テキストを生成する。
+    このツールが出力した ePub3 を想定する。
+    """
+    epub_path = args.from_epub
+    if not os.path.exists(epub_path):
+        print(f"エラー: ファイルが見つかりません: {epub_path}")
+        sys.exit(1)
+
+    print(f"\n[Step 1] ePub3ファイルを解析中: {epub_path}")
+    try:
+        title, author, synopsis, source_url, site_name, episodes = parse_epub(epub_path)
+    except Exception as e:
+        print(f"エラー: ePub3 ファイルを読み込めませんでした: {e}")
+        sys.exit(1)
+
+    if getattr(args, "title_override", None):
+        title = args.title_override
+    if getattr(args, "author_override", None):
+        author = args.author_override
+
+    if not title:
+        title = Path(epub_path).stem
+
+    if not episodes:
+        print("エラー: ePub3 ファイルから本文を抽出できませんでした。")
+        sys.exit(1)
+
+    print(f"  タイトル : {title}")
+    print(f"  作者     : {author}")
+    print(f"  話数     : {len(episodes)} 話")
+
+    base     = args.output or safe_filename(title, "novel")
+    txt_path = base + ".txt"
+
+    header   = aozora_header(title, author, synopsis, source_url)
+    sections = [
+        aozora_chapter_title(ep["title"]) + "\n\n" + ep["body"]
+        for ep in episodes
+    ]
+    colophon = aozora_colophon(
+        title,
+        source_url or epub_path,
+        site_name or "ローカルePub3"
+    )
+
+    write_file(txt_path, header, sections, colophon,
+               encoding=args.encoding, newline=args.newline)
+    print(f"✅ テキスト出力完了: {txt_path}")
 
 
 # ══════════════════════════════════════════
@@ -4587,6 +5150,8 @@ def main():
             "  python novel_downloader.py --from-file mynovel.txt\n"
             "  python novel_downloader.py --from-file mynovel.txt --title \"タイトル\" --author \"著者名\"\n"
             "  python novel_downloader.py --from-file mynovel.txt --cover-bg \"#2d4073\"\n"
+            "  python novel_downloader.py --from-epub mynovel.epub\n"
+            "  python novel_downloader.py --from-epub mynovel.epub -o output\n"
         )
     )
     parser.add_argument("url", nargs="?", default=None,
@@ -4619,6 +5184,9 @@ def main():
     parser.add_argument("--from-file", dest="from_file", default=None, metavar="FILE",
                         help="ローカルテキストファイル（青空文庫書式）からePub3を生成する。"
                              "指定時はURLは不要")
+    parser.add_argument("--from-epub", dest="from_epub", default=None, metavar="FILE",
+                        help="ローカルePub3ファイル（このツールの出力）から"
+                             "青空文庫書式テキストを生成する。指定時はURLは不要")
     parser.add_argument("--title", dest="title_override", default=None, metavar="TITLE",
                         help="タイトルを上書き（--from-file 使用時）")
     parser.add_argument("--author", dest="author_override", default=None, metavar="AUTHOR",
@@ -4626,11 +5194,17 @@ def main():
     parser.add_argument("--font", dest="font", default=None, metavar="FILE",
                         help="ePub本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。"
                              "指定したフォントを body のデフォルトフォントとして CSS に設定する")
+    parser.add_argument("--toc-at-end", dest="toc_at_end", action="store_true",
+                        help="目次ページを本文の後（奥付の後）に配置する。"
+                             "デフォルトは表紙の直後・本文の前")
 
     args = parser.parse_args()
 
-    if args.from_file:
-        # ── ファイルモード ──────────────────────────────────────
+    if args.from_epub:
+        # ── ePub → テキスト変換モード ──────────────────────────
+        run_from_epub(args)
+    elif args.from_file:
+        # ── テキスト → ePub 変換モード ─────────────────────────
         if args.cover_bg is None:
             args.cover_bg = "#16234b"
         run_from_file(args)

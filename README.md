@@ -2,7 +2,7 @@
 
 小説投稿サイトの作品を一括ダウンロードし、**青空文庫書式テキスト**（.txt）と**縦書き ePub3**（.epub）に変換するコマンドラインツールです。
 
-ローカルの青空文庫書式テキストから ePub3 を生成する機能も備えています。
+ローカルの青空文庫書式テキストから ePub3 を生成する機能、およびローカル ePub3 ファイルを青空文庫書式テキストに逆変換する機能も備えています。
 
 ## 対応サイト
 
@@ -35,6 +35,13 @@
   - 楽天 Kobo リーダー向け互換対応（縦書き・章目次・画像表紙）
 - ルビ自動判別：`《》` 内に漢字を含む場合は地の文として処理（ルビ誤変換を防止）
 - ローカルテキストファイルから ePub3 を生成（`--from-file`）
+- ローカル ePub3 ファイルを青空文庫書式テキストに逆変換（`--from-epub`）
+  - 自ツール生成 ePub3・汎用 ePub3（カクヨム等）・ストリーミング ZIP 形式 ePub3 に対応
+  - Kobo 形式ルビ（`<span>` 分割）を含む `<ruby>` タグを `漢字《かんじ》` 形式に変換
+- 縦書き目次ページを spine に自動挿入（デフォルト: 表紙の直後・本文の前）
+  - `--toc-at-end` で奥付の後（末尾）に変更可能
+  - 表紙・タイトルページ・奥付はリンクのみ、エピソードは 1 から採番
+- iPad / iOS の Kindle アプリで縦書き・ルビが正常表示（`primary-writing-mode` メタタグ対応）
 - 途中再開機能（`--resume`、なろうのみ）
 - 取得話数の範囲指定（`--start` / `--end`）
 - テキスト出力の改行コード指定（`--newline`：`os`=OS標準 / `lf` / `crlf`）
@@ -148,6 +155,14 @@ python novel_downloader.py --from-file 作品名.txt
 
 青空文庫書式（このツールが出力する形式）のテキストファイルを ePub3 に変換します。タイトル・著者・あらすじはファイル先頭から自動抽出されます。
 
+### ローカル ePub3 を青空文庫書式テキストに逆変換
+
+```bash
+python novel_downloader.py --from-epub 作品名.epub
+```
+
+ePub3 ファイルから本文テキストを抽出し、青空文庫書式テキスト（.txt）に変換します。自ツール生成 ePub3 のほか、カクヨム等からダウンロードした汎用 ePub3 にも対応します。
+
 ## オプション一覧
 
 | オプション | デフォルト | 説明 |
@@ -163,9 +178,11 @@ python novel_downloader.py --from-file 作品名.txt
 | `--no-epub` | — | ePub 出力を省略し、テキストのみ出力 |
 | `--cover-bg COLOR` | サイト依存 | 表紙背景色（`#RRGGBB` 形式） |
 | `--from-file FILE` | — | ローカルテキストファイルから ePub3 を生成 |
+| `--from-epub FILE` | — | ローカル ePub3 ファイルを青空文庫書式テキストに逆変換 |
 | `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
 | `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
 | `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf / .ttf / .woff / .woff2）。ファイルが存在しない場合は警告を出して埋め込みなしで続行 |
+| `--toc-at-end` | — | 目次ページを奥付の後（末尾）に配置する。デフォルトは表紙の直後・本文の前 |
 
 ### 表紙背景色のデフォルト値
 
@@ -220,6 +237,12 @@ python novel_downloader.py --from-file mynovel.txt --title "作品タイトル" 
 # フォントを埋め込んで ePub 生成
 python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --font MyFont.otf
 python novel_downloader.py --from-file mynovel.txt --font MyFont.otf
+
+# ローカル ePub3 を青空文庫テキストに変換
+python novel_downloader.py --from-epub mynovel.epub
+
+# 目次を末尾に配置して生成
+python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --toc-at-end
 ```
 
 ## 出力テキスト形式
@@ -277,6 +300,8 @@ OEBPS/colophon.xhtml         ← 奥付
 - ルビ（`<ruby>` タグ）対応
 - 各 XHTML に `epub:type` を付与（`cover` / `frontmatter` / `chapter` / `backmatter`）
 - OPF に `rendition:layout` / `rendition:orientation` / `rendition:spread` メタデータを付与
+- OPF に `primary-writing-mode: horizontal-rl` メタタグを付与（iPad / iOS Kindle 縦書き対応）
+- nav.xhtml を spine に明示挿入（縦書き目次ページとして表示）
 - nav.xhtml の landmarks に `bodymatter`（本文開始位置）エントリを記載
 
 ## ライセンス
