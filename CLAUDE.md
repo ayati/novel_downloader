@@ -106,7 +106,7 @@ python novel_downloader.py --from-file mynovel.txt
 
 4. **カクヨムスクレイパー**（行 ~2240–2517）：`requests` + `BeautifulSoup` を使用。ページに埋め込まれた `__NEXT_DATA__` JSON からエピソード情報を取得し、取得できない場合は HTML パースにフォールバック。エントリポイント：`run_kakuyomu`（行 2518 付近）。
 
-5. **アルファポリススクレイパー**（行 ~2730–2936）：`requests` + `BeautifulSoup` を使用。セッション Cookie 有無でサーバーのレスポンスが変わる：Cookie あり → 本文が `div#novelBody` に直接埋め込み、Cookie なし → JS の `.load()` で `/novel/episode_body` に AJAX POST。エントリポイント：`run_alphapolis`（行 2825 付近）。
+5. **アルファポリススクレイパー**（行 ~2730–2936）：`requests` + `BeautifulSoup` を使用。エピソード一覧は `script[type="application/json"]` 内の `chapterEpisodes` JSON から取得（`{url, mainTitle, subTitle, isPublic}` 形式）。旧形式の `div.episodes > div.episode` はフォールバックとして残存。本文取得はセッション Cookie 有無でサーバーのレスポンスが変わる：Cookie あり → 本文が `div#novelBody` に直接埋め込み、Cookie なし → JS の `.load()` で `/novel/episode_body` に AJAX POST。エントリポイント：`run_alphapolis`（行 2825 付近）。
 
 6. **エブリスタスクレイパー**（行 ~2937–3113）：`requests` + `BeautifulSoup` を使用。ビューアページ（`/novels/{id}/viewer?page=N`）の `window.__NUXT__` に 15 件ずつ本文が `novelPageId:"NNN",body:"..."` 形式で埋め込まれる。page=1, 16, 31, … と 15 ページ刻みでバッチ取得。エントリポイント：`run_estar`（行 3008）。
 
