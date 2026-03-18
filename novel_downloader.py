@@ -105,8 +105,8 @@ try:
 except ImportError:
     _PILLOW_AVAILABLE = False
     print(
-        "[警告] Pillow がインストールされていないため、PNG表紙画像を生成できません。\n"
-        "       PNG表紙を有効にするには以下のコマンドでインストールしてください:\n"
+        "[警告] Pillow がインストールされていないため、JPEG表紙画像を生成できません。\n"
+        "       JPEG表紙を有効にするには以下のコマンドでインストールしてください:\n"
         "           [Ubuntu/Debian] sudo apt install python3-pillow\n"
         "           [その他]        pip install Pillow\n"
         "       Pillow がない場合は SVG フォールバックで表紙を生成しますが、\n"
@@ -327,6 +327,29 @@ p.body-blank {{
   height: 1em;
 }}
 
+/* ── 本文内見出し（青空文庫 大見出し・中見出し・小見出し） ── */
+p.midashi-oo {{
+  font-size: 1.1em;
+  font-weight: bold;
+  text-indent: 0;
+  margin: 1em 0;
+  text-align: center;
+}}
+
+p.midashi-naka {{
+  font-size: 1.0em;
+  font-weight: bold;
+  text-indent: 0;
+  margin: 0.8em 0;
+}}
+
+p.midashi-sho {{
+  font-size: 0.95em;
+  font-weight: bold;
+  text-indent: 0;
+  margin: 0.5em 0;
+}}
+
 /* ── 奥付 ── */
 .colophon {{
   font-size: 0.85em;
@@ -350,6 +373,63 @@ a:visited {{
   font-size: 0.85em;
   margin-top: 2em;
   text-align: center;
+}}
+
+/* ── 字下げ（青空文庫書式対応） ── */
+/* ここからN字下げ: ブロック内の各段落テキストを先頭字下げなしで均一配置 */
+div.aozora-indent > p.body-line,
+div.aozora-indent > p.body-blank {{
+  text-indent: 0;
+}}
+div.aozora-indent-1em  {{ padding-top: 1em;  }}
+div.aozora-indent-2em  {{ padding-top: 2em;  }}
+div.aozora-indent-3em  {{ padding-top: 3em;  }}
+div.aozora-indent-4em  {{ padding-top: 4em;  }}
+div.aozora-indent-5em  {{ padding-top: 5em;  }}
+div.aozora-indent-6em  {{ padding-top: 6em;  }}
+div.aozora-indent-7em  {{ padding-top: 7em;  }}
+div.aozora-indent-8em  {{ padding-top: 8em;  }}
+div.aozora-indent-9em  {{ padding-top: 9em;  }}
+div.aozora-indent-10em {{ padding-top: 10em; }}
+
+/* 改行天付き、折り返してN字下げ: 初行は天付き（indent 0）、折り返し行はN字下げ */
+div.aozora-hanging-1em  {{ padding-top: 1em;  }}
+div.aozora-hanging-1em  > p.body-line {{ text-indent: -1em;  }}
+div.aozora-hanging-2em  {{ padding-top: 2em;  }}
+div.aozora-hanging-2em  > p.body-line {{ text-indent: -2em;  }}
+div.aozora-hanging-3em  {{ padding-top: 3em;  }}
+div.aozora-hanging-3em  > p.body-line {{ text-indent: -3em;  }}
+div.aozora-hanging-4em  {{ padding-top: 4em;  }}
+div.aozora-hanging-4em  > p.body-line {{ text-indent: -4em;  }}
+div.aozora-hanging-5em  {{ padding-top: 5em;  }}
+div.aozora-hanging-5em  > p.body-line {{ text-indent: -5em;  }}
+div.aozora-hanging-6em  {{ padding-top: 6em;  }}
+div.aozora-hanging-6em  > p.body-line {{ text-indent: -6em;  }}
+div.aozora-hanging-7em  {{ padding-top: 7em;  }}
+div.aozora-hanging-7em  > p.body-line {{ text-indent: -7em;  }}
+div.aozora-hanging-8em  {{ padding-top: 8em;  }}
+div.aozora-hanging-8em  > p.body-line {{ text-indent: -8em;  }}
+div.aozora-hanging-9em  {{ padding-top: 9em;  }}
+div.aozora-hanging-9em  > p.body-line {{ text-indent: -9em;  }}
+div.aozora-hanging-10em {{ padding-top: 10em; }}
+div.aozora-hanging-10em > p.body-line {{ text-indent: -10em; }}
+
+/* ── 図・イラスト（青空文庫 挿絵対応） ── */
+p.illustration,
+figure.illustration {{
+  text-indent: 0;
+  margin: 0.8em 0;
+  text-align: center;
+}}
+img.illustration {{
+  max-width: 100%;
+}}
+p.caption,
+figcaption.caption {{
+  font-size: 0.9em;
+  text-indent: 0;
+  text-align: center;
+  margin-top: 0.3em;
 }}
 """
 
@@ -387,13 +467,19 @@ def _char_class(ch: str) -> int:
     6: 全角英字
     7: 全角数字
     8: 全角空白・その他記号
-    9: その他（句読点・括弧類等）
+    9: 句読点・括弧・記号類（ルビベース不可）
+   10: 上記以外のUnicode文字（キリル・ギリシャ文字等、ルビベース可）
     """
     cp = ord(ch)
     # 漢字（CJK統合漢字、互換漢字、拡張A/B/C/D/E/F）
     if (0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF
             or 0x20000 <= cp <= 0x2A6DF or 0x2A700 <= cp <= 0x2CEAF
             or 0xF900 <= cp <= 0xFAFF):
+        return 0
+    # 青空文庫書式規定で漢字扱いとする特殊記号
+    # 々(U+3005)=繰り返し、仝(U+4EDD)=同じ、〆(U+3006)=しめ、〇(U+3007)=零、ヶ(U+30F6)=ケ
+    # ※仝はCJK範囲(0x4EDD)に含まれ上記で先にclass0になるが明示的に列挙
+    if ch in '々仝〆〇ヶ':
         return 0
     # ひらがな
     if 0x3041 <= cp <= 0x309F:
@@ -419,7 +505,11 @@ def _char_class(ch: str) -> int:
     # 全角空白
     if cp == 0x3000:
         return 8
-    # その他（句読点・括弧・記号等）
+    # キリル・ギリシャ文字等 Unicode 文字（Letter/Number/Mark カテゴリ）
+    # → ルビベースとして有効なため class 9 とは区別する
+    if unicodedata.category(ch)[0] in ('L', 'N', 'M'):
+        return 10
+    # 句読点・括弧・記号等（ルビベース不可）
     return 9
 
 
@@ -447,6 +537,45 @@ def _resolve_ruby_base(preceding: str) -> tuple[str, str]:
     return preceding[:i], preceding[i:]
 
 
+def _ruby_needs_pipe(base: str, preceding: str = "") -> bool:
+    """
+    ルビのベース文字列に | を前置する必要があるか判定する。
+
+    以下のいずれかの場合に True を返す:
+    1. base が複数の文字種を含む
+       （_resolve_ruby_base は末尾文字種のブロックしか取れないため、
+         「俺以外の」→「の」のみになる）
+    2. preceding の末尾文字が base[-1] と同じ文字種
+       （自動検出が直前テキストまで延びる; 「氷村心白」→「氷村心白」全体になる）
+    """
+    if not base:
+        return False
+    end_cls = _char_class(base[-1])
+    if any(_char_class(ch) != end_cls for ch in base):
+        return True
+    if preceding and _char_class(preceding[-1]) == end_cls:
+        return True
+    return False
+
+
+def _bs4_prev_text(tag) -> str:
+    """
+    BS4 タグの直前のテキストを返す（_ruby_needs_pipe の preceding 引数用）。
+    直前の NavigableString またはタグのテキストを順に探す。
+    """
+    node = tag.previous_sibling
+    while node is not None:
+        if isinstance(node, str):
+            if node:
+                return node
+        else:
+            t = node.get_text()
+            if t:
+                return t
+        node = node.previous_sibling
+    return ""
+
+
 def _has_kanji(text: str) -> bool:
     """テキスト内に漢字（CJK文字）が含まれるかを返す。"""
     return any(_char_class(ch) == 0 for ch in text)
@@ -467,9 +596,9 @@ def _apply_ruby_auto(text: str) -> str:
     テキストは _esc() 済みを想定しない（この関数内でエスケープする）。
     """
     result = []
-    # パターン: (|ベース《よみ》) または (ベース《よみ》)
-    # "|" から次の《まで / または《の直前テキストを後処理で分割
-    pattern = re.compile(r"\|([^《|]+)《([^》]+)》|《([^》]+)》")
+    # パターン: ([|｜]ベース《よみ》) または (ベース《よみ》)
+    # ASCII "|" と全角 "｜" の両方をルビ開始記号として認識する
+    pattern = re.compile(r"[|｜]([^《|｜]+)《([^》]+)》|《([^》]+)》")
     pos = 0
     for m in pattern.finditer(text):
         chunk = text[pos:m.start()]
@@ -489,6 +618,7 @@ def _apply_ruby_auto(text: str) -> str:
                 # "《よみ》" のみ：chunk の末尾から文字種境界でベースを切り出す
                 before, base = _resolve_ruby_base(chunk)
                 # ベースが句読点・記号類（クラス9）のみの場合も地の文扱い
+                # ※クラス10（キリル文字等のUnicode文字）は有効なルビベースとして扱う
                 if base and all(_char_class(ch) == 9 for ch in base):
                     base = ""
                     before = chunk
@@ -505,22 +635,236 @@ def _apply_ruby_auto(text: str) -> str:
     return "".join(result)
 
 
+# 青空文庫タグ処理用の正規表現（モジュールレベルで一度だけコンパイル）
+# 見出し開始マーカー: ［＃「TEXT」は大見出し］ （終わりを含まない）
+_MIDASHI_START_RE = re.compile(r"［＃「[^」]*」は(大|中|小)見出し］")
+# 見出し終了マーカー: ［＃「TEXT」は大見出し終わり］
+_MIDASHI_END_RE   = re.compile(r"［＃「[^」]*」は(大|中|小)見出し終わり］")
+# 任意の青空文庫タグ（制御タグ除去用）
+_AOZORA_ANY_TAG_RE = re.compile(r"［＃[^］]*］")
+# 見出し CSS クラスマップ
+_MIDASHI_CLASS = {"大": "midashi-oo", "中": "midashi-naka", "小": "midashi-sho"}
+
+# 図・イラスト（青空文庫書式対応）
+# キャプション付きは先にチェック（「の図」がキャプション付きにも含まれるため）
+_FIG_CAP_RE = re.compile(
+    r"［＃「([^」]*)」のキャプション付きの図（([^、）\s]+)(?:、横(\d+)×縦(\d+))?）入る］")
+_FIG_PLAIN_RE = re.compile(
+    r"［＃「([^」]*)」の図（([^、）\s]+)(?:、横(\d+)×縦(\d+))?）入る］")
+_IS_CAPTION_LINE_RE  = re.compile(r".*［＃「[^」]*」はキャプション］")
+_CAPTION_BLOCK_START_RE2 = re.compile(r"［＃ここからキャプション］")
+_CAPTION_BLOCK_END_RE2   = re.compile(r"［＃ここでキャプション終わり］")
+# 画像ファイル拡張子セット（ZIP 抽出用）
+_IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg"}
+
+# 字下げ関連タグ（ここから〜 は単独行で使用）
+# 改行天付き・折り返しN字下げは ここからN字下げ より先にチェックすること
+_JISAGE_HANGING_RE = re.compile(
+    r"［＃ここから改行天付き、折り返して([０-９一二三四五六七八九十\d]+)字下げ］")
+_JISAGE_BLOCK_RE   = re.compile(
+    r"［＃ここから([０-９一二三四五六七八九十\d]+)字下げ］")
+_JISAGE_END_RE     = re.compile(r"［＃ここで字下げ終わり］")
+_JISAGE_SINGLE_RE  = re.compile(
+    r"^［＃([０-９一二三四五六七八九十\d]+)字下げ］")
+
+
+def _jisage_to_int(s: str) -> int:
+    """全角数字・漢数字を int に変換。変換できない場合は 1 を返す。"""
+    s2 = s.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    if s2.isdigit():
+        return max(1, int(s2))
+    kanji_map = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+                 "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+    n = sum(kanji_map.get(c, 0) for c in s2)
+    return max(1, n) if n else 1
+
+
 def _body_lines_to_xhtml(text: str) -> str:
     """
-    本文テキスト（改行区切り）をXHTML <p> タグ列に変換する。
-    空行 → <p class="body-blank">、それ以外 → <p class="body-line">
-    青空文庫ルビ記法「対象《読み》」→ <ruby> タグに変換。
-    ルビ開始記号（|）省略時は直前の同一文字種ブロックを自動検出する。
+    本文テキスト（改行区切り）をXHTML要素列に変換する。
+
+    - 空行                 → <p class="body-blank">
+    - 通常行               → <p class="body-line">（青空文庫タグ除去・ルビ変換済み）
+    - 大見出し行           → <p class="midashi-oo">
+    - 中見出し行           → <p class="midashi-naka">
+    - 小見出し行           → <p class="midashi-sho">
+
+    青空文庫タグの処理:
+      - 字下げ（N字下げ）・地付き等のレイアウトタグは全除去
+      - 大/中/小見出しタグはインライン形式・ブロック形式の両方に対応
+        インライン: TEXT［＃「TEXT」は大見出し］ → 同一行のTEXTを見出しとして出力
+        ブロック:   ［＃「TEXT」は大見出し］     → 次の行をTEXTとして見出し出力
+                    TEXT                          → 見出しテキスト行
+                    ［＃「TEXT」は大見出し終わり］ → スキップ
+      - その他の青空文庫タグは除去して地の文として扱う
     """
-    lines = []
+    result = []
+    pending_heading    = None   # ブロック形式の見出し待ち: None or "大"/"中"/"小"
+    indent_stack: list = []     # 字下げスタック: ("indent"|"hanging", n)
+    pending_fig_html   = None   # キャプション付き図の <img> タグ（キャプション行待ち）
+    in_caption_block   = False  # ここからキャプション〜ここでキャプション終わり 収集中
+    caption_block_lines: list = []
+
     for raw in text.split("\n"):
         line = raw.rstrip()
+
+        # ── 複数行キャプション収集中 ──
+        if in_caption_block:
+            if _CAPTION_BLOCK_END_RE2.search(line):
+                cap_html = "\n".join(
+                    f'<p class="caption">{_apply_ruby_auto(_AOZORA_ANY_TAG_RE.sub("", l).strip())}</p>'
+                    for l in caption_block_lines
+                    if _AOZORA_ANY_TAG_RE.sub("", l).strip()
+                )
+                if pending_fig_html is not None:
+                    result.append(
+                        f'<figure class="illustration">{pending_fig_html}'
+                        f'<figcaption class="caption">{cap_html}</figcaption></figure>')
+                    pending_fig_html = None
+                in_caption_block = False
+                caption_block_lines = []
+            else:
+                caption_block_lines.append(line)
+            continue
+
+        # ── キャプション待ち（キャプション付き図の次行以降）──
+        if pending_fig_html is not None:
+            if _CAPTION_BLOCK_START_RE2.search(line):
+                in_caption_block = True
+                caption_block_lines = []
+                continue
+            if _IS_CAPTION_LINE_RE.search(line):
+                cap_text = _apply_ruby_auto(_AOZORA_ANY_TAG_RE.sub("", line).strip())
+                result.append(
+                    f'<figure class="illustration">{pending_fig_html}'
+                    f'<figcaption class="caption">{cap_text}</figcaption></figure>')
+                pending_fig_html = None
+                continue
+            # 予期しない行: キャプションなしで図を閉じ、この行は通常処理へ
+            result.append(f'<p class="illustration">{pending_fig_html}</p>')
+            pending_fig_html = None
+            # fall through（この行を通常処理）
+
+        # ── ブロック形式見出し待ち（前行が開始マーカーのみだった場合） ──
+        if pending_heading is not None:
+            # 終了マーカー行が来た場合はスキップして待ちをリセット
+            if _MIDASHI_END_RE.search(line):
+                pending_heading = None
+                continue
+            if not line:
+                result.append('<p class="body-blank">&#160;</p>')
+                continue  # 空行でも待ち継続
+            # この行が見出しテキスト
+            cls     = _MIDASHI_CLASS[pending_heading]
+            visible = _AOZORA_ANY_TAG_RE.sub("", line).strip()
+            if visible:
+                result.append(f'<p class="{cls}">{_apply_ruby_auto(visible)}</p>')
+            pending_heading = None
+            continue
+
+        # ── 字下げ終わり ──
+        if _JISAGE_END_RE.search(line):
+            if indent_stack:
+                indent_stack.pop()
+                result.append('</div>')
+            continue
+
+        # ── 字下げブロック開始（改行天付き・折り返し）──
+        m_hang = _JISAGE_HANGING_RE.search(line)
+        if m_hang:
+            n = _jisage_to_int(m_hang.group(1))
+            indent_stack.append(("hanging", n))
+            result.append(f'<div class="aozora-hanging aozora-hanging-{n}em">')
+            continue
+
+        # ── 字下げブロック開始（通常）──
+        m_blk = _JISAGE_BLOCK_RE.search(line)
+        if m_blk:
+            n = _jisage_to_int(m_blk.group(1))
+            indent_stack.append(("indent", n))
+            result.append(f'<div class="aozora-indent aozora-indent-{n}em">')
+            continue
+
+        # ── 空行 ──
         if not line:
-            lines.append('<p class="body-blank">&#160;</p>')
+            result.append('<p class="body-blank">&#160;</p>')
+            continue
+
+        # ── 大/中/小見出し判定 ──
+        start_m = _MIDASHI_START_RE.search(line)
+        end_m   = _MIDASHI_END_RE.search(line)
+
+        if start_m:
+            level   = start_m.group(1)
+            visible = _AOZORA_ANY_TAG_RE.sub("", line).strip()
+            if visible:
+                # インライン形式（字下げ等のタグを除去した可視テキストがある）
+                cls = _MIDASHI_CLASS[level]
+                result.append(f'<p class="{cls}">{_apply_ruby_auto(visible)}</p>')
+            else:
+                # 開始マーカーのみ → 次の行が見出しテキスト
+                pending_heading = level
+            continue
+
+        if end_m:
+            # 終了マーカーを除去した可視テキストがあれば見出しとして出力
+            level   = end_m.group(1)
+            visible = _AOZORA_ANY_TAG_RE.sub("", line).strip()
+            if visible:
+                cls = _MIDASHI_CLASS[level]
+                result.append(f'<p class="{cls}">{_apply_ruby_auto(visible)}</p>')
+            # 終了マーカーのみ行はスキップ
+            continue
+
+        # ── 図・イラスト ──
+        m_fig_cap   = _FIG_CAP_RE.search(line)
+        m_fig_plain = _FIG_PLAIN_RE.search(line)
+        if m_fig_cap:
+            alt, fname = m_fig_cap.group(1), m_fig_cap.group(2)
+            w, h = m_fig_cap.group(3), m_fig_cap.group(4)
+            size_attrs = (f' width="{w}" height="{h}"' if w and h else "")
+            pending_fig_html = (
+                f'<img class="illustration" src="images/{fname}"'
+                f' alt="{_esc(alt)}"{size_attrs}/>')
+            continue
+        if m_fig_plain:
+            alt, fname = m_fig_plain.group(1), m_fig_plain.group(2)
+            w, h = m_fig_plain.group(3), m_fig_plain.group(4)
+            size_attrs = (f' width="{w}" height="{h}"' if w and h else "")
+            img_html = (
+                f'<img class="illustration" src="images/{fname}"'
+                f' alt="{_esc(alt)}"{size_attrs}/>')
+            result.append(f'<p class="illustration">{img_html}</p>')
+            continue
+
+        # ── 単行字下げ（行頭に N字下げ タグ）──
+        m_single = _JISAGE_SINGLE_RE.match(line)
+        if m_single:
+            n     = _jisage_to_int(m_single.group(1))
+            clean = _AOZORA_ANY_TAG_RE.sub("", line).strip()
+            if clean:
+                result.append(
+                    f'<p class="body-line" style="text-indent:{n}em;">'
+                    f'{_apply_ruby_auto(clean)}</p>')
+            else:
+                result.append('<p class="body-blank">&#160;</p>')
+            continue
+
+        # ── 通常行：青空文庫タグを除去してルビ処理 ──
+        clean = _AOZORA_ANY_TAG_RE.sub("", line)
+        if not clean.strip():
+            result.append('<p class="body-blank">&#160;</p>')
         else:
-            converted = _apply_ruby_auto(line)
-            lines.append(f'<p class="body-line">{converted}</p>')
-    return "\n".join(lines)
+            result.append(f'<p class="body-line">{_apply_ruby_auto(clean)}</p>')
+
+    # 未閉じの字下げブロックを閉じる（不正なテキストへの安全対策）
+    for _ in indent_stack:
+        result.append('</div>')
+    # 未閉じのキャプション付き図を閉じる
+    if pending_fig_html is not None:
+        result.append(f'<p class="illustration">{pending_fig_html}</p>')
+
+    return "\n".join(result)
 
 
 def _make_cover_xhtml(title: str, author: str, synopsis: str,
@@ -586,30 +930,30 @@ span.img img, figure.img img {
 """
 
 
-def _make_cover_image_xhtml(title: str, fmt: str = "png") -> str:
+def _make_cover_image_xhtml(title: str, fmt: str = "jpg") -> str:
     """
-    ユーザー指定仕様に準拠した画像表紙XHTMLを生成する。
-      - CSS: ../css/vertical_image.css
-      - 画像: ../images/0000.png (PNG) または ../images/0000.svg (SVG)
-      - body class="fit_h"、span.img > img 構造
+    ePub3 標準準拠の表紙ページXHTMLを生成する。
+      - 画像: images/cover.{fmt}（OEBPS/ からの相対パス）
+      - epub:type="cover" を body に、epub:type="cover-image" を img に付与
+      - CSS はインライン（別ファイル不要）
     """
-    ext = fmt  # "png" or "svg"
-    img_src = f"../images/0000.{ext}"
+    img_src = f"images/cover.{fmt}"
     return f"""\
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml"
       xmlns:epub="http://www.idpf.org/2007/ops"
       xml:lang="ja" lang="ja">
 <head>
   <meta charset="UTF-8"/>
-  <link rel="stylesheet" type="text/css" href="../css/vertical_image.css"/>
   <title>{_esc(title)}</title>
+  <style type="text/css">
+    html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; }}
+    img {{ width: 100%; height: 100%; object-fit: contain; display: block; }}
+  </style>
 </head>
-<body epub:type="cover" class="fit_h">
-<figure epub:type="cover-image" class="img">
-  <img src="{img_src}" alt="{_esc(title)}"/>
-</figure>
+<body epub:type="cover">
+  <img src="{img_src}" alt="{_esc(title)}" epub:type="cover-image"/>
 </body>
 </html>
 """
@@ -653,7 +997,7 @@ def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
     # 前付け（ナンバリングなし）
     prelim_items = []
     if cover_fmt:
-        prelim_items.append('<li class="toc-prelim"><a href="image-cover.xhtml">表紙</a></li>')
+        prelim_items.append('<li class="toc-prelim"><a href="cover-image.xhtml">表紙</a></li>')
     prelim_items.append('<li class="toc-prelim"><a href="cover.xhtml">タイトルページ</a></li>')
 
     # 本文エピソード（番号付き、全項目に value を明示して採番を確定）
@@ -667,7 +1011,7 @@ def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
     toc_str = "\n    ".join(prelim_items + ep_items + back_items)
 
     # landmarks: カバー・本文開始・目次をリーダーが認識するための必須ナビ
-    cover_href = "image-cover.xhtml" if cover_fmt else "cover.xhtml"
+    cover_href = "cover-image.xhtml" if cover_fmt else "cover.xhtml"
     body_start = "ep0001.xhtml" if ep_titles else "cover.xhtml"
     landmarks = f"""\
 <nav epub:type="landmarks" id="landmarks">
@@ -706,12 +1050,14 @@ def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
 
 def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
               cover_fmt: str = "", font_filename: str = "",
-              toc_at_end: bool = False) -> str:
+              toc_at_end: bool = False,
+              inline_images: list = None) -> str:
     """
     OPF（package.opf）を生成する。
     cover_fmt: "png" | "svg" | "" (表紙画像なし)
     font_filename: 埋め込みフォントのファイル名（例: "AyatiShowaSerif-Regular.otf"）
     toc_at_end: True のとき目次を奥付の後に配置（デフォルト: 表紙の後・本文の前）
+    inline_images: 本文中のインライン画像ファイル名リスト（青空文庫 ZIP 内の画像等）
     """
     today = date.today().strftime("%Y-%m-%d")
 
@@ -730,17 +1076,20 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
             f' media-type="{font_mime}"/>'
         )
 
-    if cover_fmt == "png":
+    if cover_fmt == "jpg":
         manifest_items += [
-            '<item id="img0000" href="images/0000.png" media-type="image/png" properties="cover-image"/>',
-            '<item id="css-cover" href="css/vertical_image.css" media-type="text/css"/>',
-            '<item id="image-cover" href="image-cover.xhtml" media-type="application/xhtml+xml"/>',
+            '<item id="cover-image" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>',
+            '<item id="cover-page" href="cover-image.xhtml" media-type="application/xhtml+xml"/>',
+        ]
+    elif cover_fmt == "png":
+        manifest_items += [
+            '<item id="cover-image" href="images/cover.png" media-type="image/png" properties="cover-image"/>',
+            '<item id="cover-page" href="cover-image.xhtml" media-type="application/xhtml+xml"/>',
         ]
     elif cover_fmt == "svg":
         manifest_items += [
-            '<item id="img0000" href="images/0000.svg" media-type="image/svg+xml" properties="cover-image"/>',
-            '<item id="css-cover" href="css/vertical_image.css" media-type="text/css"/>',
-            '<item id="image-cover" href="image-cover.xhtml" media-type="application/xhtml+xml"/>',
+            '<item id="cover-image" href="images/cover.svg" media-type="image/svg+xml" properties="cover-image"/>',
+            '<item id="cover-page" href="cover-image.xhtml" media-type="application/xhtml+xml"/>',
         ]
 
     manifest_items.append(
@@ -749,7 +1098,7 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
 
     spine_items = []
     if cover_fmt:
-        spine_items.append('<itemref idref="image-cover" linear="yes"/>')
+        spine_items.append('<itemref idref="cover-page" linear="yes"/>')
     spine_items.append('<itemref idref="cover"/>')
 
     # 目次を前配置（デフォルト）: 表紙の直後・本文の前
@@ -771,9 +1120,22 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     if toc_at_end:
         spine_items.append('<itemref idref="nav"/>')
 
+    # インライン画像（青空文庫 ZIP 内の挿絵等）を manifest に追加
+    if inline_images:
+        _img_mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                     ".gif": "image/gif", ".bmp": "image/bmp", ".svg": "image/svg+xml"}
+        for img_name in inline_images:
+            ext = Path(img_name).suffix.lower()
+            mime = _img_mime.get(ext, "image/png")
+            # XML id として使えるよう英数字以外をアンダーバーに置換し先頭に "img-" を付与
+            img_id = "img-" + re.sub(r"[^a-zA-Z0-9_-]", "_", img_name)
+            manifest_items.append(
+                f'<item id="{img_id}" href="images/{img_name}" media-type="{mime}"/>'
+            )
+
     manifest_str = "\n    ".join(manifest_items)
     spine_str    = "\n    ".join(spine_items)
-    cover_meta   = ('\n    <meta name="cover" content="img0000"/>' if cover_fmt else "")
+    cover_meta   = ('\n    <meta name="cover" content="cover-image"/>' if cover_fmt else "")
 
     return f"""\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1015,8 +1377,8 @@ if _FONT_BOLD_PATH:
     print(f"[情報] 日本語フォント検出: bold={_b}[{_FONT_BOLD_IDX}]  medium={_m}[{_FONT_MEDIUM_IDX}]")
 else:
     print(
-        "[警告] 日本語フォントが見つかりませんでした。PNG表紙はSVGで代替されます。\n"
-        "       フォントをインストールすると PNG 表紙が生成されます:\n"
+        "[警告] 日本語フォントが見つかりませんでした。JPEG表紙はSVGで代替されます。\n"
+        "       フォントをインストールすると JPEG 表紙が生成されます:\n"
         "       [Linux]   sudo apt install fonts-noto-cjk\n"
         "                 または: sudo apt install fonts-ipafont\n"
         "       [Windows] BIZ UDP明朝 / MS明朝 / 游明朝 など日本語フォントが\n"
@@ -1099,7 +1461,7 @@ def make_cover_image(title: str, author: str, cover_bg: str = "#16234b"):
     """
     書籍表紙を模したカバー画像を生成してバイト列で返す。
     戻り値: (data: bytes, fmt: str)
-      fmt = "png"  Pillow利用可能時
+      fmt = "jpg"  Pillow利用可能時（JPEG形式）
       fmt = "svg"  Pillowなし時のフォールバック
     例外は捕捉して SVG フォールバックに切り替える。
     """
@@ -1219,13 +1581,13 @@ def make_cover_image(title: str, author: str, cover_bg: str = "#16234b"):
             draw.text((ax,   ay  ), author, font=font_a, fill=(220, 205, 170))
 
             buf = _io.BytesIO()
-            img.save(buf, format="PNG", optimize=True)
-            return buf.getvalue(), "png"
+            img.save(buf, format="JPEG", quality=90, optimize=True)
+            return buf.getvalue(), "jpg"
 
         except Exception as _png_err:
             import traceback as _tb
             print(
-                "[警告] PillowでのPNG表紙生成中にエラーが発生しました。SVGで代替します。\n"
+                "[警告] PillowでのJPEG表紙生成中にエラーが発生しました。SVGで代替します。\n"
                 f"       エラー内容: {_png_err}\n"
                 "       詳細:\n"
                 + "".join(f"         {l}" for l in _tb.format_exc().splitlines(keepends=True))
@@ -1250,6 +1612,7 @@ def build_epub(
     cover_bg: str = "#16234b",
     font_path: str = "",
     toc_at_end: bool = False,
+    images: dict = None,     # {"filename.png": bytes} — 本文中のインライン画像
 ):
     """
     縦書きePub3ファイルを生成する。
@@ -1262,7 +1625,7 @@ def build_epub(
       OEBPS/css/novel.css           ← 本文CSS
       OEBPS/css/vertical_image.css  ← 画像表紙専用CSS
       OEBPS/images/0000.png         ← 表紙画像
-      OEBPS/image-cover.xhtml       ← 【spine先頭】画像表紙ページ
+      OEBPS/cover-image.xhtml       ← 【spine先頭】画像表紙ページ
       OEBPS/cover.xhtml             ← テキスト表紙（タイトル・著者・あらすじ）
       OEBPS/ep0001.xhtml … ep{N}.xhtml
       OEBPS/colophon.xhtml
@@ -1302,7 +1665,8 @@ def build_epub(
         zf.writestr("OEBPS/package.opf",
                     _make_opf(title, author, book_id, ep_titles, cover_fmt,
                               font_filename=font_filename,
-                              toc_at_end=toc_at_end))
+                              toc_at_end=toc_at_end,
+                              inline_images=list(images.keys()) if images else None))
 
         # nav.xhtml
         zf.writestr("OEBPS/nav.xhtml",
@@ -1317,10 +1681,9 @@ def build_epub(
             with open(font_path, "rb") as _ff:
                 zf.writestr(f"OEBPS/fonts/{font_filename}", _ff.read())
 
-        # 画像表紙 → spine 1ページ目（常に生成）
-        zf.writestr("OEBPS/css/vertical_image.css", _VERTICAL_IMAGE_CSS)
-        zf.writestr(f"OEBPS/images/0000.{cover_fmt}", cover_data)
-        zf.writestr("OEBPS/image-cover.xhtml",
+        # 表紙画像 + 表紙XHTML → spine 1ページ目
+        zf.writestr(f"OEBPS/images/cover.{cover_fmt}", cover_data)
+        zf.writestr("OEBPS/cover-image.xhtml",
                     _make_cover_image_xhtml(title, cover_fmt))
 
         # テキスト表紙（タイトル・著者・あらすじ）→ spine 2ページ目
@@ -1332,6 +1695,11 @@ def build_epub(
         for i, ep in enumerate(episodes):
             zf.writestr(f"OEBPS/ep{i+1:04d}.xhtml",
                         _make_episode_xhtml(ep["title"], ep["body"]))
+
+        # インライン画像（青空文庫 ZIP 内の挿絵等）
+        if images:
+            for img_name, img_bytes in images.items():
+                zf.writestr(f"OEBPS/images/{img_name}", img_bytes)
 
         # 奥付
         zf.writestr("OEBPS/colophon.xhtml",
@@ -1660,8 +2028,12 @@ class NarouEpisodeParser(HTMLParser):
                 elif tag == "rt":
                     self._in_rt = False
                     if self._rb_buf:
-                        ruby = (f"{self._rb_buf}《{self._rt_buf}》"
-                                if self._rt_buf else self._rb_buf)
+                        if self._rt_buf:
+                            prev = "".join(self._cur_para)
+                            pipe = "|" if _ruby_needs_pipe(self._rb_buf, prev) else ""
+                            ruby = f"{pipe}{self._rb_buf}《{self._rt_buf}》"
+                        else:
+                            ruby = self._rb_buf
                         self._cur_para.append(ruby)
                     self._rb_buf = ""
                     self._rt_buf = ""
@@ -1689,10 +2061,11 @@ class NarouEpisodeParser(HTMLParser):
         return "\n".join(self.paragraphs)
 
 
-def _ruby_inner_to_aozora(inner: str) -> str:
+def _ruby_inner_to_aozora(inner: str, preceding: str = "") -> str:
     """
     <ruby>...</ruby> の中身を青空文庫ルビ記法「ベース《よみ》」に変換する。
     <rb>ベース</rb><rt>よみ</rt> と ベース<rt>よみ</rt>（<rb>なし）の両形式に対応。
+    preceding にはルビ直前のテキストを渡す（| 要否判定に使用）。
     """
     rt_m = re.search(r"<rt>(.*?)</rt>", inner, re.DOTALL)
     if not rt_m:
@@ -1702,7 +2075,10 @@ def _ruby_inner_to_aozora(inner: str) -> str:
     base = re.sub(r"<rp>.*?</rp>", "", inner, flags=re.DOTALL)
     base = re.sub(r"<rt>.*?</rt>", "", base, flags=re.DOTALL)
     base = re.sub(r"<[^>]+>", "", base).strip()
-    return f"{base}《{reading}》" if reading else base
+    if not reading:
+        return base
+    pipe = "|" if _ruby_needs_pipe(base, preceding) else ""
+    return f"{pipe}{base}《{reading}》"
 
 
 def narou_extract_body_fallback(html: str) -> str:
@@ -1713,12 +2089,17 @@ def narou_extract_body_fallback(html: str) -> str:
     )
     lines = []
     for p_html in raw_ps:
-        # <ruby>...</ruby> ブロック全体を青空文庫ルビ記法に変換
-        p_html = re.sub(
-            r"<ruby>(.*?)</ruby>",
-            lambda m: _ruby_inner_to_aozora(m.group(1)),
-            p_html, flags=re.DOTALL
-        )
+        # <ruby>...</ruby> ブロックを逐次変換（preceding を追跡して | 要否を判定）
+        parts = []
+        pos = 0
+        for m in re.finditer(r"<ruby>(.*?)</ruby>", p_html, re.DOTALL):
+            before_html = p_html[pos:m.start()]
+            parts.append(before_html)
+            preceding = re.sub(r"<[^>]+>", "", "".join(parts))
+            parts.append(_ruby_inner_to_aozora(m.group(1), preceding))
+            pos = m.end()
+        parts.append(p_html[pos:])
+        p_html = "".join(parts)
         clean = re.sub(r"<br\s*/?>", "\n", p_html)
         clean = re.sub(r"<[^>]+>", "", clean)
         lines.append(clean.strip())
@@ -2117,7 +2498,9 @@ def kky_extract_episode_body(soup, next_data: dict, ep_url: str) -> tuple:
                     )
                     base = kky_normalize(base)
                     rt   = kky_normalize(rt_tag.get_text())
-                    ruby.replace_with(f"{base}《{rt}》")
+                    prev = _bs4_prev_text(ruby)
+                    pipe = "|" if _ruby_needs_pipe(base, prev) else ""
+                    ruby.replace_with(f"{pipe}{base}《{rt}》")
                 else:
                     # rt がない場合はルビなしテキストとして展開
                     ruby.replace_with(ruby.get_text())
@@ -2784,7 +3167,9 @@ def hameln_html_to_aozora(honbun_div, maegaki_div=None, atogaki_div=None) -> str
         rt = ruby.find("rt")
         if rt:
             base_text = rb.get_text() if rb else ruby.get_text()
-            ruby.replace_with(f"{base_text}《{rt.get_text()}》")
+            prev = _bs4_prev_text(ruby)
+            pipe = "|" if _ruby_needs_pipe(base_text, prev) else ""
+            ruby.replace_with(f"{pipe}{base_text}《{rt.get_text()}》")
         else:
             ruby.replace_with(ruby.get_text())
 
@@ -3044,10 +3429,13 @@ def noichigo_html_to_aozora(body_div) -> str:
         rt = ruby.find("rt")
         if rt:
             rt_text = rt.get_text()
+            prev = _bs4_prev_text(ruby)
             rt.decompose()
             for rp in ruby.find_all("rp"):
                 rp.decompose()
-            ruby.replace_with(f"{ruby.get_text()}《{rt_text}》")
+            base = ruby.get_text()
+            pipe = "|" if _ruby_needs_pipe(base, prev) else ""
+            ruby.replace_with(f"{pipe}{base}《{rt_text}》")
         else:
             ruby.replace_with(ruby.get_text())
 
@@ -3484,7 +3872,9 @@ def novelup_html_to_aozora(content_p) -> str:
         if rt:
             base    = rb.get_text() if rb else ""
             rt_text = rt.get_text()
-            ruby.replace_with(f"{base}《{rt_text}》")
+            prev = _bs4_prev_text(ruby)
+            pipe = "|" if _ruby_needs_pipe(base, prev) else ""
+            ruby.replace_with(f"{pipe}{base}《{rt_text}》")
         else:
             ruby.replace_with(ruby.get_text())
 
@@ -3710,7 +4100,9 @@ def suteki_html_to_aozora(body_div) -> str:
             rp.decompose()
         if rt:
             base = rb.get_text() if rb else ""
-            ruby.replace_with(f"{base}《{rt.get_text()}》")
+            prev = _bs4_prev_text(ruby)
+            pipe = "|" if _ruby_needs_pipe(base, prev) else ""
+            ruby.replace_with(f"{pipe}{base}《{rt.get_text()}》")
         else:
             ruby.replace_with(ruby.get_text())
 
@@ -3919,7 +4311,9 @@ def days_html_to_aozora(body_div) -> str:
             rp.decompose()
         if rt:
             base = rb.get_text() if rb else ""
-            ruby.replace_with(f"{base}《{rt.get_text()}》")
+            prev = _bs4_prev_text(ruby)
+            pipe = "|" if _ruby_needs_pipe(base, prev) else ""
+            ruby.replace_with(f"{pipe}{base}《{rt.get_text()}》")
         else:
             ruby.replace_with(ruby.get_text())
 
@@ -4137,16 +4531,24 @@ def aozora_find_zip_url(html: str, card_url: str) -> str | None:
 
 
 def aozora_download_extract(zip_url: str) -> tuple:
-    """ZIP をダウンロードして (txt_filename, txt_bytes) を返す。"""
+    """ZIP をダウンロードして (txt_filename, txt_bytes, images) を返す。
+    images: {"filename.png": bytes, ...}（ZIP 内の画像ファイル）
+    """
     req = Request(zip_url, headers=_AOZORA_HEADERS)
     with urlopen(req, timeout=60) as r:
         zip_bytes = r.read()
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        txt_names = [n for n in zf.namelist() if n.lower().endswith(".txt")]
+        names = zf.namelist()
+        txt_names = [n for n in names if n.lower().endswith(".txt")]
         if not txt_names:
             raise RuntimeError(f"ZIP 内にテキストファイルが見つかりません: {zip_url}")
         txt_name = txt_names[0]
-        return Path(txt_name).name, zf.read(txt_name)
+        images = {
+            Path(n).name: zf.read(n)
+            for n in names
+            if Path(n).suffix.lower() in _IMG_EXTS
+        }
+        return Path(txt_name).name, zf.read(txt_name), images
 
 
 def aozora_decode(txt_bytes: bytes) -> tuple:
@@ -4159,6 +4561,67 @@ def aozora_decode(txt_bytes: bytes) -> tuple:
     return txt_bytes.decode("shift_jis", errors="replace"), "shift_jis"
 
 
+def _strip_heading_block(lines: list) -> int:
+    """先頭から見出しブロックを読み飛ばし、本文開始行インデックスを返す。"""
+    i = 0
+    # 先頭空行をスキップ
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines):
+        return i
+    ln = lines[i]
+    start_m = _MIDASHI_START_RE.search(ln)
+    if not start_m:
+        return i
+    visible = _AOZORA_ANY_TAG_RE.sub("", ln).strip()
+    if visible:
+        # インライン形式（タグ除去後も可視テキストがある）→ 1行だけスキップ
+        return i + 1
+    # ブロック形式: 開始タグ行 → テキスト行 → 終了タグ行
+    i += 1  # 開始タグ行
+    if i < len(lines):
+        i += 1  # テキスト行
+    if i < len(lines) and _MIDASHI_END_RE.search(lines[i]):
+        i += 1  # 終了タグ行
+    return i
+
+
+def _split_aozora_by_headings(body_text: str) -> list:
+    """
+    青空文庫本文を大/中/小見出しタグの位置でチャプター分割する。
+    見出しが存在しない場合は [] を返す。
+    各セクションの body は見出し行を除いた本文のみ。
+    Returns: [{"title": str, "body": str}, ...]
+    """
+    lines = body_text.split("\n")
+
+    # 見出し行インデックスとタイトルを収集（終わりマーカーは除外）
+    heading_positions: list = []
+    for i, ln in enumerate(lines):
+        m = re.search(r"「([^」]+)」は(大|中|小)見出し］", ln)
+        if m and "終わり" not in ln:
+            heading_positions.append((i, m.group(1)))
+
+    if not heading_positions:
+        return []
+
+    sections: list = []
+
+    # 最初の見出し前のテキスト（前文等）
+    pre_text = "\n".join(lines[: heading_positions[0][0]]).strip()
+    if pre_text:
+        sections.append({"title": "", "body": pre_text})
+
+    for j, (line_idx, title) in enumerate(heading_positions):
+        next_idx = heading_positions[j + 1][0] if j + 1 < len(heading_positions) else len(lines)
+        section_lines = lines[line_idx:next_idx]
+        body_start = _strip_heading_block(section_lines)
+        section_body = "\n".join(section_lines[body_start:]).strip()
+        sections.append({"title": title, "body": section_body})
+
+    return sections
+
+
 def aozora_text_to_episodes(text: str) -> tuple:
     """
     青空文庫テキストをパースして (title, author, episodes) を返す。
@@ -4168,7 +4631,7 @@ def aozora_text_to_episodes(text: str) -> tuple:
       1行目: タイトル
       次の非空行: 著者名
       ---（区切り線）…記号説明…---（区切り線）   ← 省略可
-      本文（［＃改ページ］で章分割）
+      本文（［＃改ページ］で章分割、または大/中/小見出しでチャプター分割）
       底本：…（末尾、除去する）
     """
     lines = text.split("\n")
@@ -4198,10 +4661,10 @@ def aozora_text_to_episodes(text: str) -> tuple:
     if m_col:
         body_text = body_text[:m_col.start()].rstrip()
 
-    # ｜（ルビ開始記号）を除去（_apply_ruby_auto が自動検出するため不要）
-    body_text = body_text.replace("｜", "")
+    # ｜（全角ルビ開始記号）は除去せず保持する。
+    # _apply_ruby_auto が [|｜] をルビ範囲の明示マーカーとして正しく処理する。
 
-    # ［＃改ページ］で章分割
+    # ［＃改ページ］で章分割し、各セクションをさらに大/中/小見出しで分割
     episode_texts = body_text.split("［＃改ページ］")
 
     episodes = []
@@ -4209,10 +4672,14 @@ def aozora_text_to_episodes(text: str) -> tuple:
         et = et.strip()
         if not et:
             continue
-        # 大見出しからエピソードタイトルを抽出
-        m_t = re.search(r"［＃「(.+?)」は大見出し］", et)
-        ep_title = m_t.group(1) if m_t else ""
-        episodes.append({"title": ep_title, "body": et})
+        subsections = _split_aozora_by_headings(et)
+        if subsections:
+            for sub in subsections:
+                episodes.append({"title": sub["title"], "body": sub["body"]})
+        else:
+            # 見出しなし → 大見出しタグからタイトルを取得（従来の挙動）
+            m_t = re.search(r"「(.+?)」は大見出し", et)
+            episodes.append({"title": m_t.group(1) if m_t else "", "body": et})
 
     # タイトルが取れなかった場合の補完
     if not episodes:
@@ -4222,6 +4689,11 @@ def aozora_text_to_episodes(text: str) -> tuple:
             episodes[0]["title"] = title
         else:
             for i, ep in enumerate(episodes, 1):
+                ep["title"] = f"第{i}部"
+    else:
+        # 一部のエピソードにタイトルがない場合（前段テキスト等）は番号を補完
+        for i, ep in enumerate(episodes, 1):
+            if not ep["title"]:
                 ep["title"] = f"第{i}部"
 
     return title, author, episodes
@@ -4251,17 +4723,19 @@ def run_aozora(args):
 
     print(f"[2/3] ZIP をダウンロード中: {zip_url}")
     try:
-        txt_filename, txt_bytes = aozora_download_extract(zip_url)
+        txt_filename, txt_bytes, images = aozora_download_extract(zip_url)
     except Exception as e:
         print(f"エラー: ZIP 取得・展開に失敗しました — {e}")
         sys.exit(1)
 
     text, enc = aozora_decode(txt_bytes)
-    print(f"      ファイル名: {txt_filename}  エンコーディング: {enc}")
+    img_msg = f"  画像 {len(images)} 件" if images else ""
+    print(f"      ファイル名: {txt_filename}  エンコーディング: {enc}{img_msg}")
 
     # テキストファイルを UTF-8 に変換して保存
-    _aozora_base = _apply_output_dir(args, args.output or Path(txt_filename).stem)
-    txt_path = _aozora_base + ".txt"
+    # テキストは ZIP 内ファイル名ベース（または -o 指定）を使用
+    _txt_base = _apply_output_dir(args, args.output or Path(txt_filename).stem)
+    txt_path = _txt_base + ".txt"
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(text)
     print(f"\n✅ テキスト出力完了: {txt_path}  （{enc} → UTF-8 変換済み）")
@@ -4272,12 +4746,15 @@ def run_aozora(args):
         title  = ep_title  or info.get("title",  "（タイトル不明）")
         author = ep_author or info.get("author", "（著者不明）")
 
-        epub_path = _aozora_base + ".epub"
+        # ePub は作品タイトルをファイル名に使用（-o 指定時はその名前を優先）
+        _epub_base = _apply_output_dir(args, args.output or safe_filename(title, fallback=Path(txt_filename).stem))
+        epub_path = _epub_base + ".epub"
         build_epub(epub_path, title, author, "",
                    work_url, "青空文庫", episodes,
                    cover_bg=args.cover_bg,
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   images=images or None)
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -4328,7 +4805,7 @@ def parse_aozora_text(content: str) -> tuple:
     if col_pos >= 0:
         body_content = body_content[:col_pos]
 
-    # PAGE_BREAK で章・話に分割
+    # PAGE_BREAK で章・話に分割し、各セクションをさらに大/中/小見出しで分割
     raw_sections = body_content.split("［＃改ページ］")
 
     episodes = []
@@ -4337,25 +4814,34 @@ def parse_aozora_text(content: str) -> tuple:
         if not sec:
             continue
 
-        ep_lines   = sec.split("\n")
-        ep_title   = ""
-        body_start = 0
+        subsections = _split_aozora_by_headings(sec)
+        if subsections:
+            for sub in subsections:
+                ep_num = len(episodes) + 1
+                episodes.append({
+                    "title": sub["title"] or f"第{ep_num}話",
+                    "body":  sub["body"],
+                })
+        else:
+            ep_lines   = sec.split("\n")
+            ep_title   = ""
+            body_start = 0
 
-        for li, ln in enumerate(ep_lines):
-            # 見出し終わりマーカーが見つかったらその次行から本文
-            if re.search(r"は(?:大|中|小)見出し終わり］", ln):
-                body_start = li + 1
-                break
-            # 見出し開始マーカーからタイトルを取得
-            m = re.search(r"「(.+?)」は(?:大|中|小)見出し］", ln)
-            if m:
-                ep_title = m.group(1)
+            for li, ln in enumerate(ep_lines):
+                # 見出し終わりマーカーが見つかったらその次行から本文
+                if re.search(r"は(?:大|中|小)見出し終わり］", ln):
+                    body_start = li + 1
+                    break
+                # 見出し開始マーカーからタイトルを取得
+                m = re.search(r"「(.+?)」は(?:大|中|小)見出し］", ln)
+                if m:
+                    ep_title = m.group(1)
 
-        body_text = "\n".join(ep_lines[body_start:]).strip()
-        episodes.append({
-            "title": ep_title or f"第{len(episodes) + 1}話",
-            "body":  body_text,
-        })
+            body_text = "\n".join(ep_lines[body_start:]).strip()
+            episodes.append({
+                "title": ep_title or f"第{len(episodes) + 1}話",
+                "body":  body_text,
+            })
 
     # 見出しマーカーがなく1セクションしかない場合はタイトルをそのまま使用
     if len(episodes) == 1 and episodes[0]["title"].startswith("第1話"):
