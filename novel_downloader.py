@@ -2672,6 +2672,38 @@ def alp_get_work_info(soup) -> dict:
 
 def alp_get_episode_list(soup) -> list:
     """作品トップページからエピソードURLとタイトルのリストを取得する。"""
+    import json as _json
+
+    # ── 新形式: script[type="application/json"] に chapterEpisodes が埋め込まれる ──
+    for script in soup.find_all("script", type="application/json"):
+        txt = (script.string or "").strip()
+        if not txt or "chapterEpisodes" not in txt:
+            continue
+        try:
+            data = _json.loads(txt)
+        except Exception:
+            continue
+        chapter_episodes = data.get("chapterEpisodes")
+        if not isinstance(chapter_episodes, list):
+            continue
+        episodes = []
+        for chapter in chapter_episodes:
+            for ep in chapter.get("episodes", []):
+                if not ep.get("isPublic", True):
+                    continue
+                href = ep.get("url", "")
+                if not href:
+                    continue
+                if not href.startswith("http"):
+                    href = _ALP_BASE + href
+                main_title = ep.get("mainTitle", "").strip()
+                sub_title  = ep.get("subTitle", "").strip()
+                title = f"{main_title}　{sub_title}" if sub_title else main_title
+                episodes.append({"url": href, "title": title})
+        if episodes:
+            return episodes
+
+    # ── 旧形式フォールバック: div.episodes > div.episode ──
     episodes = []
     episodes_div = soup.find("div", class_="episodes")
     if not episodes_div:
