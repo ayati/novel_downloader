@@ -92,7 +92,7 @@ python novel_downloader.py --from-file mynovel.txt
 
 すべて 1 ファイルに集約されており、`# ══════` で区切られたセクションで構成される：
 
-1. **共通ユーティリティ**（行 ~115–238）：`normalize_tate`、`aozora_header/colophon/chapter_title`、`safe_filename`、`_apply_output_dir`（行 216）、`write_file` — 青空文庫書式テキストの共通処理。`_apply_output_dir` は `--output-dir` を全 `run_*` 関数に横断適用するヘルパー。ルビ関連ユーティリティ（`_char_class`、`_resolve_ruby_base`、`_ruby_needs_pipe`、`_bs4_prev_text`）もこのセクションに集約。
+1. **共通ユーティリティ**（行 ~115–238）：`normalize_tate`、`aozora_header/colophon/chapter_title`、`safe_filename`、`_apply_output_dir`（行 216）、`write_file` — 青空文庫書式テキストの共通処理。`_apply_output_dir` は `--output-dir` を全 `run_*` 関数に横断適用するヘルパー。ルビ関連ユーティリティ（`_resolve_ruby_base`、`_ruby_needs_pipe`、`_bs4_prev_text`）もこのセクションに集約。
 
 2. **ePub3 ビルダー**（行 ~239–1708）：stdlib の `zipfile` で ZIP を直接生成。主要関数：
    - `_char_class`（行 456）— 文字の種別（0=漢字・1=ひらがな等）を返す。`々仝〆〇ヶ` は青空文庫規定で漢字（0）扱い
@@ -108,7 +108,7 @@ python novel_downloader.py --from-file mynovel.txt
 
 5. **アルファポリススクレイパー**（行 ~2730–2936）：`requests` + `BeautifulSoup` を使用。エピソード一覧は `script[type="application/json"]` 内の `chapterEpisodes` JSON から取得（`{url, mainTitle, subTitle, isPublic}` 形式）。旧形式の `div.episodes > div.episode` はフォールバックとして残存。本文取得はセッション Cookie 有無でサーバーのレスポンスが変わる：Cookie あり → 本文が `div#novelBody` に直接埋め込み、Cookie なし → JS の `.load()` で `/novel/episode_body` に AJAX POST。エントリポイント：`run_alphapolis`（行 2825 付近）。
 
-6. **エブリスタスクレイパー**（行 ~2937–3113）：`requests` + `BeautifulSoup` を使用。ビューアページ（`/novels/{id}/viewer?page=N`）の `window.__NUXT__` に 15 件ずつ本文が `novelPageId:"NNN",body:"..."` 形式で埋め込まれる。page=1, 16, 31, … と 15 ページ刻みでバッチ取得。エントリポイント：`run_estar`（行 3008）。
+6. **エブリスタスクレイパー**（行 ~2937–3113）：`requests` + `BeautifulSoup` を使用。ビューアページ（`/novels/{id}/viewer?page=N`）の `window.__NUXT__` に 15 件ずつ本文が `novelPageId:"NNN",body:"..."` 形式で埋め込まれる。page=1, 16, 31, … と 15 ページ刻みでバッチ取得。`_est_parse_nuxt_vars()` で IIFE 引数リストを解析して変数名→整数のマッピング（例: `g=1`）を構築し、`pageNo:g` のような変数参照を解決する。エピソード開始ページは `title:"..."` フィールドが存在し、`est_parse_episode_titles()` で抽出。連続ページは `タイトル（2）` 形式で採番。エントリポイント：`run_estar`（行 3008）。
 
 7. **ハーメルンスクレイパー**（行 ~3114–3359）：`playwright` + `BeautifulSoup` を使用。トップページは `requests` で取得（CF保護なし）。エピソードページは Cloudflare Managed Challenge があるため、Playwright で各話ごとに新しい browser context を作成し 5 秒待機して取得。本文は `div#honbun`、前書きは `div#maegaki`、後書きは `div#atogaki`。エントリポイント：`run_hameln`（行 3212）。
 
@@ -144,8 +144,9 @@ META-INF/container.xml
 OEBPS/package.opf
 OEBPS/nav.xhtml              ← 縦書き目次ページ（spine に明示挿入）
 OEBPS/css/novel.css
+OEBPS/css/vertical_image.css ← 画像表紙専用 CSS
 OEBPS/fonts/                 ← 埋め込みフォント（--font 指定時のみ）
-OEBPS/images/cover.jpg       ← 表紙画像（JPEG または SVG）
+OEBPS/images/cover.jpg       ← 表紙画像（Pillow あり: JPEG、なし: SVG）
 OEBPS/images/                ← 青空文庫 ZIP 内画像（aozora のみ）
 OEBPS/cover-image.xhtml      ← 画像表紙ページ（epub:type="cover"、body に epub:type="cover"、img に epub:type="cover-image"）
 OEBPS/cover.xhtml            ← タイトル・著者・あらすじページ

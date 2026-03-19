@@ -2999,42 +2999,88 @@ def est_extract_nuxt(html: str) -> str:
     return html[start:end] if start >= 0 else ""
 
 
-def est_parse_viewer_page(nuxt_src: str) -> dict:
+def _est_parse_nuxt_vars(nuxt_src: str) -> dict:
     """
-    ビューアページの __NUXT__ から各エピソードの pageNo・body を抽出する。
+    NUXT IIFE の引数リストを解析して letter→int のマッピングを返す。
+    例: (function(a,b,c,...){...}(false,null,0,...,1,...)) → {'c':0,'g':1,...}
+    """
+    sig_m = re.search(r'\(function\(([a-z,]+)\)', nuxt_src)
+    if not sig_m:
+        return {}
+    params = sig_m.group(1).split(',')
+    # 末尾の }(args) を探す（IIFE末尾の引数リスト）
+    idx = nuxt_src.rfind('}(')
+    if idx < 0:
+        return {}
+    args_str = nuxt_src[idx + 2:]
+    # 末尾の );, )); 等を除去
+    args_str = re.sub(r'\)+\s*;?\s*$', '', args_str)
+    # 簡易 JS 引数パーサー（{} や "" 内のカンマを無視して分割）
+    args, current, depth, in_str = [], [], 0, False
+    for ch in args_str:
+        if in_str:
+            current.append(ch)
+            if ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+            current.append(ch)
+        elif ch in '{[(':
+            depth += 1
+            current.append(ch)
+        elif ch in '}])':
+            depth -= 1
+            current.append(ch)
+        elif ch == ',' and depth == 0:
+            args.append(''.join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        args.append(''.join(current).strip())
+    return {p: int(v) for p, v in zip(params, args) if v.isdigit()}
+
+
+def est_parse_viewer_page(nuxt_src: str, batch_page: int = 1) -> dict:
+    """
+    ビューアページの __NUXT__ から各ページの pageNo・body を抽出する。
     戻り値: {pageNo: body_str}
     """
+    var_map = _est_parse_nuxt_vars(nuxt_src)
     result = {}
     for m in re.finditer(
         r'novelPageId:"\d+",body:"((?:[^"\\]|\\.)*?)",bodyParsed', nuxt_src
     ):
         body = m.group(1).replace("\\n", "\n").replace("\\r", "")
-        rest = nuxt_src[m.end():m.end() + 5000]
-        title_m = re.search(r',title:"(\d+)"', rest)
-        if title_m:
-            result[int(title_m.group(1))] = body
+        rest = nuxt_src[m.end():m.end() + 500]
+        pageno_m = re.search(r',pageNo:(\d+|[a-z])', rest)
+        if not pageno_m:
+            continue
+        raw = pageno_m.group(1)
+        page_no = int(raw) if raw.isdigit() else var_map.get(raw, batch_page)
+        result[page_no] = body
     return result
 
 
-def est_parse_chapter_starts(nuxt_src: str) -> dict:
+def est_parse_episode_titles(nuxt_src: str, batch_page: int = 1) -> dict:
     """
-    ビューアページの __NUXT__ ナビセクション (body:e) から
-    章タイトルの開始ページを抽出する。
-    戻り値: {pageNo: chapterTitle}
+    ビューアページの __NUXT__ からエピソード開始ページのタイトルを抽出する。
+    戻り値: {pageNo: episodeTitle}（タイトルのあるページのみ）
     """
-    chapter_starts = {}
-    seen = set()
-    for m in re.finditer(r'novelPageId:"(\d+)",body:e', nuxt_src):
-        nid = m.group(1)
-        if nid in seen:
+    var_map = _est_parse_nuxt_vars(nuxt_src)
+    result = {}
+    for m in re.finditer(
+        r'novelPageId:"\d+",body:"(?:[^"\\]|\\.)*?",bodyParsed', nuxt_src
+    ):
+        rest = nuxt_src[m.end():m.end() + 500]
+        pageno_m = re.search(r',pageNo:(\d+|[a-z])', rest)
+        title_m  = re.search(r',title:"([^"]+)"', rest)
+        if not pageno_m or not title_m:
             continue
-        seen.add(nid)
-        block = nuxt_src[m.start():m.start() + 2000]
-        title_m   = re.search(r',title:"(\d+)"', block)
-        chapter_m = re.search(r',chapterTitle:"([^"]+)"', block)
-        if title_m and chapter_m:
-            chapter_starts[int(title_m.group(1))] = chapter_m.group(1)
-    return chapter_starts
+        raw = pageno_m.group(1)
+        page_no = int(raw) if raw.isdigit() else var_map.get(raw, batch_page)
+        result[page_no] = title_m.group(1)
+    return result
 
 
 def run_estar(args):
@@ -3073,9 +3119,8 @@ def run_estar(args):
     target_pages = list(range(start_page, end_page + 1))
     print(f"[2/3] エピソードを取得中（{len(target_pages)} ページ / 全 {total_pages} ページ）...")
 
-    all_bodies    = {}   # {pageNo: body_str}
-    chapter_starts = {}  # {pageNo: chapterTitle}
-    chapter_parsed = False
+    all_bodies  = {}   # {pageNo: body_str}
+    all_titles  = {}   # {pageNo: episodeTitle}（エピソード開始ページのみ）
 
     batch_list = list(range(start_page, end_page + 1, 15))
     for batch_i, batch_page in enumerate(batch_list, 1):
@@ -3084,10 +3129,8 @@ def run_estar(args):
         try:
             _, viewer_html = est_fetch(session, viewer_url)
             nuxt_src = est_extract_nuxt(viewer_html)
-            all_bodies.update(est_parse_viewer_page(nuxt_src))
-            if not chapter_parsed:
-                chapter_starts = est_parse_chapter_starts(nuxt_src)
-                chapter_parsed = True
+            all_bodies.update(est_parse_viewer_page(nuxt_src, batch_page))
+            all_titles.update(est_parse_episode_titles(nuxt_src, batch_page))
         except RuntimeError as e:
             print(f"    [エラー] バッチ取得失敗: {e}")
         if batch_i < len(batch_list):
@@ -3099,21 +3142,28 @@ def run_estar(args):
                              source_url=work_url)
     colophon = aozora_colophon(info["title"], work_url, "エブリスタ")
 
-    sections      = []
-    epub_episodes = []
-    current_chapter = ""
+    sections         = []
+    epub_episodes    = []
+    current_ep_title = ""
+    page_in_episode  = 0
 
     for page_no in target_pages:
         body_raw = all_bodies.get(page_no, "（取得失敗）")
         body = (normalize_tate(body_raw)
                 if body_raw != "（取得失敗）" else body_raw)
 
-        chapter = chapter_starts.get(page_no, "")
-        if chapter and chapter != current_chapter:
-            current_chapter = chapter
+        ep_start = all_titles.get(page_no, "")
+        if ep_start:
+            current_ep_title = ep_start
+            page_in_episode  = 1
+        else:
+            page_in_episode += 1
 
-        ep_title  = (f"{current_chapter}　第{page_no}話"
-                     if current_chapter else f"第{page_no}話")
+        if page_in_episode <= 1:
+            ep_title = current_ep_title or f"第{page_no}話"
+        else:
+            ep_title = (f"{current_ep_title}（{page_in_episode}）"
+                        if current_ep_title else f"第{page_no}話")
         sec_title = aozora_chapter_title(ep_title)
         sections.append(f"{sec_title}\n\n{body}\n")
         epub_episodes.append({"title": ep_title, "body": body})
