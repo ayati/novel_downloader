@@ -224,6 +224,11 @@ def _apply_output_dir(args, base: str) -> str:
     return os.path.join(d, Path(base).name)
 
 
+def _epub_ext(args) -> str:
+    """--kobo 指定時は .kepub.epub、それ以外は .epub を返す。"""
+    return ".kepub.epub" if getattr(args, "kobo", False) else ".epub"
+
+
 def write_file(filename: str, header: str, sections: list, colophon: str,
                encoding: str = ENCODING, newline: str = "os"):
     """ヘッダー + 各話（改ページ区切り）+ 奥付 を書き出す。
@@ -2146,7 +2151,7 @@ def run_narou(args):
 
     base     = _apply_output_dir(args, args.output or safe_filename(title, "narou_novel"))
     txt_path = base + ".txt"
-    epub_path= base + ".epub"
+    epub_path= base + _epub_ext(args)
     header   = aozora_header(title, author, synopsis, source_url=base_url)
     colophon = aozora_colophon(title, base_url, "小説家になろう")
 
@@ -2609,7 +2614,7 @@ def run_kakuyomu(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "kakuyomu_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -2926,7 +2931,7 @@ def run_alphapolis(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "alphapolis_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -3181,7 +3186,7 @@ def run_estar(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "estar_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     got = sum(1 for p in target_pages if p in all_bodies)
@@ -3428,7 +3433,7 @@ def run_hameln(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "hameln_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -3730,7 +3735,7 @@ def run_neopage(args):
     base      = _apply_output_dir(
         args, args.output or safe_filename(info["title"], "neopage_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon,
                args.encoding, getattr(args, "newline", "os"))
 
@@ -3962,7 +3967,7 @@ def run_solispia(args):
     base     = _apply_output_dir(
         args, args.output or safe_filename(info["title"], "solispia_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon,
                args.encoding, getattr(args, "newline", "os"))
 
@@ -4199,7 +4204,7 @@ def run_noichigo(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "noichigo_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -4388,7 +4393,7 @@ def run_berrys(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "berrys_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -4585,7 +4590,7 @@ def run_monogatary(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(story_title, "monogatary_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -4786,7 +4791,7 @@ def run_novema(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novema_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -5006,7 +5011,7 @@ def run_novelup(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novelup_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -5213,7 +5218,7 @@ def run_sutekibungei(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "suteki_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -5441,7 +5446,7 @@ def run_days(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "days_novel"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -5706,7 +5711,7 @@ def run_genpaku(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "genpaku"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
 
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
@@ -6034,7 +6039,7 @@ def run_hyuki(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "hyuki"))
     txt_path  = base + ".txt"
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
 
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
@@ -6356,7 +6361,7 @@ def run_aozora(args):
 
         # ePub は作品タイトルをファイル名に使用（-o 指定時はその名前を優先）
         _epub_base = _apply_output_dir(args, args.output or safe_filename(title, fallback=Path(txt_filename).stem))
-        epub_path = _epub_base + ".epub"
+        epub_path = _epub_base + _epub_ext(args)
         build_epub(epub_path, title, author, "",
                    work_url, "青空文庫", episodes,
                    cover_bg=args.cover_bg,
@@ -6515,7 +6520,7 @@ def run_from_file(args):
     print(f"  話数     : {len(episodes)} 話")
 
     base      = _apply_output_dir(args, args.output or safe_filename(title, "novel"))
-    epub_path = base + ".epub"
+    epub_path = base + _epub_ext(args)
     cover_bg  = args.cover_bg or "#16234b"
 
     print(f"📖 ePub生成中...")
@@ -7348,6 +7353,10 @@ def main():
                         help="出力先ディレクトリを指定する（省略時はカレントディレクトリ）。"
                              "指定したディレクトリが存在しない場合は自動作成する。"
                              "ファイル名は従来通りタイトルから自動生成（-o と併用可）")
+    parser.add_argument("--kobo", dest="kobo", action="store_true",
+                        help="Kobo端末向けにePubの拡張子を .kepub.epub にする。"
+                             "Kobo Clara / Kobo Sage 等のKobo専用リーダーで"
+                             "縦書きや目次を正しく処理させるために使用する")
 
     args = parser.parse_args()
 
