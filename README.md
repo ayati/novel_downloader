@@ -20,6 +20,12 @@
 | [NOVEL DAYS](https://novel.daysneo.com/) | `https://novel.daysneo.com/works/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.html` | requests, beautifulsoup4 |
 | [青空文庫](https://www.aozora.gr.jp/)（旧） | `https://www.aozora.gr.jp/cards/XXXXXX/cardXXXXXX.html` | 不要（stdlib のみ） |
 | [青空文庫](https://www.aozora-renewal.cloud/)（新） | `https://www.aozora-renewal.cloud/cards/XXXXXX/cardXXXXXX.html` | 不要（stdlib のみ） |
+| [プロジェクト杉田玄白](https://www.genpaku.org/) | `https://www.genpaku.org/XXXXXX/XXXXXXj.html` | requests, beautifulsoup4 |
+| [結城浩翻訳の部屋](https://www.hyuki.com/trans/) | `https://www.hyuki.com/trans/XXXXXX` | requests, beautifulsoup4 |
+| [ネオページ](https://www.neopage.com/) | `https://www.neopage.com/book/XXXXXXXXXXXXXXXXX` | requests, beautifulsoup4 |
+| [ソリスピア](https://solispia.com/) | `https://solispia.com/title/XXXX` | requests, beautifulsoup4 |
+| [berry's cafe](https://www.berrys-cafe.jp/) | `https://www.berrys-cafe.jp/book/nXXXXXXX` | requests, beautifulsoup4 |
+| [monogatary.com](https://monogatary.com/) | `https://monogatary.com/story/XXXXXXX` | requests |
 
 ## 機能
 
