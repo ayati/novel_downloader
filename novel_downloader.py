@@ -458,6 +458,14 @@ _XHTML_TMPL = """\
 
 
 
+# ルビベースとして使用できない文構造上の句読点・括弧類。
+# クラス9の文字でも ＆ ♪ ★ 等のシンボル文字はルビベース可。
+# 自動検出パス（パイプなし《》）でのみ使用する。
+_PUNCT_NO_RUBY_BASE = frozenset(
+    '。、！？…‥・「」『』（）【】〈〉《》：；―—–\u30fb\uff0e\uff0c\uff01\uff1f'
+)
+
+
 def _char_class(ch: str) -> int:
     """
     文字種を整数で返す（ルビ開始境界の自動判別に使用）。
@@ -555,12 +563,18 @@ def _ruby_needs_pipe(base: str, preceding: str = "", yomi: str = "") -> bool:
          「俺以外の」→「の」のみになる）
     3. preceding の末尾文字が base[-1] と同じ文字種
        （自動検出が直前テキストまで延びる; 「氷村心白」→「氷村心白」全体になる）
+    4. base の末尾文字がクラス9（記号・句読点）
+       （_apply_ruby_auto の自動検出では文構造句読点として地の文扱いになる場合が
+         あるため、スクレイパー段階でパイプを付けて明示する。
+         例: ＆《アンド》）
     """
     if not base:
         return False
     if yomi and _has_kanji(yomi):
         return True
     end_cls = _char_class(base[-1])
+    if end_cls == 9:
+        return True
     if any(_char_class(ch) != end_cls for ch in base):
         return True
     if preceding and _char_class(preceding[-1]) == end_cls:
@@ -627,9 +641,10 @@ def _apply_ruby_auto(text: str) -> str:
             else:
                 # "《よみ》" のみ：chunk の末尾から文字種境界でベースを切り出す
                 before, base = _resolve_ruby_base(chunk)
-                # ベースが句読点・記号類（クラス9）のみの場合も地の文扱い
-                # ※クラス10（キリル文字等のUnicode文字）は有効なルビベースとして扱う
-                if base and all(_char_class(ch) == 9 for ch in base):
+                # ベースが文構造上の句読点・括弧類のみの場合は地の文扱い。
+                # ＆ ♪ ★ 等のシンボル文字（クラス9だが _PUNCT_NO_RUBY_BASE 外）は
+                # ルビベースとして有効とする。
+                if base and all(ch in _PUNCT_NO_RUBY_BASE for ch in base):
                     base = ""
                     before = chunk
                 result.append(_esc(before))
