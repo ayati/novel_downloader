@@ -183,11 +183,11 @@ python novel_downloader.py https://kakuyomu.jp/works/16817139555217983105
 | 特定の話数だけ取得したい | `python novel_downloader.py URL --start 1 --end 10` |
 | フォントを ePub に埋め込む | `python novel_downloader.py URL --font font\AyatiShowaSerif-Regular.ttf` |
 
-### PNG 表紙について
+### JPG 表紙について
 
-Pillow がインストール済みであれば、表紙に日本語テキストが入った PNG 画像が自動生成されます。
+Pillow がインストール済みであれば、表紙に日本語テキストが入った JPG 画像が自動生成されます。
 Windows 10/11 には MS 明朝・BIZ UDP 明朝などの日本語フォントが標準搭載されているため、
-追加でフォントをインストールしなくても PNG 表紙が生成されます。
+追加でフォントをインストールしなくても JPG 表紙が生成されます。
 
 ---
 
@@ -307,7 +307,7 @@ python novel_downloader.py https://syosetu.org/novel/XXXXXXX/
 ### `[警告] Pillow がインストールされていないため…` と表示される
 
 **内容：** エラーではなく警告です。ePub は生成されますが表紙が SVG 形式になります。
-**対処：** PNG 表紙が必要な場合は `pip install Pillow` を実行する。
+**対処：** JPG 表紙が必要な場合は `pip install Pillow` を実行する。
 
 ---
 

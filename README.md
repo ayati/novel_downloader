@@ -28,7 +28,7 @@
   - ルビ記法（`漢字《かんじ》`）を保持
   - ヘッダーにあらすじ・底本 URL を記載
 - 縦書き ePub3（.epub）出力
-  - PNG 表紙画像を自動生成（Pillow + 日本語フォントが必要）
+  - JPG 表紙画像を自動生成（Pillow + 日本語フォントが必要）
   - 表紙背景色をオプションで指定可能
   - Pillow・フォント未インストール時は SVG 表紙で代替
   - フォントファイルを ePub 内に埋め込み可能（`--font`）
@@ -68,7 +68,7 @@ pip install playwright
 python -m playwright install chromium
 ```
 
-### 推奨ライブラリ（PNG 表紙生成に必要）
+### 推奨ライブラリ（JPG 表紙生成に必要）
 
 **Ubuntu / Debian:**
 ```bash
@@ -80,7 +80,7 @@ sudo apt install python3-pillow
 pip install Pillow
 ```
 
-### 日本語フォント（PNG 表紙生成に必要）
+### 日本語フォント（JPG 表紙生成に必要）
 
 **Ubuntu / Debian:**
 ```bash
@@ -293,7 +293,7 @@ OEBPS/nav.xhtml
 OEBPS/css/novel.css
 OEBPS/css/vertical_image.css
 OEBPS/fonts/                 ← 埋め込みフォント（--font 指定時のみ）
-OEBPS/images/0000.png        ← 表紙画像（PNG または SVG）
+OEBPS/images/cover.jpg       ← 表紙画像（JPG または SVG）
 OEBPS/image-cover.xhtml      ← 画像表紙ページ（epub:type="cover"）
 OEBPS/cover.xhtml            ← タイトル・著者・あらすじページ
 OEBPS/ep0001.xhtml           ← 各話（epub:type="chapter"）

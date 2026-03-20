@@ -1563,16 +1563,27 @@ def make_cover_image(title: str, author: str, cover_bg: str = "#16234b"):
                 draw.text((x,   y  ), line, font=font_t, fill=(255, 248, 215))
 
             # ── 作者名：LINE_Y2 より下のエリア中央に固定配置 ──────────
-            font_a = load_font(_FONT_MEDIUM_PATH, _FONT_MEDIUM_IDX, AUTHOR_SZ)
-            if font_a is None:
-                font_a = font_t  # boldで代替
+            # 著者名が横幅に収まるようにフォントサイズを縮小
+            author_sz = AUTHOR_SZ
+            while author_sz >= 20:
+                font_a = load_font(_FONT_MEDIUM_PATH, _FONT_MEDIUM_IDX, author_sz)
+                if font_a is None:
+                    font_a = font_t
+                    break
+                try:
+                    _aw_test = font_a.getbbox(author)[2]
+                except Exception:
+                    _aw_test = len(author) * author_sz
+                if _aw_test <= max_title_w:
+                    break
+                author_sz -= 4
             try:
                 ab = font_a.getbbox(author)   # (left, top, right, bottom)
                 aw = ab[2] - ab[0]
                 ah = ab[3] - ab[1]
             except Exception:
-                aw = len(author) * AUTHOR_SZ
-                ah = AUTHOR_SZ
+                aw = len(author) * author_sz
+                ah = author_sz
             ax = (W - aw) / 2
             # 作者名エリアの視覚的中央（ascent オフセットを補正）
             area_h = AUTHOR_AREA_BOT - AUTHOR_AREA_TOP
@@ -3440,6 +3451,541 @@ def run_hameln(args):
 
 
 # ══════════════════════════════════════════
+#  ネオページ スクレーパー
+# ══════════════════════════════════════════
+# 依存: requests + beautifulsoup4（playwright 不要）
+# 作品情報: /book/{id} の __next_f (Next.js RSC) から取得
+# 章本文: /v1/book/content/{chapter_id} API から取得（content フィールド）
+# チェーン: API レスポンスの next.chapter_id を辿る
+
+_NEOPAGE_BASE    = "https://www.neopage.com"
+_NEOPAGE_HEADERS = {
+    "User-Agent":      UA,
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ja,en;q=0.9",
+}
+
+
+def _neopage_fetch(url: str, retries: int = 3) -> str:
+    """requests でページ HTML を取得する。失敗時は RuntimeError。"""
+    sess = requests.Session()
+    sess.headers.update(_NEOPAGE_HEADERS)
+    for attempt in range(1, retries + 1):
+        try:
+            resp = sess.get(url, timeout=30)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            return resp.text
+        except Exception as e:
+            if attempt >= retries:
+                raise RuntimeError(f"取得失敗: {url} ({e})")
+            time.sleep(5)
+    return ""
+
+
+def _neopage_parse_next_f(html: str) -> list:
+    """
+    self.__next_f.push([1,"KEY:JSON\\n"]) から JSON オブジェクトを抽出する。
+    各プッシュのペイロードを展開して行ごとに解析し、dict/list 型の値を収集する。
+    """
+    objects = []
+    for m in re.finditer(
+        r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', html
+    ):
+        raw = m.group(1)
+        try:
+            text = json.loads(f'"{raw}"')
+        except Exception:
+            continue
+        for line in text.splitlines():
+            colon = line.find(":")
+            if colon < 0:
+                continue
+            val = line[colon + 1:].strip()
+            if val and val[0] in ("{", "["):
+                try:
+                    obj = json.loads(val)
+                    if isinstance(obj, (dict, list)):
+                        objects.append(obj)
+                except Exception:
+                    pass
+    return objects
+
+
+def _neopage_find_book_obj(obj, book_id: str, depth: int = 0):
+    """
+    book_id が一致し、かつ name と first_chapter_id を持つ
+    辞書を再帰探索して返す。見つからない場合は None。
+    """
+    if depth > 15:
+        return None
+    if isinstance(obj, dict):
+        if (obj.get("book_id") == book_id
+                and isinstance(obj.get("name"), str) and obj["name"]
+                and isinstance(obj.get("first_chapter_id"), str) and obj["first_chapter_id"]):
+            return obj
+        for v in obj.values():
+            found = _neopage_find_book_obj(v, book_id, depth + 1)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _neopage_find_book_obj(item, book_id, depth + 1)
+            if found:
+                return found
+    return None
+
+
+def neopage_get_work_info(html: str, book_id: str) -> dict:
+    """
+    /book/{id} ページの __next_f から作品情報を返す。
+    keys: title / author / synopsis / first_chapter_id / total_chapter
+    """
+    objects = _neopage_parse_next_f(html)
+
+    book_obj = None
+    for obj in objects:
+        book_obj = _neopage_find_book_obj(obj, book_id)
+        if book_obj:
+            break
+
+    if book_obj is None:
+        return {"title": "", "author": "", "synopsis": "",
+                "first_chapter_id": "", "total_chapter": 0}
+
+    title            = book_obj.get("name") or ""
+    synopsis         = book_obj.get("intro") or ""
+    first_chapter_id = book_obj.get("first_chapter_id") or ""
+    total_chapter    = int(book_obj.get("total_chapter") or 0)
+
+    author_obj = book_obj.get("author") or {}
+    author = (author_obj.get("author_name") or "") if isinstance(author_obj, dict) else ""
+
+    return {
+        "title":            title,
+        "author":           author,
+        "synopsis":         synopsis,
+        "first_chapter_id": first_chapter_id,
+        "total_chapter":    total_chapter,
+    }
+
+
+def neopage_fetch_chapter(chapter_id: str, retries: int = 3) -> dict:
+    """
+    /v1/book/content/{chapter_id} API から章データを返す。
+    keys: name / content / next_chapter_id / is_last
+    content が null（有料章等）の場合は空文字。
+    """
+    url  = f"{_NEOPAGE_BASE}/v1/book/content/{chapter_id}"
+    sess = requests.Session()
+    sess.headers.update({**_NEOPAGE_HEADERS, "Accept": "application/json"})
+    for attempt in range(1, retries + 1):
+        try:
+            resp = sess.get(url, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"API エラー: {data.get('message')}")
+            ch      = data["data"]
+            next_ch = ch.get("next") or {}
+            return {
+                "name":            ch.get("name") or "",
+                "content":         ch.get("content") or "",
+                "next_chapter_id": (next_ch.get("chapter_id") or "")
+                                   if isinstance(next_ch, dict) else "",
+                "is_last":         bool(ch.get("isLastChapter")),
+            }
+        except RuntimeError:
+            raise
+        except Exception as e:
+            if attempt >= retries:
+                raise RuntimeError(f"章取得失敗: {chapter_id} ({e})")
+            time.sleep(5)
+    return {"name": "", "content": "", "next_chapter_id": "", "is_last": True}
+
+
+def neopage_content_to_aozora(content_html: str) -> str:
+    """
+    /v1/book/content/ API の content フィールド（<p> タグ HTML）を
+    青空文庫書式テキストに変換する。
+    """
+    soup = BeautifulSoup(content_html, "html.parser")
+
+    # ルビ変換: <ruby><rb>底</rb><rt>そこ</rt></ruby> → |底《そこ》
+    for ruby in soup.find_all("ruby"):
+        rb = ruby.find("rb")
+        rt = ruby.find("rt")
+        if rt:
+            base_text = rb.get_text() if rb else ruby.get_text()
+            prev = _bs4_prev_text(ruby)
+            pipe = "|" if _ruby_needs_pipe(base_text, prev) else ""
+            ruby.replace_with(f"{pipe}{base_text}《{rt.get_text()}》")
+        else:
+            ruby.replace_with(ruby.get_text())
+
+    lines = []
+    for p in soup.find_all("p"):
+        text = p.get_text(separator="\n").strip()
+        lines.append(text if text else "")
+
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    return "\n".join(lines)
+
+
+def run_neopage(args):
+    """ネオページ小説のダウンロード処理（requests のみ、playwright 不要）。"""
+    if not _KAKUYOMU_AVAILABLE:
+        print("エラー: ネオページのダウンロードには beautifulsoup4 が必要です。")
+        print("  pip install requests beautifulsoup4")
+        sys.exit(1)
+
+    work_url = args.url.rstrip("/")
+    wid_m = re.search(r'/book/(\w+)', work_url)
+    if not wid_m:
+        print(f"エラー: ネオページの作品URLとして認識できません: {work_url}")
+        sys.exit(1)
+    book_id = wid_m.group(1)
+
+    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    book_html = _neopage_fetch(work_url)
+    info = neopage_get_work_info(book_html, book_id)
+
+    if not info["title"]:
+        print("エラー: タイトルを取得できませんでした。")
+        sys.exit(1)
+    print(f"      タイトル    : {info['title']}")
+    if info["author"]:
+        print(f"      著者        : {info['author']}")
+    if info["total_chapter"]:
+        print(f"      総話数      : {info['total_chapter']}")
+
+    if not info["first_chapter_id"]:
+        print("エラー: 第1話のIDを取得できませんでした。")
+        sys.exit(1)
+
+    # ── /v1/book/content/ API でチェーン探索・全章リスト構築 ─────────────────
+    # --end が指定されていればその分だけ取得して打ち切る（高速化）
+    end_arg   = getattr(args, "end", None) or 0
+    start_arg = max(1, getattr(args, "start", None) or 1)
+    max_chain = end_arg if end_arg else (info["total_chapter"] or 9999) + 50
+
+    print("[2/3] 章リストを構築中...")
+    chapters       = []  # [(chapter_id, chapter_title), ...]
+    content_cache  = {}  # {chapter_id: content_html}  ← 本文キャッシュ
+    cur_id         = info["first_chapter_id"]
+
+    while cur_id and len(chapters) < max_chain:
+        try:
+            ch_data = neopage_fetch_chapter(cur_id)
+        except RuntimeError as e:
+            print(f"  [警告] 章情報取得失敗 (id={cur_id}): {e}")
+            break
+        ch_title = ch_data["name"] or f"第{len(chapters) + 1}話"
+        chapters.append((cur_id, ch_title))
+        content_cache[cur_id] = ch_data["content"]  # キャッシュ
+        n = len(chapters)
+        if n % 20 == 0:
+            print(f"  ... {n} 章取得済み")
+        if ch_data["is_last"] or not ch_data["next_chapter_id"] or ch_data["next_chapter_id"] == cur_id:
+            break
+        cur_id = ch_data["next_chapter_id"]
+        time.sleep(0.3)  # チェーン探索は軽量なので短め
+
+    if not chapters:
+        print("エラー: 章リストを構築できませんでした。")
+        sys.exit(1)
+
+    total_chapters = len(chapters)
+    print(f"      章数        : {total_chapters}")
+
+    start_ep = max(1, start_arg)
+    end_ep   = min(total_chapters, end_arg or total_chapters)
+    target   = chapters[start_ep - 1:end_ep]
+
+    # ── 本文組み立て（キャッシュ済みコンテンツを使用） ───────────────────────
+    print(f"[3/3] テキスト・ePub を生成中（{len(target)} 話）...")
+    sections      = []
+    epub_episodes = []
+    got           = 0
+
+    for ep_i, (ch_id, ch_title) in enumerate(target, 1):
+        content = content_cache.get(ch_id, "")
+        if content:
+            body = neopage_content_to_aozora(content)
+            body = normalize_tate(body)
+        else:
+            body = "（有料章または非公開）"
+
+        sec_title = aozora_chapter_title(ch_title)
+        sections.append(f"{sec_title}\n\n{body}\n")
+        epub_episodes.append({"title": ch_title, "body": body})
+        if body not in ("（取得失敗）", "（有料章または非公開）"):
+            got += 1
+
+    header   = aozora_header(info["title"], info["author"],
+                             info["synopsis"], source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ネオページ")
+    base      = _apply_output_dir(
+        args, args.output or safe_filename(info["title"], "neopage_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + ".epub"
+    write_file(txt_path, header, sections, colophon,
+               args.encoding, getattr(args, "newline", "os"))
+
+    full_len = (len(header)
+                + sum(len(s) for s in sections)
+                + len(PAGE_BREAK) * max(len(sections) - 1, 0)
+                + len(colophon))
+    print(f"\n✅ テキスト出力完了: {txt_path}")
+    print(f"   取得話数  : {got} / {len(target)}")
+    print(f"   総文字数  : {full_len:,} 文字")
+
+    if not getattr(args, "no_epub", False):
+        print("📖 ePub生成中...")
+        build_epub(epub_path, info["title"], info["author"],
+                   info["synopsis"],
+                   work_url, "ネオページ", epub_episodes,
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
+        print(f"✅ ePub出力完了: {epub_path}")
+
+
+# ══════════════════════════════════════════
+#  ソリスピア スクレーパー
+# ══════════════════════════════════════════
+# 依存: requests + beautifulsoup4（playwright 不要、SSR）
+# 作品URL: /title/{id}
+# エピソードURL: /novel/{episode_id}（→作品ページ /title/{id} へ正規化）
+# 本文: div#novelContent 最深divにテキストノードと <br> が交互
+
+_SOLISPIA_BASE    = "https://solispia.com"
+_SOLISPIA_HEADERS = {
+    "User-Agent":      UA,
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ja,en;q=0.9",
+}
+
+
+def _solispia_fetch(url: str, retries: int = 3):
+    """requests でページを取得して BeautifulSoup を返す。失敗時は RuntimeError。"""
+    sess = requests.Session()
+    sess.headers.update(_SOLISPIA_HEADERS)
+    for attempt in range(1, retries + 1):
+        try:
+            resp = sess.get(url, timeout=30)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            return BeautifulSoup(resp.text, "html.parser")
+        except Exception as e:
+            if attempt >= retries:
+                raise RuntimeError(f"取得失敗: {url} ({e})")
+            time.sleep(5)
+
+
+def solispia_get_work_info(soup) -> dict:
+    """タイトルページから作品情報（タイトル・著者・あらすじ）を返す。"""
+    title_el  = soup.find("h1", class_="text-title")
+    title     = title_el.get_text(strip=True) if title_el else ""
+    # 著者: 最初の main-user-underline リンク
+    author_el = soup.find("a", class_="main-user-underline")
+    author    = author_el.get_text(strip=True) if author_el else ""
+    syn_el    = soup.find("div", class_="summary")
+    synopsis  = syn_el.get_text().strip() if syn_el else ""
+    return {"title": title, "author": author, "description": synopsis}
+
+
+def solispia_get_episode_list(soup) -> list:
+    """
+    タイトルページから全エピソードの (url, title) リストを返す。
+    デスクトップ用 div.episode コンテナのみ使用（モバイル用 div.episode-small との重複を回避）。
+    """
+    # デスクトップ用コンテナを優先（class が "episode" のみの div）
+    container = soup.find("div", class_="episode") or soup
+    episodes  = []
+    seen_urls = set()
+    for a in container.find_all("a", class_=lambda c: c and "row-link" in c):
+        href = a.get("href", "").strip()
+        if not href or href in seen_urls:
+            continue
+        title_span = a.find("span", class_="textleft")
+        ep_title   = title_span.get_text(strip=True) if title_span else a.get_text(strip=True)
+        if ep_title:
+            episodes.append((href, ep_title))
+            seen_urls.add(href)
+    return episodes
+
+
+def _solispia_deepest_text_div(el):
+    """
+    div#novelContent 以下で、テキストノードと <br> を直接子に持つ
+    最深の div を返す。
+    """
+    while True:
+        child_divs = [c for c in el.children
+                      if getattr(c, "name", None) == "div"]
+        if not child_divs:
+            return el
+        el = child_divs[0]
+
+
+def solispia_html_to_aozora(soup) -> str:
+    """
+    エピソードページの div#novelContent から本文を青空文庫書式で返す。
+    テキストノードと <br> タグを走査し、<br> 2個以上で空行を挿入する。
+    """
+    content_el = soup.find(id="novelContent")
+    if not content_el:
+        return ""
+
+    # ルビ変換（存在する場合）
+    for ruby in content_el.find_all("ruby"):
+        rb = ruby.find("rb")
+        rt = ruby.find("rt")
+        if rt:
+            base_text = rb.get_text() if rb else ruby.get_text()
+            prev = _bs4_prev_text(ruby)
+            pipe = "|" if _ruby_needs_pipe(base_text, prev) else ""
+            ruby.replace_with(f"{pipe}{base_text}《{rt.get_text()}》")
+        else:
+            ruby.replace_with(ruby.get_text())
+
+    deepest  = _solispia_deepest_text_div(content_el)
+    lines    = []
+    br_count = 0
+
+    for child in deepest.children:
+        child_name = getattr(child, "name", None)
+        if child_name == "br":
+            br_count += 1
+        elif child_name is None:  # NavigableString（テキストノード）
+            text = str(child)
+            if text.strip():
+                if br_count >= 2:
+                    lines.append("")
+                lines.append(text.rstrip())
+                br_count = 0
+        else:
+            # span 等の他タグ（テキスト抽出）
+            text = child.get_text()
+            if text.strip():
+                if br_count >= 2:
+                    lines.append("")
+                lines.append(text.rstrip())
+                br_count = 0
+
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    return "\n".join(lines)
+
+
+def run_solispia(args):
+    """ソリスピア小説のダウンロード処理（requests + BS4 のみ、playwright 不要）。"""
+    if not _KAKUYOMU_AVAILABLE:
+        print("エラー: ソリスピアのダウンロードには beautifulsoup4 が必要です。")
+        print("  pip install requests beautifulsoup4")
+        sys.exit(1)
+
+    work_url = args.url.rstrip("/")
+
+    # エピソードURL（/novel/ID）が指定された場合は作品トップへ正規化
+    if re.search(r"/novel/\d+", work_url):
+        print(f"\n[情報] エピソードURLを検出。作品トップページを探しています...")
+        try:
+            ep_soup  = _solispia_fetch(work_url)
+            title_a  = ep_soup.find("a", href=lambda h: h and re.search(r"/title/\d+$", h))
+            if title_a:
+                work_url = title_a["href"].split("?")[0].rstrip("/")
+                print(f"       作品トップ: {work_url}")
+            else:
+                print("  [警告] 作品トップページへのリンクを検出できませんでした。")
+        except RuntimeError as e:
+            print(f"  [警告] 正規化失敗: {e}")
+
+    tid_m = re.search(r"/title/(\d+)", work_url)
+    if not tid_m:
+        print(f"エラー: ソリスピアの作品URLとして認識できません: {work_url}")
+        sys.exit(1)
+
+    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    top_soup = _solispia_fetch(work_url)
+
+    info = solispia_get_work_info(top_soup)
+    if not info["title"]:
+        print("エラー: タイトルを取得できませんでした。")
+        sys.exit(1)
+    print(f"      タイトル    : {info['title']}")
+    if info["author"]:
+        print(f"      著者        : {info['author']}")
+
+    all_eps = solispia_get_episode_list(top_soup)
+    if not all_eps:
+        print("エラー: エピソード一覧を取得できませんでした。")
+        sys.exit(1)
+    total_eps = len(all_eps)
+    print(f"      エピソード数: {total_eps}")
+
+    start_ep = max(1, getattr(args, "start", None) or 1)
+    end_ep   = min(total_eps, getattr(args, "end", None) or total_eps)
+    target   = all_eps[start_ep - 1:end_ep]
+
+    print(f"[2/3] エピソードを取得中（{len(target)} 話）...")
+    sections      = []
+    epub_episodes = []
+    got           = 0
+
+    for ep_i, (ep_url, ep_title) in enumerate(target, 1):
+        print(f"  [{ep_i:3d}/{len(target)}] {ep_title[:40]}")
+        try:
+            ep_soup = _solispia_fetch(ep_url)
+            body    = solispia_html_to_aozora(ep_soup)
+            body    = normalize_tate(body)
+        except RuntimeError as e:
+            print(f"    [エラー] 取得失敗: {e}")
+            body = "（取得失敗）"
+
+        sec_title = aozora_chapter_title(ep_title)
+        sections.append(f"{sec_title}\n\n{body}\n")
+        epub_episodes.append({"title": ep_title, "body": body})
+        if body != "（取得失敗）":
+            got += 1
+        if ep_i < len(target):
+            time.sleep(args.delay)
+
+    print(f"[3/3] テキスト・ePub を生成中...")
+    header   = aozora_header(info["title"], info["author"],
+                             info["description"], source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ソリスピア")
+    base     = _apply_output_dir(
+        args, args.output or safe_filename(info["title"], "solispia_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + ".epub"
+    write_file(txt_path, header, sections, colophon,
+               args.encoding, getattr(args, "newline", "os"))
+
+    full_len = (len(header)
+                + sum(len(s) for s in sections)
+                + len(PAGE_BREAK) * max(len(sections) - 1, 0)
+                + len(colophon))
+    print(f"\n✅ テキスト出力完了: {txt_path}")
+    print(f"   取得話数  : {got} / {len(target)}")
+    print(f"   総文字数  : {full_len:,} 文字")
+
+    if not getattr(args, "no_epub", False):
+        print("📖 ePub生成中...")
+        build_epub(epub_path, info["title"], info["author"],
+                   info["description"],
+                   work_url, "ソリスピア", epub_episodes,
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
+        print(f"✅ ePub出力完了: {epub_path}")
+
+
+# ══════════════════════════════════════════
 #  野いちご スクレーパー
 # ══════════════════════════════════════════
 
@@ -3669,6 +4215,392 @@ def run_noichigo(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "野いちご", epub_episodes,
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
+        print(f"✅ ePub出力完了: {epub_path}")
+
+
+# ══════════════════════════════════════════
+#  berry's cafe スクレーパー
+# ══════════════════════════════════════════
+
+_BERRYS_BASE = "https://www.berrys-cafe.jp"
+_BERRYS_HEADERS = {
+    "User-Agent": UA,
+    "Accept-Language": "ja,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://www.berrys-cafe.jp/",
+}
+
+
+def berrys_fetch(session, url, retries=3):
+    """berry's cafe のページを取得して BeautifulSoup を返す。"""
+    for attempt in range(retries):
+        try:
+            resp = session.get(url, timeout=30)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            return BeautifulSoup(resp.text, "html.parser")
+        except Exception as e:
+            if attempt == retries - 1:
+                raise RuntimeError(f"取得失敗: {url} — {e}") from e
+            time.sleep(2)
+
+
+def berrys_get_work_info(soup) -> dict:
+    """作品情報（タイトル・著者・あらすじ・総ページ数）を返す。"""
+    # タイトル: div.title-wrap > div.title > h2
+    title = ""
+    title_el = soup.select_one("div.title-wrap div.title h2")
+    if title_el:
+        title = title_el.get_text(strip=True)
+    if not title:
+        h2 = soup.find("h2")
+        title = h2.get_text(strip=True) if h2 else ""
+
+    # 著者: div.subDetails-02 > div.name > a
+    author = ""
+    author_el = soup.select_one("div.subDetails-02 div.name a")
+    if author_el:
+        author = author_el.get_text(strip=True)
+
+    # あらすじ
+    synopsis_div = soup.find("div", class_="bookSummary-01")
+    synopsis = ""
+    if synopsis_div:
+        for br in synopsis_div.find_all("br"):
+            br.replace_with("\n")
+        synopsis = synopsis_div.get_text(strip=True)
+
+    # 総ページ数: div.bookInfo dl dd の中から "NNページ" を探す
+    total_pages = 0
+    for dd in soup.find_all("dd"):
+        m = re.match(r"(\d+)ページ", dd.get_text(strip=True))
+        if m:
+            total_pages = int(m.group(1))
+            break
+
+    return {"title": title, "author": author, "description": synopsis,
+            "total_pages": total_pages}
+
+
+def run_berrys(args):
+    """berry's cafe 小説のダウンロード処理。"""
+    if not _KAKUYOMU_AVAILABLE:
+        print("エラー: berry's cafeのダウンロードには requests と beautifulsoup4 が必要です。")
+        print("  pip install requests beautifulsoup4")
+        sys.exit(1)
+
+    work_url = args.url.rstrip("/")
+    wid_m = re.search(r"/book/([^/]+)$", work_url)
+    if not wid_m:
+        print(f"エラー: berry's cafeの作品URLとして認識できません: {work_url}")
+        sys.exit(1)
+    work_id = wid_m.group(1)
+
+    session = requests.Session()
+    session.headers.update(_BERRYS_HEADERS)
+
+    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    top_soup = berrys_fetch(session, work_url)
+    info = berrys_get_work_info(top_soup)
+    if not info["title"]:
+        print("エラー: タイトルを取得できませんでした。")
+        sys.exit(1)
+    print(f"      タイトル    : {info['title']}")
+    if info["author"]:
+        print(f"      著者        : {info['author']}")
+
+    # チャプター一覧（野いちごと同構造: div.bookChapterList）
+    chapters = noichigo_get_chapter_list(top_soup)
+    if not chapters:
+        print("エラー: チャプター一覧を取得できませんでした。")
+        sys.exit(1)
+    total_chapters = len(chapters)
+    print(f"      チャプター数: {total_chapters}")
+
+    total_pages = info["total_pages"]
+    if total_pages:
+        print(f"      総ページ数  : {total_pages}")
+    else:
+        # フォールバック: 1ページ目の og:title "(1/N)" から取得
+        time.sleep(args.delay)
+        first_soup = berrys_fetch(session, f"{_BERRYS_BASE}/book/{work_id}/1")
+        og_title = first_soup.find("meta", property="og:title")
+        if og_title:
+            m = re.search(r"\((\d+)/(\d+)\)", og_title.get("content", ""))
+            if m:
+                total_pages = int(m.group(2))
+        if total_pages:
+            print(f"      総ページ数  : {total_pages}")
+
+    # チャプター範囲を構築 [(page_start, page_end, title), ...]
+    chapter_ranges = []
+    for i, (page_start, ch_title) in enumerate(chapters):
+        if i + 1 < len(chapters):
+            page_end = chapters[i + 1][0] - 1
+        else:
+            page_end = total_pages if total_pages else page_start
+        chapter_ranges.append((page_start, page_end, ch_title))
+
+    start_ch = max(1, args.start or 1)
+    end_ch   = min(total_chapters, args.end or total_chapters)
+    target_chapters = chapter_ranges[start_ch - 1:end_ch]
+    total_targets   = sum(e - s + 1 for s, e, _ in target_chapters)
+    print(f"[2/3] チャプターを取得中（{len(target_chapters)} チャプター / {total_targets} ページ）...")
+
+    sections      = []
+    epub_episodes = []
+    got_chapters  = 0
+
+    for ch_i, (page_start, page_end, ch_title) in enumerate(target_chapters, 1):
+        print(f"  [{ch_i:3d}/{len(target_chapters)}] {ch_title}（p.{page_start}–{page_end}）")
+        page_bodies = []
+        for page_no in range(page_start, page_end + 1):
+            try:
+                ep_url  = f"{_BERRYS_BASE}/book/{work_id}/{page_no}"
+                ep_soup = berrys_fetch(session, ep_url)
+                body_div = ep_soup.select_one("div.bookContent div.bookBody")
+                if body_div:
+                    page_bodies.append(noichigo_html_to_aozora(body_div))
+                else:
+                    page_bodies.append("（本文取得失敗）")
+            except RuntimeError as e:
+                print(f"    [エラー] {e}")
+                page_bodies.append("（取得失敗）")
+            if page_no < page_end:
+                time.sleep(args.delay)
+
+        body = "\n\n".join(b for b in page_bodies if b)
+        body = normalize_tate(body)
+        sec_title = aozora_chapter_title(ch_title)
+        sections.append(f"{sec_title}\n\n{body}\n")
+        epub_episodes.append({"title": ch_title, "body": body})
+        got_chapters += 1
+        if ch_i < len(target_chapters):
+            time.sleep(args.delay)
+
+    print("[3/3] テキスト・ePub を生成中...")
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "berry's cafe")
+
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "berrys_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + ".epub"
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
+
+    full_len = (len(header)
+                + sum(len(s) for s in sections)
+                + len(PAGE_BREAK) * max(len(sections) - 1, 0)
+                + len(colophon))
+    print(f"\n✅ テキスト出力完了: {txt_path}")
+    print(f"   取得チャプター: {got_chapters} / {len(target_chapters)}")
+    print(f"   総文字数      : {full_len:,} 文字")
+
+    if not getattr(args, "no_epub", False):
+        print("📖 ePub生成中...")
+        build_epub(epub_path, info["title"], info["author"],
+                   info["description"],
+                   work_url, "berry's cafe", epub_episodes,
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
+        print(f"✅ ePub出力完了: {epub_path}")
+
+
+# ══════════════════════════════════════════
+#  monogatary.com スクレイパー
+# ══════════════════════════════════════════
+
+_MONOGATARY_BASE = "https://monogatary.com"
+_MONOGATARY_HEADERS = {
+    "User-Agent": UA,
+    "Accept-Language": "ja,en;q=0.9",
+    "Referer": "https://monogatary.com/",
+}
+
+
+def _monogatary_fetch_json(session, url, retries=3):
+    """monogatary.com の JSON API を取得して dict を返す。"""
+    for attempt in range(retries):
+        try:
+            resp = session.get(url, timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            if attempt == retries - 1:
+                raise RuntimeError(f"取得失敗: {url} — {e}") from e
+            time.sleep(2)
+
+
+def _monogatary_fetch_html(session, url, retries=3):
+    """monogatary.com の HTML を取得して文字列を返す。"""
+    for attempt in range(retries):
+        try:
+            resp = session.get(url, timeout=30)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            return resp.text
+        except Exception as e:
+            if attempt == retries - 1:
+                raise RuntimeError(f"取得失敗: {url} — {e}") from e
+            time.sleep(2)
+
+
+def monogatary_text_to_aozora(text: str) -> str:
+    """API のエピソード本文（\\n 区切りテキスト）を青空文庫書式に変換する。"""
+    lines = text.split("\n")
+    out = []
+    prev_blank = False
+    for line in lines:
+        s = line.strip()
+        if s:
+            out.append(s)
+            prev_blank = False
+        else:
+            if not prev_blank:
+                out.append("")
+            prev_blank = True
+    while out and not out[0]:
+        out.pop(0)
+    while out and not out[-1]:
+        out.pop()
+    return "\n".join(out)
+
+
+def run_monogatary(args):
+    """monogatary.com 小説のダウンロード処理。"""
+    if not _KAKUYOMU_AVAILABLE:
+        print("エラー: monogatary.comのダウンロードには requests が必要です。")
+        print("  pip install requests")
+        sys.exit(1)
+
+    work_url = args.url.rstrip("/")
+    ep_m = re.search(r"/episode/(\d+)$", work_url)
+    st_m = re.search(r"/story/(\d+)$", work_url)
+    if not ep_m and not st_m:
+        print(f"エラー: monogatary.comのURLとして認識できません: {work_url}")
+        sys.exit(1)
+
+    session = requests.Session()
+    session.headers.update(_MONOGATARY_HEADERS)
+
+    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+
+    story_id    = None
+    story_title = ""
+    author      = ""
+
+    if ep_m:
+        ep_id    = ep_m.group(1)
+        ep_data  = _monogatary_fetch_json(session, f"{_MONOGATARY_BASE}/api/episode/{ep_id}")
+        contents = ep_data.get("episodeContents", {})
+        story_id    = str(contents.get("storyId", ""))
+        story_title = contents.get("storyTitle", "")
+        author      = contents.get("userName", "")
+    else:
+        story_id = st_m.group(1)
+
+    # ストーリー API でエピソード一覧取得
+    story_data    = _monogatary_fetch_json(session, f"{_MONOGATARY_BASE}/api/story/{story_id}")
+    episodes_list = story_data.get("episodes", [])
+    if not episodes_list:
+        print("エラー: エピソード一覧を取得できませんでした。")
+        sys.exit(1)
+
+    # ストーリータイトル・著者が未取得の場合は最初のエピソード API から取得
+    if not story_title or not author:
+        first_data = _monogatary_fetch_json(
+            session, f"{_MONOGATARY_BASE}/api/episode/{episodes_list[0]['episodeId']}"
+        )
+        c = first_data.get("episodeContents", {})
+        if not story_title:
+            story_title = c.get("storyTitle", "")
+        if not author:
+            author = c.get("userName", "")
+
+    if not story_title:
+        print("エラー: タイトルを取得できませんでした。")
+        sys.exit(1)
+
+    print(f"      タイトル    : {story_title}")
+    if author:
+        print(f"      著者        : {author}")
+
+    # あらすじ: ストーリーページ og:description から取得（React SPA のため regex でパース）
+    synopsis  = ""
+    story_url = f"{_MONOGATARY_BASE}/story/{story_id}"
+    try:
+        html_text = _monogatary_fetch_html(session, story_url)
+        m = re.search(
+            r'<meta\b[^>]+\bproperty=["\']og:description["\'][^>]+\bcontent=["\']([^"\']*)["\']',
+            html_text)
+        if not m:
+            m = re.search(
+                r'<meta\b[^>]+\bcontent=["\']([^"\']*)["\'][^>]+\bproperty=["\']og:description["\']',
+                html_text)
+        if m:
+            import html as _html
+            synopsis = _html.unescape(m.group(1)).strip()
+    except Exception:
+        pass
+
+    total_episodes = len(episodes_list)
+    print(f"      エピソード数: {total_episodes}")
+
+    start_ep = max(1, args.start or 1)
+    end_ep   = min(total_episodes, args.end or total_episodes)
+    target   = episodes_list[start_ep - 1:end_ep]
+    print(f"[2/3] エピソードを取得中（{len(target)} 話）...")
+
+    sections      = []
+    epub_episodes = []
+    got           = 0
+
+    for ep_i, ep_info in enumerate(target, 1):
+        ep_id    = str(ep_info["episodeId"])
+        ep_title = ep_info.get("episodeTitle", f"第{ep_i + start_ep - 1}話")
+        print(f"  [{ep_i:3d}/{len(target)}] {ep_title}")
+        try:
+            ep_data  = _monogatary_fetch_json(
+                session, f"{_MONOGATARY_BASE}/api/episode/{ep_id}")
+            body_raw = ep_data.get("episodeContents", {}).get("episode", "")
+            body     = normalize_tate(monogatary_text_to_aozora(body_raw))
+        except RuntimeError as e:
+            print(f"    [エラー] {e}")
+            body = "（取得失敗）"
+
+        sec_title = aozora_chapter_title(ep_title)
+        sections.append(f"{sec_title}\n\n{body}\n")
+        epub_episodes.append({"title": ep_title, "body": body})
+        got += 1
+        if ep_i < len(target):
+            time.sleep(args.delay)
+
+    print("[3/3] テキスト・ePub を生成中...")
+    header   = aozora_header(story_title, author, synopsis, source_url=story_url)
+    colophon = aozora_colophon(story_title, story_url, "monogatary.com")
+
+    base      = _apply_output_dir(args, args.output or safe_filename(story_title, "monogatary_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + ".epub"
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
+
+    full_len = (len(header)
+                + sum(len(s) for s in sections)
+                + len(PAGE_BREAK) * max(len(sections) - 1, 0)
+                + len(colophon))
+    print(f"\n✅ テキスト出力完了: {txt_path}")
+    print(f"   取得エピソード: {got} / {len(target)}")
+    print(f"   総文字数      : {full_len:,} 文字")
+
+    if not getattr(args, "no_epub", False):
+        print("📖 ePub生成中...")
+        build_epub(epub_path, story_title, author,
+                   synopsis,
+                   story_url, "monogatary.com", epub_episodes,
                    cover_bg=args.cover_bg,
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
@@ -4525,6 +5457,600 @@ def run_days(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "NOVEL DAYS", epub_episodes,
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
+        print(f"✅ ePub出力完了: {epub_path}")
+
+
+# ══════════════════════════════════════════
+#  プロジェクト杉田玄白：定数・ヘルパー
+# ══════════════════════════════════════════
+
+_GENPAKU_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ja,en;q=0.9",
+}
+
+
+def genpaku_fetch(url: str, retries: int = 3):
+    """genpaku.org のページを取得して BeautifulSoup を返す。"""
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, headers=_GENPAKU_HEADERS, timeout=30)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            return BeautifulSoup(resp.text, "html.parser")
+        except Exception as e:
+            if attempt == retries - 1:
+                raise RuntimeError(f"取得失敗: {url} — {e}") from e
+            time.sleep(RETRY_WAIT)
+
+
+def genpaku_ruby_to_aozora(text: str) -> str:
+    r"""\ruby{base}{ruby} 形式を |base《ruby》（青空文庫ルビ記法）に変換する。"""
+    return re.sub(r"\\ruby\{([^}]*)\}\{([^}]*)\}", r"|\1《\2》", text)
+
+
+def genpaku_get_work_info(soup) -> dict:
+    """タイトル・著者（原著者＋訳者）・あらすじ（原題）を返す。"""
+    title = ""
+    h1 = soup.find("h1")
+    if h1:
+        title = h1.get_text(strip=True)
+
+    author = ""
+    translator = ""
+    original_title = ""
+
+    # h1 直後の最初の div または p が情報ブロック
+    if h1:
+        for sib in h1.next_siblings:
+            if not hasattr(sib, "name"):
+                continue
+            if sib.name in ("div", "p"):
+                info_text = sib.get_text(separator="\n")
+
+                # 訳者: cruel.org リンクまたは "翻訳:" テキスト
+                for a_tag in sib.find_all("a"):
+                    href = a_tag.get("href", "")
+                    a_text = a_tag.get_text(strip=True)
+                    if "cruel.org" in href and a_text:
+                        translator = a_text
+                        break
+                if not translator:
+                    m = re.search(r"翻訳[：:]\s*([^\n<（(]+)", info_text)
+                    if m:
+                        translator = m.group(1).strip()
+
+                # 原著者: 行末が "著" のパターン
+                for line in info_text.splitlines():
+                    line = line.strip()
+                    if line.endswith("著"):
+                        author = line[:-1].strip()
+                        break
+
+                # 原題: アルファベットを含む最初の行
+                for line in info_text.splitlines():
+                    line = line.strip()
+                    if line and re.search(r"[A-Za-z]", line) and len(line) > 5:
+                        original_title = line
+                        break
+                break
+
+    if author and translator:
+        full_author = f"{author}（{translator} 訳）"
+    elif translator:
+        full_author = f"{translator} 訳"
+    elif author:
+        full_author = author
+    else:
+        full_author = "山形浩生"
+
+    return {"title": title, "author": full_author, "description": original_title}
+
+
+def genpaku_extract_chapters(soup, work_title: str) -> list:
+    """
+    HTML から章ごとに本文を抽出して [{"title": str, "body": str}, ...] を返す。
+
+    - <h2> を章区切りとして使用。toc アンカーを持つ <h2> は目次と判定してスキップ
+    - <h3>/<h4> は章内見出し（中見出し/小見出し）として処理
+    - \\ruby{base}{ruby} を |base《ruby》 に変換
+    - フラグメントリンクのみの段落（「目次に戻る」等）はスキップ
+    """
+    episodes = []
+    current_title = ""
+    current_lines = []
+
+    def flush():
+        nonlocal current_title, current_lines
+        body_text = "\n".join(current_lines).strip()
+        if body_text:
+            episodes.append({
+                "title": current_title if current_title else work_title,
+                "body": body_text,
+            })
+        current_title = ""
+        current_lines = []
+
+    body_tag = soup.find("body") or soup
+    h1_found = False
+    info_skipped = False
+    in_toc_section = False
+
+    for elem in body_tag.children:
+        if not hasattr(elem, "name"):
+            continue
+        name = elem.name
+
+        if name == "h1":
+            h1_found = True
+            continue
+        if not h1_found:
+            continue
+
+        # h1 直後の最初の div/p は情報ブロック → スキップ
+        if not info_skipped and name in ("div", "p"):
+            info_skipped = True
+            continue
+
+        if name == "h2":
+            anchor = elem.find("a")
+            anchor_id = ""
+            if anchor:
+                anchor_id = (anchor.get("name") or anchor.get("id") or "").lower()
+            if anchor_id == "toc":
+                in_toc_section = True
+                continue
+            in_toc_section = False
+            flush()
+            current_title = elem.get_text(strip=True)
+            continue
+
+        if in_toc_section:
+            continue
+
+        if name == "h3":
+            text = genpaku_ruby_to_aozora(elem.get_text(strip=True))
+            if text:
+                current_lines.append(aozora_chapter_title(text, "中見出し"))
+                current_lines.append("")
+
+        elif name == "h4":
+            text = genpaku_ruby_to_aozora(elem.get_text(strip=True))
+            if text:
+                current_lines.append(aozora_chapter_title(text, "小見出し"))
+                current_lines.append("")
+
+        elif name == "p":
+            p_text_plain = elem.get_text(strip=True)
+            if not p_text_plain:
+                continue
+            # フラグメントリンクのみの短い段落はナビゲーション → スキップ
+            links = elem.find_all("a")
+            non_frag = [a for a in links if not a.get("href", "").startswith("#")]
+            if links and not non_frag and len(re.sub(r"\s+", "", p_text_plain)) < 30:
+                continue
+            for br in elem.find_all("br"):
+                br.replace_with("\n")
+            text = genpaku_ruby_to_aozora(elem.get_text().strip())
+            for line in text.split("\n"):
+                current_lines.append(line.strip())
+            current_lines.append("")
+
+        elif name == "blockquote":
+            text = elem.get_text().strip()
+            if text:
+                current_lines.append(genpaku_ruby_to_aozora(text))
+                current_lines.append("")
+
+        elif name in ("ul", "ol"):
+            for li in elem.find_all("li", recursive=False):
+                text = li.get_text(strip=True)
+                if text:
+                    current_lines.append(f"・{genpaku_ruby_to_aozora(text)}")
+            current_lines.append("")
+
+        # <hr> は無視（章区切りは <h2> で管理）
+
+    flush()
+    return episodes
+
+
+def run_genpaku(args):
+    """プロジェクト杉田玄白 の作品をダウンロードする。"""
+    if not _KAKUYOMU_AVAILABLE:
+        print("エラー: プロジェクト杉田玄白のダウンロードには requests と beautifulsoup4 が必要です。")
+        print("  pip install requests beautifulsoup4")
+        sys.exit(1)
+
+    work_url = args.url
+
+    print(f"\n[1/3] 作品ページを取得中: {work_url}")
+    try:
+        soup = genpaku_fetch(work_url)
+    except RuntimeError as e:
+        print(f"エラー: {e}")
+        sys.exit(1)
+
+    info = genpaku_get_work_info(soup)
+    if not info["title"]:
+        print("エラー: タイトルを取得できませんでした。")
+        sys.exit(1)
+
+    print(f"      タイトル: {info['title']}")
+    print(f"      著者    : {info['author']}")
+    if info["description"]:
+        print(f"      原題    : {info['description']}")
+
+    print("[2/3] 本文を解析中...")
+    episodes = genpaku_extract_chapters(soup, info["title"])
+
+    if not episodes:
+        print("エラー: 本文を抽出できませんでした。")
+        sys.exit(1)
+
+    print(f"      章数    : {len(episodes)}")
+
+    print("[3/3] テキスト・ePub を生成中...")
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "プロジェクト杉田玄白")
+
+    sections = []
+    for ep in episodes:
+        sec_title = aozora_chapter_title(ep["title"])
+        sections.append(f"{sec_title}\n\n{ep['body']}\n")
+
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "genpaku"))
+    txt_path  = base + ".txt"
+    epub_path = base + ".epub"
+
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
+
+    full_len = (len(header)
+                + sum(len(s) for s in sections)
+                + len(PAGE_BREAK) * max(len(sections) - 1, 0)
+                + len(colophon))
+    print(f"\n✅ テキスト出力完了: {txt_path}")
+    print(f"   章数        : {len(episodes)}")
+    print(f"   総文字数    : {full_len:,} 文字")
+
+    if not getattr(args, "no_epub", False):
+        print("📖 ePub生成中...")
+        build_epub(epub_path, info["title"], info["author"],
+                   info["description"],
+                   work_url, "プロジェクト杉田玄白", episodes,
+                   cover_bg=args.cover_bg,
+                   font_path=getattr(args, "font", "") or "",
+                   toc_at_end=getattr(args, "toc_at_end", False))
+        print(f"✅ ePub出力完了: {epub_path}")
+
+
+# ══════════════════════════════════════════
+#  結城浩翻訳の部屋：定数・ヘルパー
+# ══════════════════════════════════════════
+
+_HYUKI_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ja,en;q=0.9",
+}
+
+
+def hyuki_fetch(url: str, retries: int = 3):
+    """hyuki.com のページを取得して BeautifulSoup を返す。"""
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, headers=_HYUKI_HEADERS, timeout=30)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            return BeautifulSoup(resp.text, "html.parser")
+        except Exception as e:
+            if attempt == retries - 1:
+                raise RuntimeError(f"取得失敗: {url} — {e}") from e
+            time.sleep(RETRY_WAIT)
+
+
+def hyuki_get_work_info(soup) -> dict:
+    """
+    タイトル・著者（原著者＋訳者）・あらすじを返す。
+
+    Bootstrap設計 (leaf, magi 等):
+      jumbotron の <h1> + <p>（"原作：XXX　翻訳：XXX" 形式）
+    XHTML設計 (bedtime 等):
+      <h1 class="title"> + <p class="author">（"XXX\\n結城浩訳" 形式）
+    """
+    title = ""
+    author_raw = ""
+    description = ""
+
+    # ── Bootstrap 設計 ────────────────────────────
+    jumbotron = soup.find("div", class_="jumbotron")
+    if jumbotron:
+        h1 = jumbotron.find("h1")
+        if h1:
+            title = h1.get_text(strip=True)
+        for p in jumbotron.find_all("p"):
+            text = p.get_text(strip=True)
+            if "翻訳" in text or "訳" in text or "原作" in text:
+                author_raw = text
+                break
+        og_desc = soup.find("meta", property="og:description")
+        if og_desc:
+            description = og_desc.get("content", "").strip()
+
+    # ── XHTML 設計 ────────────────────────────────
+    if not title:
+        h1 = soup.find("h1", class_="title")
+        if h1:
+            title = h1.get_text(strip=True)
+        p_author = soup.find("p", class_="author")
+        if p_author:
+            author_raw = p_author.get_text(separator="\n").strip()
+
+    # フォールバック: og:title / <title>
+    if not title:
+        og = soup.find("meta", property="og:title")
+        if og:
+            title = og.get("content", "").strip()
+    if not title:
+        t = soup.find("title")
+        if t:
+            title = t.get_text(strip=True)
+
+    # ── 著者フィールド組み立て ─────────────────────
+    # Bootstrap: "原作：オー・ヘンリー　翻訳：結城浩"
+    # XHTML    : "イギリス伝承童謡\n結城浩訳"
+    orig = ""
+    trans = ""
+    if author_raw:
+        m_orig  = re.search(r"原作[：:]\s*([^\s　翻訳\n]+)", author_raw)
+        m_trans = re.search(r"翻訳[：:]\s*([^\s　\n]+)", author_raw)
+        if m_orig:
+            orig = m_orig.group(1).strip()
+        if m_trans:
+            trans = m_trans.group(1).strip()
+        if not orig and not trans:
+            # "XXX\n結城浩訳" 形式
+            lines = [l.strip() for l in author_raw.splitlines() if l.strip()]
+            if len(lines) >= 2:
+                orig  = lines[0]
+                trans = re.sub(r"訳$", "", lines[-1]).strip()
+            elif len(lines) == 1:
+                trans = re.sub(r"訳$", "", lines[0]).strip()
+
+    if orig and trans:
+        full_author = f"{orig}（{trans} 訳）"
+    elif trans:
+        full_author = f"{trans} 訳"
+    elif orig:
+        full_author = orig
+    else:
+        full_author = "結城浩 訳"
+
+    return {"title": title, "author": full_author, "description": description}
+
+
+def _hyuki_p_is_meta(p_elem) -> bool:
+    """著作権・ライセンス表示など本文でない <p> を判定する。"""
+    text = p_elem.get_text(strip=True)
+    return (
+        not text
+        or text.startswith("Copyright")
+        or text.startswith("©")
+        or "クリエイティブ・コモンズ" in text
+        or text.startswith("この作品は")
+    )
+
+
+def hyuki_extract_episodes(soup, work_title: str) -> list:
+    """
+    本文を [{"title": str, "body": str}, ...] として返す。
+
+    Bootstrap 設計 (jumbotron あり):
+      div.col-md-12 内の <p> を 1 エピソードとして抽出。
+      div.panel（版権表示）が現れたら終了。
+
+    XHTML 設計 (h1.title あり):
+      h2.section を章区切りとして使用。
+      <blockquote><table> がある場合は最初の <td>（日本語側）のみ抽出。
+      目次見出し（アンカー id/name == "toc"）と直後の <ul> はスキップ。
+    """
+    # ── Bootstrap 設計 ────────────────────────────
+    if soup.find("div", class_="jumbotron"):
+        col = soup.select_one("div.col-md-12")
+        if not col:
+            return []
+        lines = []
+        for elem in col.children:
+            if not hasattr(elem, "name") or elem.name is None:
+                continue
+            # panel（版権表示等）が来たら終了
+            if "panel" in elem.get("class", []):
+                break
+            if elem.name == "p":
+                if not _hyuki_p_is_meta(elem):
+                    lines.append(elem.get_text(strip=True))
+                    lines.append("")
+            elif elem.name in ("h2", "h3", "h4"):
+                text = elem.get_text(strip=True)
+                if text:
+                    level = {"h2": "中見出し", "h3": "小見出し", "h4": "小見出し"}.get(elem.name, "中見出し")
+                    lines.append(aozora_chapter_title(text, level))
+                    lines.append("")
+        body = "\n".join(lines).strip()
+        return [{"title": work_title, "body": body}] if body else []
+
+    # ── XHTML 設計 ────────────────────────────────
+    episodes = []
+    current_title = ""
+    current_lines = []
+
+    def flush():
+        nonlocal current_title, current_lines
+        body = "\n".join(current_lines).strip()
+        if body:
+            episodes.append({
+                "title": current_title if current_title else work_title,
+                "body": body,
+            })
+        current_title = ""
+        current_lines = []
+
+    body_tag = soup.find("body") or soup
+    # div.titles を過ぎた後から処理開始
+    titles_div = soup.find("div", class_="titles")
+    in_content = titles_div is None
+    in_toc_section = False
+
+    for elem in body_tag.children:
+        if not hasattr(elem, "name"):
+            continue
+        name = elem.name
+
+        # ナビゲーションテーブルはスキップ
+        if name == "table" and "navigation" in elem.get("class", []):
+            continue
+
+        # titles div を過ぎたら本文処理開始
+        if not in_content:
+            if elem == titles_div:
+                in_content = True
+            continue
+
+        # フッター・著作権エリアで終了
+        if name == "div" and any(
+            c in elem.get("class", []) for c in ("footer", "display")
+        ):
+            break
+        if name == "hr":
+            # hr の後に著作権 p が続く場合があるので、残テキストを flush して終了
+            flush()
+            break
+
+        if name == "h2":
+            anchor = elem.find("a")
+            anchor_id = (anchor.get("name") or anchor.get("id") or "").lower() if anchor else ""
+            heading_text = elem.get_text(strip=True)
+            if anchor_id == "toc" or heading_text in ("目次", "TOC"):
+                in_toc_section = True
+                continue
+            in_toc_section = False
+            flush()
+            current_title = heading_text
+            continue
+
+        if in_toc_section:
+            # TOC の ul（またはアンカーリンクのみの p）をスキップ
+            if name in ("ul", "p"):
+                in_toc_section = False if name == "ul" else in_toc_section
+            continue
+
+        if name == "blockquote":
+            # 対訳テーブル: 最初の <td>（日本語側）のみ抽出
+            table = elem.find("table")
+            if table:
+                first_td = table.find("td")
+                if first_td:
+                    pre = first_td.find("pre")
+                    text = (pre.get_text() if pre else first_td.get_text()).strip()
+                    if text:
+                        current_lines.append(text)
+                        current_lines.append("")
+            else:
+                # テーブルなし: 通常の引用ブロック
+                for br in elem.find_all("br"):
+                    br.replace_with("\n")
+                text = elem.get_text().strip()
+                if text:
+                    current_lines.append(text)
+                    current_lines.append("")
+
+        elif name == "p":
+            if not _hyuki_p_is_meta(elem):
+                current_lines.append(elem.get_text(strip=True))
+                current_lines.append("")
+
+        elif name in ("ul", "ol"):
+            for li in elem.find_all("li", recursive=False):
+                text = li.get_text(strip=True)
+                if text:
+                    current_lines.append(f"・{text}")
+            current_lines.append("")
+
+    flush()
+    return episodes
+
+
+def run_hyuki(args):
+    """結城浩翻訳の部屋の作品をダウンロードする。"""
+    if not _KAKUYOMU_AVAILABLE:
+        print("エラー: 結城浩翻訳の部屋のダウンロードには requests と beautifulsoup4 が必要です。")
+        print("  pip install requests beautifulsoup4")
+        sys.exit(1)
+
+    work_url = args.url
+    if not re.search(r"hyuki\.com/trans/[^/?#]+", work_url):
+        print(f"エラー: 結城浩翻訳の部屋の作品URLとして認識できません: {work_url}")
+        print("  例: https://www.hyuki.com/trans/leaf")
+        sys.exit(1)
+
+    print(f"\n[1/3] 作品ページを取得中: {work_url}")
+    try:
+        soup = hyuki_fetch(work_url)
+    except RuntimeError as e:
+        print(f"エラー: {e}")
+        sys.exit(1)
+
+    info = hyuki_get_work_info(soup)
+    if not info["title"]:
+        print("エラー: タイトルを取得できませんでした。")
+        sys.exit(1)
+
+    print(f"      タイトル: {info['title']}")
+    print(f"      著者    : {info['author']}")
+
+    print("[2/3] 本文を解析中...")
+    episodes = hyuki_extract_episodes(soup, info["title"])
+
+    if not episodes:
+        print("エラー: 本文を抽出できませんでした。")
+        sys.exit(1)
+
+    print(f"      章数    : {len(episodes)}")
+
+    print("[3/3] テキスト・ePub を生成中...")
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "結城浩翻訳の部屋")
+
+    sections = []
+    for ep in episodes:
+        sec_title = aozora_chapter_title(ep["title"])
+        sections.append(f"{sec_title}\n\n{ep['body']}\n")
+
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "hyuki"))
+    txt_path  = base + ".txt"
+    epub_path = base + ".epub"
+
+    write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
+
+    full_len = (len(header)
+                + sum(len(s) for s in sections)
+                + len(PAGE_BREAK) * max(len(sections) - 1, 0)
+                + len(colophon))
+    print(f"\n✅ テキスト出力完了: {txt_path}")
+    print(f"   章数        : {len(episodes)}")
+    print(f"   総文字数    : {full_len:,} 文字")
+
+    if not getattr(args, "no_epub", False):
+        print("📖 ePub生成中...")
+        build_epub(epub_path, info["title"], info["author"],
+                   info["description"],
+                   work_url, "結城浩翻訳の部屋", episodes,
                    cover_bg=args.cover_bg,
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
@@ -5535,7 +7061,7 @@ def _host_matches(host: str, domain: str) -> bool:
 
 
 def detect_site(url: str) -> str:
-    """URLからサイト種別を判定する。'narou' | 'kakuyomu' | 'alphapolis' | 'estar' | 'noichigo' | 'hameln' | 'novema' | 'unknown'"""
+    """URLからサイト種別を判定する。'narou' | 'kakuyomu' | 'alphapolis' | 'estar' | 'noichigo' | 'hameln' | 'novema' | 'neopage' | 'genpaku' | 'unknown'"""
     parsed = urlparse(url)
     host   = parsed.netloc.lower()
     if _host_matches(host, "syosetu.com"):
@@ -5548,6 +7074,10 @@ def detect_site(url: str) -> str:
         return "estar"
     if _host_matches(host, "no-ichigo.jp"):
         return "noichigo"
+    if _host_matches(host, "berrys-cafe.jp"):
+        return "berrys"
+    if _host_matches(host, "monogatary.com"):
+        return "monogatary"
     if _host_matches(host, "syosetu.org"):
         return "hameln"
     if _host_matches(host, "novema.jp"):
@@ -5560,6 +7090,14 @@ def detect_site(url: str) -> str:
         return "days"
     if _host_matches(host, "aozora.gr.jp") or _host_matches(host, "aozora-renewal.cloud"):
         return "aozora"
+    if _host_matches(host, "genpaku.org"):
+        return "genpaku"
+    if _host_matches(host, "hyuki.com") and parsed.path.startswith("/trans/"):
+        return "hyuki"
+    if _host_matches(host, "neopage.com"):
+        return "neopage"
+    if _host_matches(host, "solispia.com"):
+        return "solispia"
     return "unknown"
 
 
@@ -5640,6 +7178,19 @@ def normalize_url(url: str, site: str) -> str:
             print(f"       正規化後: {top_url}")
             return top_url
 
+    elif site == "berrys":
+        # /book/nXXX/NUM の形式はトップページへ正規化
+        m = re.match(
+            r"(https?://www\.berrys-cafe\.jp/book/[^/?#]+)/\d+/?$",
+            url.rstrip("/"), re.I
+        )
+        if m:
+            top_url = m.group(1)
+            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
+            print(f"       指定URL : {url}")
+            print(f"       正規化後: {top_url}")
+            return top_url
+
     elif site == "hameln":
         # /novel/NNNNN/N.html の形式はトップページへ正規化
         m = re.match(
@@ -5693,6 +7244,23 @@ def normalize_url(url: str, site: str) -> str:
             return top_url
 
     # NOVEL DAYS はエピソードURLと作品URLで ID が異なるため run_days 内で解決する
+
+    elif site == "neopage":
+        # /chapter/{bookId}/{chapterId} の形式はトップページへ正規化
+        m = re.match(
+            r"(https?://www\.neopage\.com)/chapter/(\w+)/\w+",
+            url, re.I
+        )
+        if m:
+            top_url = f"{m.group(1)}/book/{m.group(2)}"
+            print(f"[情報] 章ページURLを作品トップページに正規化しました。")
+            print(f"       指定URL : {url}")
+            print(f"       正規化後: {top_url}")
+            return top_url
+
+    elif site == "monogatary":
+        # /episode/{id} 形式はそのまま受け付ける（run_monogatary 内で story_id を解決）
+        pass
 
     elif site == "aozora":
         # /cards/{id}/files/{work_id}_{num}.html → /cards/{id}/card{work_id}.html
@@ -5808,6 +7376,10 @@ def main():
                 args.cover_bg = "#00A0E9"
             elif site == "noichigo":
                 args.cover_bg = "#FA8296"
+            elif site == "berrys":
+                args.cover_bg = "#C8245A"
+            elif site == "monogatary":
+                args.cover_bg = "#231815"
             elif site == "hameln":
                 args.cover_bg = "#6E654C"
             elif site == "novema":
@@ -5820,6 +7392,14 @@ def main():
                 args.cover_bg = "#CBA13F"
             elif site == "aozora":
                 args.cover_bg = "#000066"
+            elif site == "genpaku":
+                args.cover_bg = "#1D3461"
+            elif site == "hyuki":
+                args.cover_bg = "#2D6A4F"
+            elif site == "neopage":
+                args.cover_bg = "#E94F37"
+            elif site == "solispia":
+                args.cover_bg = "#7C3AED"
             else:
                 args.cover_bg = "#18b7cd"
 
@@ -5838,6 +7418,12 @@ def main():
         elif site == "noichigo":
             print("サイト判別: 野いちご")
             run_noichigo(args)
+        elif site == "berrys":
+            print("サイト判別: berry's cafe")
+            run_berrys(args)
+        elif site == "monogatary":
+            print("サイト判別: monogatary.com")
+            run_monogatary(args)
         elif site == "hameln":
             print("サイト判別: ハーメルン")
             run_hameln(args)
@@ -5856,6 +7442,18 @@ def main():
         elif site == "aozora":
             print("サイト判別: 青空文庫")
             run_aozora(args)
+        elif site == "genpaku":
+            print("サイト判別: プロジェクト杉田玄白")
+            run_genpaku(args)
+        elif site == "hyuki":
+            print("サイト判別: 結城浩翻訳の部屋")
+            run_hyuki(args)
+        elif site == "neopage":
+            print("サイト判別: ネオページ")
+            run_neopage(args)
+        elif site == "solispia":
+            print("サイト判別: ソリスピア")
+            run_solispia(args)
         else:
             print("エラー: 対応しているURLを指定してください。")
             print("  小説家になろう: https://ncode.syosetu.com/nXXXXxx/")
@@ -5870,6 +7468,12 @@ def main():
             print("  NOVEL DAYS   : https://novel.daysneo.com/works/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.html")
             print("  青空文庫     : https://www.aozora.gr.jp/cards/XXXXXX/cardXXXXXX.html")
             print("  青空文庫(新) : https://www.aozora-renewal.cloud/cards/XXXXXX/cardXXXXXX.html")
+            print("  杉田玄白     : https://www.genpaku.org/XXXXXX/XXXXXXj.html")
+            print("  結城浩翻訳   : https://www.hyuki.com/trans/XXXXXX")
+            print("  ネオページ   : https://www.neopage.com/book/XXXXXXXXXXXXXXXXX")
+            print("  ソリスピア   : https://solispia.com/title/XXXX")
+            print("  berry's cafe : https://www.berrys-cafe.jp/book/nXXXXXXX")
+            print("  monogatary   : https://monogatary.com/story/XXXXXXX")
             sys.exit(1)
 
 
