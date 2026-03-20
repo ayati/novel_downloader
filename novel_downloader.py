@@ -542,19 +542,24 @@ def _resolve_ruby_base(preceding: str) -> tuple[str, str]:
     return preceding[:i], preceding[i:]
 
 
-def _ruby_needs_pipe(base: str, preceding: str = "") -> bool:
+def _ruby_needs_pipe(base: str, preceding: str = "", yomi: str = "") -> bool:
     """
     ルビのベース文字列に | を前置する必要があるか判定する。
 
     以下のいずれかの場合に True を返す:
-    1. base が複数の文字種を含む
+    1. yomi（ルビテキスト）に漢字が含まれる
+       （漢字ルビは _apply_ruby_auto の自動判別で地の文扱いされるため、
+         スクレイパー段階で必ずパイプを付けて明示する）
+    2. base が複数の文字種を含む
        （_resolve_ruby_base は末尾文字種のブロックしか取れないため、
          「俺以外の」→「の」のみになる）
-    2. preceding の末尾文字が base[-1] と同じ文字種
+    3. preceding の末尾文字が base[-1] と同じ文字種
        （自動検出が直前テキストまで延びる; 「氷村心白」→「氷村心白」全体になる）
     """
     if not base:
         return False
+    if yomi and _has_kanji(yomi):
+        return True
     end_cls = _char_class(base[-1])
     if any(_char_class(ch) != end_cls for ch in base):
         return True
@@ -2046,7 +2051,7 @@ class NarouEpisodeParser(HTMLParser):
                     if self._rb_buf:
                         if self._rt_buf:
                             prev = "".join(self._cur_para)
-                            pipe = "|" if _ruby_needs_pipe(self._rb_buf, prev) else ""
+                            pipe = "|" if _ruby_needs_pipe(self._rb_buf, prev, self._rt_buf) else ""
                             ruby = f"{pipe}{self._rb_buf}《{self._rt_buf}》"
                         else:
                             ruby = self._rb_buf
@@ -2093,7 +2098,7 @@ def _ruby_inner_to_aozora(inner: str, preceding: str = "") -> str:
     base = re.sub(r"<[^>]+>", "", base).strip()
     if not reading:
         return base
-    pipe = "|" if _ruby_needs_pipe(base, preceding) else ""
+    pipe = "|" if _ruby_needs_pipe(base, preceding, reading) else ""
     return f"{pipe}{base}《{reading}》"
 
 
@@ -2515,7 +2520,7 @@ def kky_extract_episode_body(soup, next_data: dict, ep_url: str) -> tuple:
                     base = kky_normalize(base)
                     rt   = kky_normalize(rt_tag.get_text())
                     prev = _bs4_prev_text(ruby)
-                    pipe = "|" if _ruby_needs_pipe(base, prev) else ""
+                    pipe = "|" if _ruby_needs_pipe(base, prev, rt) else ""
                     ruby.replace_with(f"{pipe}{base}《{rt}》")
                 else:
                     # rt がない場合はルビなしテキストとして展開
@@ -3264,10 +3269,11 @@ def hameln_html_to_aozora(honbun_div, maegaki_div=None, atogaki_div=None) -> str
         rb = ruby.find("rb")
         rt = ruby.find("rt")
         if rt:
+            rt_text = rt.get_text()
             base_text = rb.get_text() if rb else ruby.get_text()
             prev = _bs4_prev_text(ruby)
-            pipe = "|" if _ruby_needs_pipe(base_text, prev) else ""
-            ruby.replace_with(f"{pipe}{base_text}《{rt.get_text()}》")
+            pipe = "|" if _ruby_needs_pipe(base_text, prev, rt_text) else ""
+            ruby.replace_with(f"{pipe}{base_text}《{rt_text}》")
         else:
             ruby.replace_with(ruby.get_text())
 
@@ -3621,10 +3627,11 @@ def neopage_content_to_aozora(content_html: str) -> str:
         rb = ruby.find("rb")
         rt = ruby.find("rt")
         if rt:
+            rt_text = rt.get_text()
             base_text = rb.get_text() if rb else ruby.get_text()
             prev = _bs4_prev_text(ruby)
-            pipe = "|" if _ruby_needs_pipe(base_text, prev) else ""
-            ruby.replace_with(f"{pipe}{base_text}《{rt.get_text()}》")
+            pipe = "|" if _ruby_needs_pipe(base_text, prev, rt_text) else ""
+            ruby.replace_with(f"{pipe}{base_text}《{rt_text}》")
         else:
             ruby.replace_with(ruby.get_text())
 
@@ -3850,10 +3857,11 @@ def solispia_html_to_aozora(soup) -> str:
         rb = ruby.find("rb")
         rt = ruby.find("rt")
         if rt:
+            rt_text = rt.get_text()
             base_text = rb.get_text() if rb else ruby.get_text()
             prev = _bs4_prev_text(ruby)
-            pipe = "|" if _ruby_needs_pipe(base_text, prev) else ""
-            ruby.replace_with(f"{pipe}{base_text}《{rt.get_text()}》")
+            pipe = "|" if _ruby_needs_pipe(base_text, prev, rt_text) else ""
+            ruby.replace_with(f"{pipe}{base_text}《{rt_text}》")
         else:
             ruby.replace_with(ruby.get_text())
 
@@ -4067,7 +4075,7 @@ def noichigo_html_to_aozora(body_div) -> str:
             for rp in ruby.find_all("rp"):
                 rp.decompose()
             base = ruby.get_text()
-            pipe = "|" if _ruby_needs_pipe(base, prev) else ""
+            pipe = "|" if _ruby_needs_pipe(base, prev, rt_text) else ""
             ruby.replace_with(f"{pipe}{base}《{rt_text}》")
         else:
             ruby.replace_with(ruby.get_text())
@@ -4892,7 +4900,7 @@ def novelup_html_to_aozora(content_p) -> str:
             base    = rb.get_text() if rb else ""
             rt_text = rt.get_text()
             prev = _bs4_prev_text(ruby)
-            pipe = "|" if _ruby_needs_pipe(base, prev) else ""
+            pipe = "|" if _ruby_needs_pipe(base, prev, rt_text) else ""
             ruby.replace_with(f"{pipe}{base}《{rt_text}》")
         else:
             ruby.replace_with(ruby.get_text())
@@ -5118,10 +5126,11 @@ def suteki_html_to_aozora(body_div) -> str:
         for rp in ruby.find_all("rp"):
             rp.decompose()
         if rt:
+            rt_text = rt.get_text()
             base = rb.get_text() if rb else ""
             prev = _bs4_prev_text(ruby)
-            pipe = "|" if _ruby_needs_pipe(base, prev) else ""
-            ruby.replace_with(f"{pipe}{base}《{rt.get_text()}》")
+            pipe = "|" if _ruby_needs_pipe(base, prev, rt_text) else ""
+            ruby.replace_with(f"{pipe}{base}《{rt_text}》")
         else:
             ruby.replace_with(ruby.get_text())
 
@@ -5329,10 +5338,11 @@ def days_html_to_aozora(body_div) -> str:
         for rp in ruby.find_all("rp"):
             rp.decompose()
         if rt:
+            rt_text = rt.get_text()
             base = rb.get_text() if rb else ""
             prev = _bs4_prev_text(ruby)
-            pipe = "|" if _ruby_needs_pipe(base, prev) else ""
-            ruby.replace_with(f"{pipe}{base}《{rt.get_text()}》")
+            pipe = "|" if _ruby_needs_pipe(base, prev, rt_text) else ""
+            ruby.replace_with(f"{pipe}{base}《{rt_text}》")
         else:
             ruby.replace_with(ruby.get_text())
 

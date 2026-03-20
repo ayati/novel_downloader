@@ -199,8 +199,8 @@ OPF `<metadata>` に `<meta name="primary-writing-mode" content="horizontal-rl"/
 
 - ルビ記法：テキスト内の `漢字《かんじ》` → XHTML では `<ruby>漢字<rt>かんじ</rt></ruby>`
 - 改ページ：テキスト内の `［＃改ページ］` → XHTML では `epub:type="pagebreak"`
-- ルビ自動判別：`《》` 内に漢字を含む場合は地の文として処理（ルビ誤変換を防止）
-- ルビ範囲確定：各スクレイパーは `|BASE《RUBY》` 形式（ASCII パイプ）で明示。`_ruby_needs_pipe(base, preceding)` で必要性を判定：(1) base が複数文字種を含む場合、(2) 直前テキストの末尾が base と同じ文字種の場合。`_bs4_prev_text(tag)` で BS4 タグの直前テキストを取得。なろう HTMLParser では `"".join(self._cur_para)` を preceding として渡す。青空文庫テキスト内の `｜`（全角）は `_apply_ruby_auto` が直接認識するため除去しない（`aozora_text_to_episodes`）
+- ルビ自動判別：`《》` 内に漢字を含む**かつパイプなし**の場合は地の文として処理（ルビ誤変換を防止）。`|BASE《漢字》` 形式（明示パイプあり）は漢字ルビでも必ず `<ruby>` タグに変換する
+- ルビ範囲確定：各スクレイパーは `|BASE《RUBY》` 形式（ASCII パイプ）で明示。`_ruby_needs_pipe(base, preceding, yomi)` で必要性を判定：(1) **yomi（ルビテキスト）に漢字が含まれる場合**（`《転生先》` 等の漢字ルビを確実にルビタグ化するため）、(2) base が複数文字種を含む場合、(3) 直前テキストの末尾が base と同じ文字種の場合。`_bs4_prev_text(tag)` で BS4 タグの直前テキストを取得。なろう HTMLParser では `"".join(self._cur_para)` を preceding、`self._rt_buf` を yomi として渡す。青空文庫テキスト内の `｜`（全角）は `_apply_ruby_auto` が直接認識するため除去しない（`aozora_text_to_episodes`）
 - 特殊記号の文字種：`々仝〆〇ヶ` は青空文庫規定により漢字（class 0）扱い。ルビ範囲判定（`_char_class`）に影響する
 - 字下げタグ：`［＃N字下げ］`（単行）→ `text-indent: Nem`、`［＃ここからN字下げ］` → `div.aozora-indent-Nem`（縦書き `padding-top`）、`［＃ここから改行天付き、折り返してN字下げ］` → `div.aozora-hanging-Nem`（`padding-top` + 内側 `<p>` に `text-indent: -Nem`）
 - 青空文庫図タグ：`「ファイル名」の図（ファイル名）入る` → `<figure><img></figure>`、キャプション付き → `<figcaption>` 付き。画像は `OEBPS/images/` に配置し、src は `images/filename`（`../images/` は誤り）
