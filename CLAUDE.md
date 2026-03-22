@@ -230,6 +230,8 @@ python novel_downloader.py --from-epub <出力済み.epub>
 python -c "import zipfile; zipfile.ZipFile('<出力.epub>').extractall('/tmp/epub_check')"
 ```
 
+> **注意**: `.gitignore` に `*.txt` と `*.epub` が含まれるため、ダウンロード結果の出力ファイルは git 管理対象外。Windows 向けセットアップ手順は `WINDOWS_SETUP.md` を参照。
+
 ## 新スクレイパー追加手順
 
 1. `detect_site(url)` にサイト判定条件を追加（`return "サイト名"` 形式）

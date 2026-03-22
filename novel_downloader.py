@@ -2347,13 +2347,24 @@ def kky_get_work_info(soup, next_data: dict, work_url: str) -> dict:
                             work_obj = v
                             break
             if work_obj:
-                info["title"]       = work_obj.get("title", "")
+                # alternateTitle が存在する場合はそちらが正式タイトル
+                # （title は "作品名／著者名" 形式になっている場合がある）
+                alt_title = work_obj.get("alternateTitle", "")
+                info["title"] = alt_title if alt_title else work_obj.get("title", "")
                 info["description"] = work_obj.get("introduction", "")
                 author_ref = work_obj.get("author", {})
                 if isinstance(author_ref, dict):
                     akey = author_ref.get("__ref", "")
                     if akey and akey in apollo:
-                        info["author"] = apollo[akey].get("activityName", "")
+                        activity_name = apollo[akey].get("activityName", "")
+                        # alternateAuthorName が存在する場合は実際の著者名として優先
+                        alt_author = work_obj.get("alternateAuthorName", "")
+                        if alt_author and activity_name and alt_author != activity_name:
+                            info["author"] = f"{alt_author}／{activity_name}"
+                        elif alt_author:
+                            info["author"] = alt_author
+                        else:
+                            info["author"] = activity_name
     except Exception:
         pass
 
