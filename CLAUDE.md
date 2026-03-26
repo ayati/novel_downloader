@@ -92,6 +92,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `--from-epub FILE` | — | ローカル ePub3 から青空文庫書式テキストを生成 |
 | `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
 | `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
+| `--cover-image FILE` | — | 表紙に使用するローカル画像ファイル（JPEG/PNG）。指定するとPillowによる自動生成表紙の代わりに使用される。ファイルが存在しない・非対応形式の場合は自動生成にフォールバック |
 | `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。`body` のデフォルトフォントとして CSS に設定される。ファイルが存在しない場合は警告を出して埋め込みなしで続行 |
 | `--toc-at-end` | — | 目次ページを奥付の後（末尾）に配置する。デフォルトは表紙の直後・本文の前 |
 | `--output-dir DIR` | カレントディレクトリ | 出力先ディレクトリを指定する。存在しない場合は自動作成。ファイル名は従来通りタイトルから自動生成（`-o` と併用可） |
@@ -217,6 +218,9 @@ OPF `<metadata>` に `<meta name="primary-writing-mode" content="horizontal-rl"/
 テストスイートは存在しないため、手動で動作確認する：
 
 ```bash
+# 構文チェック（編集後は必ず実行）
+python -m py_compile novel_downloader.py
+
 # なろう（stdlib のみ、追加ライブラリ不要）
 python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --no-epub
 

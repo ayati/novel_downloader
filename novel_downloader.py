@@ -52,6 +52,7 @@ novel_downloader.py
     --encoding ENC   テキスト出力エンコーディング（デフォルト utf-8）
     --no-epub        ePub出力を省略してテキストのみ出力する
     --cover-bg COLOR 表紙背景色（#RRGGBB形式）
+    --cover-image FILE 表紙に使用するローカル画像ファイル（JPEG/PNG）
     --from-file FILE ローカルテキストファイルからePub3を生成（URLモード不要）
     --title TITLE    タイトルを上書き（--from-file 使用時）
     --author AUTHOR  著者名を上書き（--from-file 使用時）
@@ -1646,6 +1647,7 @@ def build_epub(
     site_name: str,
     episodes: list,          # [{"title": str, "body": str}, ...]
     cover_bg: str = "#16234b",
+    cover_image_path: str = "",  # ローカル表紙画像ファイルパス（JPEG/PNG）
     font_path: str = "",
     toc_at_end: bool = False,
     images: dict = None,     # {"filename.png": bytes} — 本文中のインライン画像
@@ -1669,8 +1671,29 @@ def build_epub(
     book_id   = str(uuid.uuid4())
     ep_titles = [ep["title"] for ep in episodes]
 
-    # 表紙画像を生成（PNG優先、失敗時SVG）。常に (bytes, fmt) を返す
-    cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
+    # 表紙画像：外部ファイル指定があればそちらを使用、なければ自動生成
+    if cover_image_path:
+        if not os.path.isfile(cover_image_path):
+            print(f"[警告] 表紙画像ファイルが見つかりません: {cover_image_path}")
+            print("       自動生成の表紙を使用します。")
+            cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
+        else:
+            _ext = Path(cover_image_path).suffix.lower()
+            if _ext in (".jpg", ".jpeg"):
+                cover_fmt = "jpg"
+            elif _ext == ".png":
+                cover_fmt = "png"
+            else:
+                print(f"[警告] 非対応の画像形式です: {_ext}（対応: .jpg / .jpeg / .png）")
+                print("       自動生成の表紙を使用します。")
+                cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
+            if cover_fmt in ("jpg", "png"):
+                with open(cover_image_path, "rb") as _f:
+                    cover_data = _f.read()
+                print(f"  表紙画像: {cover_image_path}")
+    else:
+        # 表紙画像を自動生成（Pillow利用可能時JPEG、なければSVGフォールバック）
+        cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
 
     # 埋め込みフォントの準備（CSS注入対策: " \ 改行を除去）
     if font_path and not os.path.isfile(font_path):
@@ -2273,6 +2296,7 @@ def run_narou(args):
         build_epub(epub_path, title, author, synopsis,
                    base_url, "小説家になろう", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -2662,6 +2686,7 @@ def run_kakuyomu(args):
                    info.get("description", ""),
                    work_url, "カクヨム", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -2979,6 +3004,7 @@ def run_alphapolis(args):
                    info.get("description", ""),
                    work_url, "アルファポリス", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -3235,6 +3261,7 @@ def run_estar(args):
                    info["description"],
                    work_url, "エブリスタ", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -3482,6 +3509,7 @@ def run_hameln(args):
                    info["description"],
                    work_url, "ハーメルン", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -3786,6 +3814,7 @@ def run_neopage(args):
                    info["synopsis"],
                    work_url, "ネオページ", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -4019,6 +4048,7 @@ def run_solispia(args):
                    info["description"],
                    work_url, "ソリスピア", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -4255,6 +4285,7 @@ def run_noichigo(args):
                    info["description"],
                    work_url, "野いちご", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -4444,6 +4475,7 @@ def run_berrys(args):
                    info["description"],
                    work_url, "berry's cafe", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -4641,6 +4673,7 @@ def run_monogatary(args):
                    synopsis,
                    story_url, "monogatary.com", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -4842,6 +4875,7 @@ def run_novema(args):
                    info["description"],
                    work_url, "ノベマ！", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -5062,6 +5096,7 @@ def run_novelup(args):
                    info["description"],
                    work_url, "ノベルアップ＋", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -5270,6 +5305,7 @@ def run_sutekibungei(args):
                    info["description"],
                    work_url, "ステキブンゲイ", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -5499,6 +5535,7 @@ def run_days(args):
                    info["description"],
                    work_url, "NOVEL DAYS", epub_episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -5765,6 +5802,7 @@ def run_genpaku(args):
                    info["description"],
                    work_url, "プロジェクト杉田玄白", episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -6093,6 +6131,7 @@ def run_hyuki(args):
                    info["description"],
                    work_url, "結城浩翻訳の部屋", episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False))
         print(f"✅ ePub出力完了: {epub_path}")
@@ -6401,6 +6440,7 @@ def run_aozora(args):
         build_epub(epub_path, title, author, "",
                    work_url, "青空文庫", episodes,
                    cover_bg=args.cover_bg,
+                   cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    images=images or None)
@@ -6562,6 +6602,7 @@ def run_from_file(args):
     print(f"📖 ePub生成中...")
     build_epub(epub_path, title, author, synopsis,
                "", "ローカルファイル", episodes, cover_bg=cover_bg,
+               cover_image_path=getattr(args, "cover_image", None) or "",
                font_path=getattr(args, "font", "") or "",
                toc_at_end=getattr(args, "toc_at_end", False))
     print(f"✅ ePub出力完了: {epub_path}")
@@ -7379,6 +7420,10 @@ def main():
                         help="タイトルを上書き（--from-file 使用時）")
     parser.add_argument("--author", dest="author_override", default=None, metavar="AUTHOR",
                         help="著者名を上書き（--from-file 使用時）")
+    parser.add_argument("--cover-image", dest="cover_image", default=None, metavar="FILE",
+                        help="表紙に使用するローカル画像ファイル（JPEG/PNG）。"
+                             "指定するとPillowによる自動生成表紙の代わりに使用される。"
+                             "ファイルが存在しない・非対応形式の場合は自動生成にフォールバック")
     parser.add_argument("--font", dest="font", default=None, metavar="FILE",
                         help="ePub本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。"
                              "指定したフォントを body のデフォルトフォントとして CSS に設定する")

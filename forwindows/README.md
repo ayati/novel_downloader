@@ -10,7 +10,8 @@
 | ファイル | 用途 |
 |---|---|
 | `clipnoveldwn.bat` | クリップボードの URL を即ダウンロード |
-| `watcher.bat` | フォルダを監視し、txt ファイルが置かれたら自動ダウンロード |
+| `watcher.bat` | OneDrive フォルダを監視し、txt ファイルが置かれたら自動ダウンロード |
+| `watcherG.bat` | Google Drive フォルダを監視し、ファイルが置かれたら自動ダウンロード |
 | `novel_downloader.exe` | 本体の実行ファイル |
 
 ---
@@ -156,3 +157,102 @@ https://kakuyomu.jp/works/XXXXXXXXXX
 
 - `watcher.bat` は開いている間だけ動作します。PC 起動時に自動実行したい場合は、スタートアップフォルダ（`shell:startup`）にショートカットを配置してください。
 - 監視間隔は 2 秒です。OneDrive の同期完了後に検知されます。
+
+---
+
+## watcherG.bat
+
+### 概要
+
+Google Drive 上の「トリガーフォルダ」を常時監視し、そこにファイルを置くと自動でダウンロードを実行します。
+`watcher.bat`（OneDrive版）と同様の仕組みですが、**Google ドライブ for デスクトップ**でマウントした `G:\マイドライブ` を使用します。
+スマートフォンや別の PC から Google Drive 経由でダウンロードを指示したいときに便利です。
+
+### `watcher.bat`（OneDrive版）との違い
+
+| 項目 | `watcher.bat` | `watcherG.bat` |
+|---|---|---|
+| ストレージ | OneDrive（`C:\Users\{user}\OneDrive`） | Google Drive（`G:\マイドライブ`） |
+| 設定方法 | `ONEDRIVE_USER` 変数を書き換えるだけ | パスを直接編集 |
+| 監視対象ファイル | `*.txt` のみ | フォルダ内の全ファイル |
+| 処理済みの管理 | セッション中のみ（一時ログ、再起動でリセット） | `done\` サブフォルダに移動（永続） |
+
+### 初期セットアップ
+
+#### 1. Google ドライブ for デスクトップのインストールと設定
+
+1. [Google ドライブ for デスクトップ](https://www.google.com/intl/ja_jp/drive/download/)をインストール
+2. サインイン後、エクスプローラーで `G:\マイドライブ` が表示されることを確認
+3. `G:\マイドライブ\triger` フォルダをエクスプローラーで右クリック →「オフラインアクセス - オフラインで使用可能にする」を設定
+   （同期完了前に検知されるのを防ぐため）
+
+#### 2. ファイルの配置
+
+`novel_downloader.exe` を Google ドライブ直下にコピーします。
+
+```
+G:\マイドライブ\
+├── novel_downloader.exe   ← ここに配置
+├── fonts\
+│   └── AyatiShowaSerif-Regular.ttf   ← フォントもここに（任意）
+├── epub\                  ← ダウンロード結果の保存先（自動作成）
+└── triger\                ← 監視フォルダ（手動で作成）
+```
+
+#### 3. スクリプトのカスタマイズ
+
+スクリプト冒頭の「ユーザー設定」欄のパスを直接編集します（`watcher.bat` と異なり、ユーザー名変数はありません）：
+
+```bat
+rem 監視フォルダ
+set "TARGET_FOLDER=G:\マイドライブ\triger"
+
+rem novel_downloader の実行ファイルパス
+set "DOWNLOADER=G:\マイドライブ\novel_downloader.exe"
+
+rem オプション定義
+set "OPT_OUTPUT=--output-dir "G:\マイドライブ\epub""
+set "OPT_FONT=--font "G:\マイドライブ\fonts\AyatiShowaSerif-Regular.ttf""
+set "OPT_FORMAT=--kobo"
+set "OPT_EXTRA="
+```
+
+| 変数 | 説明 |
+|---|---|
+| `TARGET_FOLDER` | 監視するフォルダのパス |
+| `DOWNLOADER` | `novel_downloader.exe` のパス |
+| `OPT_OUTPUT` | ePub の保存先（`--output-dir`） |
+| `OPT_FONT` | 埋め込みフォントのパス。不要なら空にする |
+| `OPT_FORMAT` | 出力形式オプション。Kobo 端末向けなら `--kobo`、不要なら空 |
+| `OPT_EXTRA` | その他のオプション。通常は空でよい |
+
+### 使い方
+
+#### 監視の開始
+
+`watcherG.bat` をダブルクリックするとコマンドプロンプトが開き、フォルダ監視が始まります。
+
+停止するには **Ctrl+C** を押します。
+
+#### ダウンロードの指示方法
+
+`triger` フォルダに、**1行目に URL だけ書いたファイル**を作成します（拡張子不問）。
+
+```
+https://kakuyomu.jp/works/XXXXXXXXXX
+```
+
+- ファイル名・拡張子は何でも構いません
+- Google Drive で同期されると watcherG が自動検知し、ダウンロードを開始します
+- スマートフォンの Google Drive アプリからファイルを作成しても動作します
+
+#### 処理済みファイルの扱い
+
+処理済みファイルは `triger\done\` サブフォルダに移動されます（`watcher.bat` と異なり、再起動後も重複処理されません）。
+同じ URL を再ダウンロードしたい場合は、`done\` フォルダから元のファイルを取り出すか、新しいファイル名で `.txt` を作成してください。
+
+### 注意事項
+
+- `watcherG.bat` は開いている間だけ動作します。PC 起動時に自動実行したい場合は、スタートアップフォルダ（`shell:startup`）にショートカットを配置してください。
+- 監視間隔は 2 秒です。Google Drive の同期完了後に検知されます。
+- Google ドライブ for デスクトップが起動していないと `G:\` ドライブが存在せずエラーになります。
