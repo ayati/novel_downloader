@@ -121,16 +121,24 @@ if ([string]::IsNullOrWhiteSpace($content)) {
     exit 1
 }
 
-# 空行を除いた最初の行を取得
-$url = ($content -split "`n" `
-    | Where-Object { $_.Trim() -ne "" } `
-    | Select-Object -First 1
-    ).Trim() -replace "`r", ""
+# URL でない行（タイトル・説明文等）を読み飛ばし、最初の URL を採用
+$url = $null
+foreach ($line in ($content -split "`n")) {
+    if (($line.Trim() -replace "`r", "") -match "(https?://\S+)") {
+        $url = $Matches[1]
+        break
+    }
+}
 
-# サニタイズ：バッチ特殊文字を含む危険文字を除去
+if (-not $url) {
+    Write-Output "ERROR"
+    exit 1
+}
+
+# サニタイズ: バッチ経由で渡す危険文字を除去
 $url = $url -replace '["%''<>|`\s!^&()%]', ''
 
-# URLスキームチェック
+# URL スキーマ確認（サニタイズ後の念のため）
 if ($url -notmatch "^https?://") {
     Write-Output "ERROR"
     exit 1

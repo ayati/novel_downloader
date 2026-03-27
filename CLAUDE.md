@@ -168,7 +168,9 @@ python novel_downloader.py --from-file mynovel.txt
    - `parse_epub()`（行 6829）：自ツール生成 ePub（`OEBPS/ep*.xhtml`）優先、汎用 spine フォールバック。nav ドキュメントから `{zip_path → chapter_title}` マップを構築し genuine_nav_count ≥ 2 で nav-only モードに移行（前付け・後付け除外）。`BadZipFile` 時は `_read_streaming_zip` にフォールバック
    - エントリポイント：`run_from_epub()`（行 7000）
 
-22. **`main()`**（行 ~7052–）：`_host_matches`（行 7056）でドメイン判定ヘルパー（スプーフィング対策）、`detect_site`（行 7063）でサイト判定、`normalize_url`（行 7104）で話数 URL → 作品トップ URL 正規化、`main()`（行 7281）で引数解析 → 各 `run_*` 関数にディスパッチ。
+22. **短縮URL展開**（行 ~7138–）：`_SHORT_URL_HOSTS`（30種以上）で短縮サービスを判定。`expand_short_url()` が最大5ホップのリダイレクト追跡を行う。各ホップで `_follow_one_redirect()`（HEAD→GETフォールバック、ブラウザ互換ヘッダー）→ `_unwrap_query_url()`（クエリパラメータへの実URL埋め込み展開）→ `_extract_url_from_html()`（meta refresh / window.location パース）の順で展開を試みる。`main()` 内で `detect_site()` の前に呼び出される。
+
+23. **`main()`**（行 ~7052–）：`_host_matches`（行 7056）でドメイン判定ヘルパー（スプーフィング対策）、`detect_site`（行 7063）でサイト判定、`normalize_url`（行 7104）で話数 URL → 作品トップ URL 正規化、`main()`（行 7281）で引数解析 → 各 `run_*` 関数にディスパッチ。
 
 ## ePub3 内部構造
 
@@ -212,6 +214,19 @@ OPF `<metadata>` に `<meta name="primary-writing-mode" content="horizontal-rl"/
 ## font/ ディレクトリ
 
 `font/` に OFL ライセンスのフォントファイル（`AyatiShowaSerif-Regular.ttf`）を同梱。`--font font/AyatiShowaSerif-Regular.ttf` のように指定して ePub に埋め込める。
+
+## forwindows/ ディレクトリ
+
+Windows 向け補助スクリプト一式。Shift-JIS エンコード（PowerShell ブロックは ASCII のみ）。
+
+| ファイル | 用途 |
+|---|---|
+| `clipnoveldwn.bat` | クリップボードの URL を即ダウンロード |
+| `watcher.bat` | OneDrive 監視・自動ダウンロード（処理済みを `done\` フォルダへ移動） |
+| `watcherG.bat` | Google Drive 監視・自動ダウンロード（同上） |
+| `novel_downloader.exe` | 本体 exe（git 管理外） |
+
+両 watcher は**バッチ＋PowerShell のポリグロットスクリプト**。バッチ部でファイル検知・ダウンロード実行、PowerShell 部でファイル内容から URL を抽出して返す。URL はファイル中どこにあっても（タイトル行・スペース後・文中など）最初に見つかった URL を採用。短縮 URL（`expand_short_url`）は `novel_downloader.py` 側で自動展開される。
 
 ## 動作確認
 

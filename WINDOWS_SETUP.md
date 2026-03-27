@@ -170,6 +170,15 @@ python novel_downloader.py https://ncode.syosetu.com/n0022gd/
 python novel_downloader.py https://kakuyomu.jp/works/16817139555217983105
 ```
 
+**短縮 URL もそのまま使えます：**
+
+share.google / search.app / bit.ly / t.co / lin.ee / amzn.to など主要な短縮 URL サービスに対応しています。スマートフォンから共有した短縮 URL をそのまま指定しても自動展開して処理します。
+
+```
+python novel_downloader.py https://share.google/XXXXXXXXXX
+python novel_downloader.py https://bit.ly/XXXXXXXXXX
+```
+
 実行すると `作品タイトル.txt` と `作品タイトル.epub` の2ファイルが生成されます。
 
 ### よく使うオプション

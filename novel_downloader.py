@@ -72,7 +72,7 @@ import unicodedata
 from datetime import date
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, parse_qs
 from html import escape as _esc
 from html.parser import HTMLParser
 from pathlib import Path
@@ -7142,6 +7142,160 @@ def _host_matches(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain)
 
 
+# 短縮URL サービスのドメイン一覧
+_SHORT_URL_HOSTS = {
+    # 当初対応分
+    "share.google",
+    "search.app",
+    "bit.ly",
+    "tinyurl.com",
+    "00m.in",
+    "ow.ly",
+    # SNS系
+    "t.co",           # Twitter/X
+    "lin.ee",         # LINE
+    "fb.me",          # Facebook
+    "lnkd.in",        # LinkedIn
+    "wp.me",          # WordPress
+    # 汎用短縮サービス
+    "goo.gl",         # Google（旧・廃止済みだが既存リンクは動作）
+    "is.gd",
+    "v.gd",
+    "s.id",
+    "cutt.ly",
+    "rebrand.ly",
+    "short.io",
+    "clck.ru",
+    "x.gd",
+    "qr.ae",
+    # Eコマース系
+    "amzn.to",
+    "amzn.asia",
+    # マーケティング系
+    "buff.ly",        # Buffer
+    "ift.tt",         # IFTTT
+    "dlvr.it",
+    "po.st",
+}
+
+
+def _unwrap_query_url(url: str) -> str:
+    """中間リダイレクト先URLのクエリパラメータに本来のURLが埋め込まれている場合に取り出す。
+
+    例: https://www.google.com/share.google?q=https://kakuyomu.jp/works/...
+         → https://kakuyomu.jp/works/...
+    対象キー: q / url / u / link / target / redirect / next
+    """
+    params = parse_qs(urlparse(url).query, keep_blank_values=False)
+    for key in ("q", "url", "u", "link", "target", "redirect", "next"):
+        candidates = params.get(key, [])
+        if candidates:
+            candidate = candidates[0]
+            if candidate.startswith("http://") or candidate.startswith("https://"):
+                return candidate
+    return url
+
+
+_SHORT_URL_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+}
+
+
+def _extract_url_from_html(html: str) -> str | None:
+    """HTMLページ内のリダイレクト先URLを抽出する。
+    meta http-equiv="refresh" と window.location(.href) の両方を試みる。
+    """
+    # <meta http-equiv="refresh" content="0; url=...">
+    m = re.search(
+        r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+'
+        r'content=["\']?\d*\s*;\s*url=([^"\'>\s]+)',
+        html, re.I
+    )
+    if m:
+        return m.group(1).strip("'\"")
+    # window.location = "..." または window.location.href = "..."
+    m = re.search(
+        r'window\.location(?:\.href)?\s*=\s*["\']([^"\']{10,})["\']',
+        html
+    )
+    if m:
+        return m.group(1)
+    return None
+
+
+def _follow_one_redirect(url: str) -> tuple[str, str | None]:
+    """1回のHTTPリクエストでリダイレクト後のURLとHTML本文を返す。
+
+    HEAD でリダイレクトが確認できた場合はそのURLと None を返す。
+    HEAD でリダイレクトがなかった（同一URL）場合は GET でページ本文も取得する。
+    失敗した場合は (url, None) を返す。
+    """
+    try:
+        req = Request(url, headers=_SHORT_URL_HEADERS, method="HEAD")
+        with urlopen(req, timeout=15) as resp:
+            landed = resp.geturl()
+        if landed != url:
+            return landed, None
+    except Exception:
+        pass
+
+    # HEAD でリダイレクトなし（または失敗）→ GET でページ本文も取得
+    try:
+        req = Request(url, headers=_SHORT_URL_HEADERS)
+        with urlopen(req, timeout=15) as resp:
+            landed = resp.geturl()
+            body = resp.read(65536).decode("utf-8", errors="replace")
+        return landed, body
+    except Exception:
+        pass
+
+    return url, None
+
+
+def expand_short_url(url: str) -> str:
+    """短縮URLを展開して実際のURLを返す。短縮URLでなければそのまま返す。
+
+    最大5ホップまで中間リダイレクトを追跡する。
+    HTTP リダイレクトがない場合は HTML 本文の meta refresh / window.location も確認する
+    （例: share.google/ID → google.com/share.google?q=ID → 実URL）。
+    いずれも失敗した場合は元の URL を返す。
+    """
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if not any(_host_matches(host, d) for d in _SHORT_URL_HOSTS):
+        return url
+
+    print(f"[情報] 短縮URLを展開中: {url}")
+    current = url
+
+    for _ in range(5):  # 最大5ホップ
+        next_url, body = _follow_one_redirect(current)
+
+        # クエリパラメータに実URLが埋め込まれている中間URLを展開
+        next_url = _unwrap_query_url(next_url)
+
+        if next_url == current:
+            # HTTP リダイレクトなし → HTML本文からリダイレクト先を探す
+            if body:
+                from_html = _extract_url_from_html(body)
+                if from_html and from_html.startswith("http") and from_html != current:
+                    current = from_html
+                    continue
+            break  # これ以上展開できない
+
+        current = next_url
+
+    if current != url:
+        print(f"       展開後URL: {current}")
+    return current
+
+
 def detect_site(url: str) -> str:
     """URLからサイト種別を判定する。'narou' | 'kakuyomu' | 'alphapolis' | 'estar' | 'noichigo' | 'hameln' | 'novema' | 'neopage' | 'genpaku' | 'unknown'"""
     parsed = urlparse(url)
@@ -7455,6 +7609,7 @@ def main():
             parser.error(
                 "URLを指定するか、--from-file でローカルテキストファイルを指定してください。"
             )
+        args.url = expand_short_url(args.url)
         site = detect_site(args.url)
         args.url = normalize_url(args.url, site)
         if args.cover_bg is None:

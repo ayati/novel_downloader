@@ -55,15 +55,12 @@ echo =========================================
 echo.
 
 rem 処理済みファイルを記録する一時ファイル
-set "PROCESSED_LOG=%TEMP%\watcher_processed_%RANDOM%.tmp"
-type nul > "!PROCESSED_LOG!"
-
 :WATCH_LOOP
-    for %%F in ("!TARGET_FOLDER!\*.txt") do (
+    for %%F in ("!TARGET_FOLDER!\*") do (
         set "TXT_FILE=%%~fF"
 
-        findstr /x /c:"!TXT_FILE!" "!PROCESSED_LOG!" >nul 2>&1
-        if errorlevel 1 (
+        if not exist "!TARGET_FOLDER!\done" mkdir "!TARGET_FOLDER!\done"
+        if not exist "!TARGET_FOLDER!\done\%%~nxF" (
             echo [!TIME!] 新しいファイルを検知しました: %%~nxF
             timeout /t 1 /nobreak >nul
 
@@ -97,7 +94,7 @@ type nul > "!PROCESSED_LOG!"
                 echo.
             )
 
-            echo !TXT_FILE!>> "!PROCESSED_LOG!"
+            move /y "!TXT_FILE!" "!TARGET_FOLDER!\done\" >nul
         )
     )
     set "VALIDATED_URL="
@@ -129,16 +126,24 @@ if ([string]::IsNullOrWhiteSpace($content)) {
     exit 1
 }
 
-# 空行を除いた最初の行を取得
-$url = ($content -split "`n" `
-    | Where-Object { $_.Trim() -ne "" } `
-    | Select-Object -First 1
-    ).Trim() -replace "`r", ""
+# 行中のどこにあっても最初の URL を抽出（行頭・文中・スペース後も対応）
+$url = $null
+foreach ($line in ($content -split "`n")) {
+    if (($line.Trim() -replace "`r", "") -match "(https?://\S+)") {
+        $url = $Matches[1]
+        break
+    }
+}
 
-# サニタイズ：バッチ特殊文字を含む危険文字を除去
+if (-not $url) {
+    Write-Output "ERROR"
+    exit 1
+}
+
+# サニタイズ: バッチ経由で渡す危険文字を除去
 $url = $url -replace '["%''<>|`\s!^&()%]', ''
 
-# URLスキームチェック
+# URL スキーマ確認（サニタイズ後の念のため）
 if ($url -notmatch "^https?://") {
     Write-Output "ERROR"
     exit 1
