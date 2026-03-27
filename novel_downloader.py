@@ -27,12 +27,17 @@
 #
 """
 novel_downloader.py
-小説家になろう・カクヨム 共通ダウンローダー
-全話を青空文庫書式テキスト＋縦書きePub3（各1ファイル）に出力します。
+小説投稿サイトの作品を一括ダウンロードし、青空文庫書式テキスト＋縦書きePub3に変換します。
 
 使い方:
     # URLから直接ダウンロード
     python novel_downloader.py <URL> [オプション]
+
+    # 既存テキストに続きを追記・ePub再生成（URL指定不要）
+    python novel_downloader.py --append <FILE.txt>
+
+    # 新着話数の確認のみ（ダウンロード・上書きなし）
+    python novel_downloader.py --check-update <FILE.txt>
 
     # ローカルテキストファイルからePub3を生成
     python novel_downloader.py --from-file <FILE> [オプション]
@@ -40,23 +45,48 @@ novel_downloader.py
 対応サイト（URLモード）:
     小説家になろう  https://ncode.syosetu.com/nXXXXxx/
     カクヨム        https://kakuyomu.jp/works/XXXXXXXXXX
+    アルファポリス  https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX
+    エブリスタ      https://estar.jp/novels/XXXXXXXXX
+    野いちご        https://www.no-ichigo.jp/book/nXXXXXX
+    ハーメルン      https://syosetu.org/novel/XXXXXXX/
     ノベマ！        https://novema.jp/book/nXXXXXX
+    ノベルアップ＋  https://novelup.plus/story/XXXXXXXXX
+    ステキブンゲイ  https://sutekibungei.com/novels/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+    NOVEL DAYS      https://novel.daysneo.com/works/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.html
+    ネオページ      https://www.neopage.com/book/XXXXXXXXXXXXXXXXX
+    ソリスピア      https://solispia.com/title/XXXX
+    berry's cafe    https://www.berrys-cafe.jp/book/nXXXXXXX
+    monogatary.com  https://monogatary.com/story/XXXXXXX
+    青空文庫        https://www.aozora.gr.jp/cards/XXXXXX/cardXXXXXX.html
+    プロジェクト杉田玄白  https://www.genpaku.org/XXXXXX/XXXXXXj.html
+    結城浩翻訳の部屋      https://www.hyuki.com/trans/XXXXXX
 
 オプション:
     -o FILE          出力ベース名（省略時は作品タイトルから自動生成）
                      例: -o mynovel  → mynovel.txt / mynovel.epub
     --delay SEC      リクエスト間隔（秒、デフォルト 1.5）
-    --resume N       第N話から再開（なろうのみ）
-    --start N        取得開始話数（デフォルト 1）
-    --end N          取得終了話数（省略時は最終話まで）
+    --resume [N]     続きからダウンロード。N省略時は既存.txtから話数を自動検出して再開。
+                     N指定時は第N話から開始。全サイト対応（青空文庫・ローカルモードを除く）
+    --append FILE    既存.txtに続きを追記・ePub再生成。底本URLを自動抽出するためURL指定不要。
+                     新規エピソードがない場合は既存ファイルを上書きしない
+    --check-update FILE  既存.txtとサイトの最新話数を比較し、新着のみ表示して終了
+    --list-only      エピソード一覧と話数のみ表示して終了（ダウンロードなし）
+    --start N        取得開始話数（野いちご・ノベマ！・berry's cafe は章番号）
+    --end N          取得終了話数（省略時は最終話まで。野いちご・ノベマ！・berry's cafe は章番号）
     --encoding ENC   テキスト出力エンコーディング（デフォルト utf-8）
+    --newline MODE   改行コード（os=OS標準 / lf / crlf）
     --no-epub        ePub出力を省略してテキストのみ出力する
     --cover-bg COLOR 表紙背景色（#RRGGBB形式）
     --cover-image FILE 表紙に使用するローカル画像ファイル（JPEG/PNG）
+    --use-site-cover 作品ページのog:imageを表紙として使用する
     --from-file FILE ローカルテキストファイルからePub3を生成（URLモード不要）
+    --from-epub FILE ローカルePub3ファイルを青空文庫書式テキストに逆変換
     --title TITLE    タイトルを上書き（--from-file 使用時）
     --author AUTHOR  著者名を上書き（--from-file 使用時）
     --font FILE      ePub本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）
+    --toc-at-end     目次ページを奥付の後（末尾）に配置する
+    --output-dir DIR 出力先ディレクトリ（存在しない場合は自動作成）
+    --kobo           Kobo専用端末向けに拡張子を.kepub.epubにする
 """
 
 import sys
@@ -1174,21 +1204,45 @@ def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
                                epub_type=' epub:type="backmatter"')
 
 
-def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
+def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
     """ナビゲーションドキュメント（nav.xhtml）を生成する。
-    表紙・タイトルページ・奥付はナンバリングなしのリンクのみ、
-    本文エピソードは 1 から始まる番号付きリストで表示する。
+    表紙・タイトルページ・奥付はナンバリングなしのリンクのみ。
+    本文エピソードは 1 から始まる番号付きリストで表示し、
+    episodes 要素に "group" キーがある場合は章/部単位でネストした <ol> にまとめる。
+
+    episodes: list[str] または list[dict{"title", "body", "group"?}]
     """
+    # 各エピソードを {"title": str, "group": str|None} に正規化
+    def _norm(ep):
+        if isinstance(ep, str):
+            return {"title": ep, "group": None}
+        return {"title": ep.get("title", ""), "group": ep.get("group") or None}
+    normalized = [_norm(ep) for ep in episodes]
+
     # 前付け（ナンバリングなし）
     prelim_items = []
     if cover_fmt:
         prelim_items.append('<li class="toc-prelim"><a href="cover-image.xhtml">表紙</a></li>')
     prelim_items.append('<li class="toc-prelim"><a href="cover.xhtml">タイトルページ</a></li>')
 
-    # 本文エピソード（番号付き、全項目に value を明示して採番を確定）
-    ep_items = []
-    for i, t in enumerate(ep_titles):
-        ep_items.append(f'<li value="{i+1}"><a href="ep{i+1:04d}.xhtml">{_esc(t)}</a></li>')
+    # 本文エピソード
+    # group が変わったとき（None→名前付き、または別の名前付き）にフラットな章ヘッダー行を挿入し、
+    # エピソード行はすべて同じインデントレベルに並べる（ネストした <ol> は使わない）。
+    # value 属性は全話通しの連番（ep{n:04d}.xhtml に対応）を明示する。
+    ep_items  = []
+    num       = 0   # 通し番号（ファイル名 ep{n:04d}.xhtml の n）
+    prev_group = None  # 直前の章グループ名（None = 未設定）
+
+    for ep in normalized:
+        num  += 1
+        group = ep["group"]
+        # 新しい章グループに切り替わったときのみヘッダー行を挿入
+        if group is not None and group != prev_group:
+            ep_items.append(f'<li class="toc-chapter"><span>{_esc(group)}</span></li>')
+            prev_group = group
+        ep_items.append(
+            f'<li value="{num}"><a href="ep{num:04d}.xhtml">{_esc(ep["title"])}</a></li>'
+        )
 
     # 後付け（ナンバリングなし）
     back_items = ['<li class="toc-prelim"><a href="colophon.xhtml">奥付</a></li>']
@@ -1197,7 +1251,7 @@ def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
 
     # landmarks: カバー・本文開始・目次をリーダーが認識するための必須ナビ
     cover_href = "cover-image.xhtml" if cover_fmt else "cover.xhtml"
-    body_start = "ep0001.xhtml" if ep_titles else "cover.xhtml"
+    body_start = "ep0001.xhtml" if episodes else "cover.xhtml"
     landmarks = f"""\
 <nav epub:type="landmarks" id="landmarks">
   <ol>
@@ -1218,6 +1272,8 @@ def _make_nav_xhtml(title: str, ep_titles: list, cover_fmt: str = "") -> str:
 <style>
   #toc ol {{ list-style: decimal; }}
   #toc li.toc-prelim {{ list-style: none; }}
+  #toc li.toc-chapter {{ list-style: none; margin-top: 0.8em; margin-bottom: 0.2em; }}
+  #toc li.toc-chapter > span {{ font-weight: bold; font-size: 0.95em; }}
 </style>
 </head>
 <body>
@@ -1556,9 +1612,8 @@ def _find_cjk_fonts() -> tuple:
 _FONT_BOLD_PATH, _FONT_BOLD_IDX, _FONT_MEDIUM_PATH, _FONT_MEDIUM_IDX = _find_cjk_fonts()
 
 if _FONT_BOLD_PATH:
-    import os as _os
-    _b = _os.path.basename(_FONT_BOLD_PATH)
-    _m = _os.path.basename(_FONT_MEDIUM_PATH) if _FONT_MEDIUM_PATH else _b
+    _b = os.path.basename(_FONT_BOLD_PATH)
+    _m = os.path.basename(_FONT_MEDIUM_PATH) if _FONT_MEDIUM_PATH else _b
     print(f"[情報] 日本語フォント検出: bold={_b}[{_FONT_BOLD_IDX}]  medium={_m}[{_FONT_MEDIUM_IDX}]")
 else:
     print(
@@ -1772,7 +1827,7 @@ def make_cover_image(title: str, author: str, cover_bg: str = "#16234b"):
             ax = (W - aw) / 2
             # 作者名エリアの視覚的中央（ascent オフセットを補正）
             area_h = AUTHOR_AREA_BOT - AUTHOR_AREA_TOP
-            ay = AUTHOR_AREA_TOP + (area_h - ah) / 2 - (ab[1] if 'ab' in dir() else 0)
+            ay = AUTHOR_AREA_TOP + (area_h - ah) / 2 - (ab[1] if 'ab' in locals() else 0)
             draw.text((ax+2, ay+2), author, font=font_a, fill=(0, 0, 0, 100))
             draw.text((ax,   ay  ), author, font=font_a, fill=(220, 205, 170))
 
@@ -1886,9 +1941,9 @@ def build_epub(
                               toc_at_end=toc_at_end,
                               inline_images=list(images.keys()) if images else None))
 
-        # nav.xhtml
+        # nav.xhtml（episodes をそのまま渡して章/部グループを目次に反映）
         zf.writestr("OEBPS/nav.xhtml",
-                    _make_nav_xhtml(title, ep_titles, cover_fmt))
+                    _make_nav_xhtml(title, episodes, cover_fmt))
 
         # 本文CSS（フォント指定あり時は @font-face を追加）
         zf.writestr("OEBPS/css/novel.css",
@@ -2089,12 +2144,21 @@ class NarouEpisodeListParser(HTMLParser):
 
     def __init__(self):
         super().__init__()
-        self.episodes    = []
-        self._in_ep_link = False
-        self._ep_path    = ""
+        self.episodes          = []   # [(path, title, chapter), ...]
+        self._in_ep_link       = False
+        self._ep_path          = ""
+        self._current_chapter  = ""   # 直前の章/部タイトル（div.p-eplist__chapter-title）
+        self._in_chapter_title = False
+        self._chapter_buf      = []
 
     def handle_starttag(self, tag, attrs):
-        d = dict(attrs)
+        d   = dict(attrs)
+        cls = d.get("class", "")
+        # 章/部区切り: <div class="p-eplist__chapter-title"> または同クラスを含む div
+        if tag == "div" and "p-eplist__chapter-title" in cls:
+            self._in_chapter_title = True
+            self._chapter_buf      = []
+            return
         if tag == "a" and "href" in d:
             href = d["href"]
             if re.match(r"^/[a-z0-9]+/\d+/$", href):
@@ -2102,14 +2166,20 @@ class NarouEpisodeListParser(HTMLParser):
                 self._ep_path    = href
 
     def handle_endtag(self, tag):
+        if self._in_chapter_title and tag == "div":
+            self._current_chapter  = "".join(self._chapter_buf).strip()
+            self._in_chapter_title = False
+            return
         if tag == "a":
             self._in_ep_link = False
 
     def handle_data(self, data):
-        if self._in_ep_link and self._ep_path:
+        if self._in_chapter_title:
+            self._chapter_buf.append(data)
+        elif self._in_ep_link and self._ep_path:
             s = data.strip()
             if s:
-                self.episodes.append((self._ep_path, s))
+                self.episodes.append((self._ep_path, s, self._current_chapter))
                 self._ep_path    = ""
                 self._in_ep_link = False
 
@@ -2119,8 +2189,9 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
     title, author, synopsis = narou_get_novel_info(ncode)
     time.sleep(index_wait)
 
-    all_eps = []
-    page    = 1
+    all_eps      = []
+    page         = 1
+    prev_chapter = ""  # ページをまたいで章情報を引き継ぐ
 
     while True:
         url  = f"{base_url}?p={page}" if page > 1 else base_url
@@ -2128,6 +2199,7 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
         html = narou_fetch(url)
 
         p = NarouEpisodeListParser()
+        p._current_chapter = prev_chapter  # 前ページ末尾の章名を引き継ぐ
         p.feed(html)
 
         if not p.episodes:
@@ -2135,6 +2207,7 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
             break
 
         all_eps.extend(p.episodes)
+        prev_chapter = p._current_chapter  # 次ページへ引き継ぐ
         print(f"    → {len(p.episodes)} 話（累計 {len(all_eps)} 話）")
 
         if len(p.episodes) < 100:
@@ -2416,7 +2489,7 @@ def run_narou(args):
         epub_episodes= []
         print(f"\n[Step 2] 本文ダウンロード開始")
 
-    for idx, (path, ep_title) in enumerate(target, start_idx + 1):
+    for idx, (path, ep_title, ep_group) in enumerate(target, start_idx + 1):
         if idx < resume_from:
             continue
 
@@ -2428,7 +2501,8 @@ def run_narou(args):
         except Exception as e:
             print(f"    !! 取得失敗（スキップ）: {e}")
             sections.append(aozora_chapter_title(ep_title) + "\n\n（取得失敗）\n")
-            epub_episodes.append({"title": ep_title, "body": "（取得失敗）"})
+            epub_episodes.append({"title": ep_title, "body": "（取得失敗）",
+                                  "group": ep_group or None})
             time.sleep(args.delay)
             continue
 
@@ -2449,7 +2523,8 @@ def run_narou(args):
             body = normalize_tate(body)
 
         sections.append(f"{aozora_chapter_title(subtitle)}\n\n{body}\n")
-        epub_episodes.append({"title": subtitle, "body": body})
+        epub_episodes.append({"title": subtitle, "body": body,
+                              "group": ep_group or None})
 
         if idx % 50 == 0:
             write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -2610,17 +2685,54 @@ def kky_get_episode_urls(next_data: dict, work_url: str) -> list:
                         work_obj = v
                         break
 
-        refs = []
+        # tableOfContents 構造（新形式）: Work → TableOfContentsChapter[] → episode[]
+        toc_refs = []
         if work_obj:
-            for ref in work_obj.get("episodeUnions", []):
+            for ref in work_obj.get("tableOfContents", []):
                 if isinstance(ref, dict) and "__ref" in ref:
-                    refs.append(ref["__ref"])
+                    toc_refs.append(ref["__ref"])
 
-        if refs:
+        if toc_refs:
+            chapter_count = 0
+            for toc_ref in toc_refs:
+                toc_obj = apollo.get(toc_ref)
+                if not toc_obj or not isinstance(toc_obj, dict):
+                    continue
+                # 章名: chapter.__ref → Chapter:xxx → title
+                current_chapter = ""
+                ch_ref_obj = toc_obj.get("chapter")
+                if isinstance(ch_ref_obj, dict) and "__ref" in ch_ref_obj:
+                    ch_obj = apollo.get(ch_ref_obj["__ref"])
+                    if ch_obj and isinstance(ch_obj, dict):
+                        current_chapter = kky_normalize(ch_obj.get("title", ""))
+                if current_chapter:
+                    chapter_count += 1
+                # エピソード列挙
+                for ep_ref in toc_obj.get("episodeUnions", []):
+                    if not (isinstance(ep_ref, dict) and "__ref" in ep_ref):
+                        continue
+                    ep_obj = apollo.get(ep_ref["__ref"])
+                    if not ep_obj or not isinstance(ep_obj, dict):
+                        continue
+                    ep_id    = ep_obj.get("id", "")
+                    ep_title = kky_normalize(ep_obj.get("title", ""))
+                    if ep_id:
+                        episodes.append({
+                            "url":     f"{_KKY_BASE}/works/{work_id}/episodes/{ep_id}",
+                            "title":   ep_title or "（タイトル不明）",
+                            "chapter": current_chapter,
+                        })
+            if chapter_count:
+                print(f"      章を {chapter_count} 件検出しました")
+        elif work_obj and work_obj.get("episodeUnions"):
+            # 旧形式フォールバック: Work.episodeUnions に直接エピソードが並ぶ
             current_chapter = ""
             chapter_count   = 0
-            for ref_key in refs:
-                ep_obj = apollo.get(ref_key)
+            for ref in work_obj.get("episodeUnions", []):
+                if not (isinstance(ref, dict) and "__ref" in ref):
+                    continue
+                ref_key  = ref["__ref"]
+                ep_obj   = apollo.get(ref_key)
                 if not ep_obj or not isinstance(ep_obj, dict):
                     continue
                 ep_id    = ep_obj.get("id", "")
@@ -2639,7 +2751,7 @@ def kky_get_episode_urls(next_data: dict, work_url: str) -> list:
             if chapter_count:
                 print(f"      章を {chapter_count} 件検出しました")
         else:
-            print("  [警告] episodeUnions が見つかりません。Episode を直接列挙します。")
+            print("  [警告] tableOfContents / episodeUnions が見つかりません。Episode を直接列挙します。")
             for k, v in apollo.items():
                 if k.startswith("Episode:") and isinstance(v, dict):
                     ep_id = v.get("id", "")
@@ -2835,7 +2947,9 @@ def run_kakuyomu(args):
             ep_title_p, ep_chapter, body = kky_extract_episode_body(ep_soup, ep_next, ep["url"])
             fallback  = ep["title"].split(" - ")[0].split("　-　")[0].strip()
             final_ttl = ep_title_p or fallback
-            episodes_data.append({"title": final_ttl, "chapter": ep_chapter, "body": body})
+            episodes_data.append({"title": final_ttl,
+                                  "chapter": ep_chapter or ep.get("chapter", ""),
+                                  "body": body})
         except RuntimeError as e:
             print(f"  [エラー] スキップします: {e}")
             episodes_data.append({"title": ep["title"], "chapter": ep.get("chapter", ""),
@@ -2852,7 +2966,9 @@ def run_kakuyomu(args):
         sec_title = aozora_chapter_title(heading, level="中見出し")
         body = normalize_tate(ep["body"]) if ep["body"] and ep["body"] != "（取得失敗）" else ep["body"]
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": heading, "body": body})
+        # ePub 目次: 章を group フィールドに分離してネスト表示。テキストは heading（章込み）を維持
+        epub_episodes.append({"title": ep["title"], "body": body,
+                              "group": chapter or None})
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
