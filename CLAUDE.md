@@ -81,7 +81,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `url` | — | 作品 URL（`--from-file` 指定時は省略可） |
 | `-o FILE` | タイトルから自動生成 | 出力ベース名（例: `-o mynovel` → `mynovel.txt` / `mynovel.epub`） |
 | `--delay SEC` | `1.5` | リクエスト間隔（秒） |
-| `--resume N` | `1` | 第 N 話から再開（なろうのみ） |
+| `--resume [N]` | — | 続きからダウンロード。`N` 省略時は既存 `.txt` から話数を自動検出して再開。`N` 指定時は第 N 話から開始。全サイト対応 |
 | `--start N` | `1` | 取得開始話数（野いちご・ノベマ！・berry's cafe は章番号） |
 | `--end N` | 最終話 | 取得終了話数（野いちご・ノベマ！・berry's cafe は章番号） |
 | `--encoding ENC` | `utf-8` | テキスト出力エンコーディング（`utf-8` / `utf-8-sig` / `shift_jis` / `cp932`） |
@@ -90,9 +90,12 @@ python novel_downloader.py --from-file mynovel.txt
 | `--cover-bg COLOR` | サイト依存 | 表紙背景色（`#RRGGBB` 形式） |
 | `--from-file FILE` | — | ローカルテキストから ePub3 を生成 |
 | `--from-epub FILE` | — | ローカル ePub3 から青空文庫書式テキストを生成 |
+| `--append FILE` | — | 既存 `.txt` を指定して続きを追記・ePub 再生成。`底本URL：` から URL を自動検出し `--resume 0` と同等の差分ダウンロードを実行する。URL 指定不要。新規エピソードがない場合は既存ファイルを上書きしない |
+| `--check-update FILE` | — | 既存 `.txt` を渡してサイトの最新話数と比較し、新着話数・タイトルを表示して終了。ダウンロード・ファイル上書きは一切行わない。`--append` の前の確認に使う |
 | `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
 | `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
 | `--cover-image FILE` | — | 表紙に使用するローカル画像ファイル（JPEG/PNG）。指定するとPillowによる自動生成表紙の代わりに使用される。ファイルが存在しない・非対応形式の場合は自動生成にフォールバック |
+| `--use-site-cover` | — | 作品ページの公式サムネイル画像（`og:image`）を表紙として使用する。一時ファイルに保存して `build_epub` に渡し、終了後に自動削除。`--cover-image` が指定されている場合は `--cover-image` が優先 |
 | `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。`body` のデフォルトフォントとして CSS に設定される。ファイルが存在しない場合は警告を出して埋め込みなしで続行 |
 | `--toc-at-end` | — | 目次ページを奥付の後（末尾）に配置する。デフォルトは表紙の直後・本文の前 |
 | `--output-dir DIR` | カレントディレクトリ | 出力先ディレクトリを指定する。存在しない場合は自動作成。ファイル名は従来通りタイトルから自動生成（`-o` と併用可） |
@@ -114,7 +117,7 @@ python novel_downloader.py --from-file mynovel.txt
 
 すべて 1 ファイルに集約されており、`# ══════` で区切られたセクションで構成される：
 
-1. **共通ユーティリティ**（行 ~115–238）：`normalize_tate`、`aozora_header/colophon/chapter_title`、`safe_filename`、`_apply_output_dir`（行 216）、`write_file` — 青空文庫書式テキストの共通処理。`_apply_output_dir` は `--output-dir` を全 `run_*` 関数に横断適用するヘルパー。ルビ関連ユーティリティ（`_resolve_ruby_base`、`_ruby_needs_pipe`、`_bs4_prev_text`）もこのセクションに集約。
+1. **共通ユーティリティ**（行 ~115–）：`normalize_tate`、`aozora_header/colophon/chapter_title`、`safe_filename`、`_apply_output_dir`、`write_file` — 青空文庫書式テキストの共通処理。`_apply_output_dir` は `--output-dir` を全 `run_*` 関数に横断適用するヘルパー。`_show_episode_list` は `--list-only` / `--check-update` 用（`_CHECK_UPDATE_MODE` フラグが立っているときは `_CheckUpdateDone` 例外を送出してエピソードリストを呼び出し元に返す）。`_load_existing_txt(txt_path)` は既存 `.txt` から sections と epub_episodes を復元し `_apply_resume(args, txt_path, target_eps)` が resume ロジックをカプセル化（全 run_* 関数から呼ばれる）。`_extract_url_from_txt(txt_path)` はヘッダーの「底本URL：」行または奥付 URL から元 URL を取得し `--append` / `--check-update` モードで使用する。`_fetch_ogp_cover(page_url)` は `og:image` を一時ファイルにダウンロードして返す（`--use-site-cover` 用、`main()` のディスパッチ直前に呼ばれ finally で削除）。ルビ関連ユーティリティ（`_resolve_ruby_base`、`_ruby_needs_pipe`、`_bs4_prev_text`）もこのセクションに集約。
 
 2. **ePub3 ビルダー**（行 ~239–1719）：stdlib の `zipfile` で ZIP を直接生成。主要関数：
    - `_char_class`（行 456）— 文字の種別（0=漢字・1=ひらがな等）を返す。`々仝〆〇ヶ` は青空文庫規定で漢字（0）扱い
@@ -170,7 +173,9 @@ python novel_downloader.py --from-file mynovel.txt
 
 22. **短縮URL展開**（行 ~7138–）：`_SHORT_URL_HOSTS`（30種以上）で短縮サービスを判定。`expand_short_url()` が最大5ホップのリダイレクト追跡を行う。各ホップで `_follow_one_redirect()`（HEAD→GETフォールバック、ブラウザ互換ヘッダー）→ `_unwrap_query_url()`（クエリパラメータへの実URL埋め込み展開）→ `_extract_url_from_html()`（meta refresh / window.location パース）の順で展開を試みる。`main()` 内で `detect_site()` の前に呼び出される。
 
-23. **`main()`**（行 ~7052–）：`_host_matches`（行 7056）でドメイン判定ヘルパー（スプーフィング対策）、`detect_site`（行 7063）でサイト判定、`normalize_url`（行 7104）で話数 URL → 作品トップ URL 正規化、`main()`（行 7281）で引数解析 → 各 `run_*` 関数にディスパッチ。
+23. **短縮URL展開・og:image取得**（行 ~7138–）：`_fetch_ogp_cover(page_url)` が `og:image` を一時ファイルにダウンロード（requests → urllib フォールバック）。`expand_short_url()` が短縮URL展開。
+
+24. **`main()`**（行 ~7560–）：`_host_matches` でドメイン判定ヘルパー（スプーフィング対策）、`detect_site` でサイト判定、`normalize_url` で話数 URL → 作品トップ URL 正規化。引数解析後の処理順：`--append` → `--check-update` → `--use-site-cover`（og:image 取得）→ ディスパッチ（`try/except _CheckUpdateDone/finally`）。`--check-update` は `_CHECK_UPDATE_MODE = True` でディスパッチに乗せ、`_show_episode_list` が `_CheckUpdateDone` を送出したところでキャッチして差分を表示。`--use-site-cover` の一時ファイルは `finally` で削除。
 
 ## ePub3 内部構造
 

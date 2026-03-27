@@ -214,6 +214,30 @@ def safe_filename(title: str, fallback: str = "novel") -> str:
     return (name[:60] if name else fallback)
 
 
+class _CheckUpdateDone(Exception):
+    """--check-update モードでエピソード一覧を取得したときに送出する例外。"""
+    def __init__(self, title: str, author: str, ep_titles: list):
+        self.title     = title
+        self.author    = author
+        self.ep_titles = ep_titles
+
+_CHECK_UPDATE_MODE: bool = False   # --check-update 実行中に True
+
+
+def _show_episode_list(title: str, author: str, ep_titles: list[str]) -> None:
+    """--list-only / --check-update モード: エピソード一覧を表示または取得する。"""
+    if _CHECK_UPDATE_MODE:
+        raise _CheckUpdateDone(title, author, ep_titles)
+    total = len(ep_titles)
+    width = len(str(total))
+    print(f"\nタイトル : {title}")
+    print(f"著者     : {author}")
+    print(f"話数     : {total} 話\n")
+    for i, t in enumerate(ep_titles, 1):
+        print(f"  {i:{width}}. {t}")
+    sys.exit(0)
+
+
 def _apply_output_dir(args, base: str) -> str:
     """--output-dir が指定されていれば出力先ディレクトリを適用して返す。
     ディレクトリが存在しない場合は自動作成する。
@@ -223,6 +247,141 @@ def _apply_output_dir(args, base: str) -> str:
         return base
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, Path(base).name)
+
+
+def _load_existing_txt(txt_path: str) -> tuple[list[str], list[dict]]:
+    """既存の青空文庫書式 .txt からセクションリストと epub_episodes リストを返す。
+
+    Returns:
+        (sections, epub_episodes)
+        sections      : write_file の sections 引数に直接渡せる文字列リスト
+        epub_episodes : build_epub の episodes 引数に渡せる {title, body} dict リスト
+    """
+    if not os.path.exists(txt_path):
+        return [], []
+    try:
+        with open(txt_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError:
+        return [], []
+
+    # ヘッダー末尾の区切り線（2 本目）を探して本文開始位置を特定
+    SEP = "-------------------------------------------------------\n"
+    pos1 = content.find(SEP)
+    if pos1 == -1:
+        return [], []
+    pos2 = content.find(SEP, pos1 + len(SEP))
+    body_start = (pos2 + len(SEP)) if pos2 != -1 else (pos1 + len(SEP))
+
+    body = content[body_start:]
+
+    # PAGE_BREAK で分割し、末尾セクションから奥付部分（"\n\n底本："以降）を除去
+    # write_file はセクションの直後に PAGE_BREAK なしで colophon を付けるため、
+    # 最後の要素は「エピソード内容 + 奥付」が混在している場合がある
+    raw = body.split(PAGE_BREAK)
+    if raw:
+        last = raw[-1]
+        col_pos = last.find("\n\n底本：")
+        if col_pos != -1:
+            trimmed = last[:col_pos]
+            if trimmed.strip():
+                raw[-1] = trimmed   # セクション部分だけ保持
+            else:
+                raw.pop()           # セクション内容がない（奥付のみ）
+        elif "底本：" in last and not re.search(r"は(?:大|中|小)見出し", last):
+            raw.pop()               # 奥付のみのセクション（念のため）
+
+    sections: list[str] = []
+    epub_episodes: list[dict] = []
+    for sec in raw:
+        if not sec.strip():
+            continue
+        # 見出しマーカーを持たないセクションは除外
+        if not re.search(r"は(?:大|中|小)見出し", sec):
+            continue
+        sections.append(sec)
+
+        # epub_episodes を再構築（見出し終わり行の次行以降が本文）
+        lines = sec.strip().split("\n")
+        ep_title = ""
+        body_start_idx = 0
+        for li, ln in enumerate(lines):
+            if re.search(r"は(?:大|中|小)見出し終わり］", ln):
+                body_start_idx = li + 1
+                break
+            m = re.search(r"「([^」]+)」は(?:大|中|小)見出し］", ln)
+            if m:
+                ep_title = m.group(1)
+        ep_body = "\n".join(lines[body_start_idx:]).strip()
+        epub_episodes.append({"title": ep_title or "（タイトル不明）", "body": ep_body})
+
+    return sections, epub_episodes
+
+
+def _extract_url_from_txt(txt_path: str) -> str:
+    """青空文庫書式 .txt から底本 URL を抽出して返す。
+
+    aozora_header() が出力する「底本URL：https://...」行を優先し、
+    見つからなければ aozora_colophon() の「底本：」次行 URL を試みる。
+    """
+    try:
+        with open(txt_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError:
+        return ""
+
+    # ヘッダー内「底本URL：」行（最も確実）
+    m = re.search(r"底本URL：(https?://\S+)", content)
+    if m:
+        return m.group(1).strip()
+
+    # 奥付「底本：「タイトル」サイト名\n　　　URL」形式
+    m = re.search(r"底本：「[^」]*」[^\n]*\n[　\s]*(https?://\S+)", content)
+    if m:
+        return m.group(1).strip()
+
+    return ""
+
+
+def _apply_resume(
+    args, txt_path: str, target_eps: list
+) -> tuple[list[str], list[dict], list]:
+    """--resume が指定されている場合、既存テキストを読み込み target_eps をスライスする。
+
+    Returns:
+        (sections, epub_episodes, new_target_eps)
+        sections/epub_episodes : 既存ファイルから読み込んだ内容（空なら新規）
+        new_target_eps         : 残りダウンロード対象（スキップ済みを除いた target_eps）
+    """
+    resume_arg = getattr(args, "resume", None)
+    if resume_arg is None:
+        return [], [], target_eps
+
+    existing_sections, existing_epub = _load_existing_txt(txt_path)
+    n_existing = len(existing_sections)
+
+    if resume_arg == 0:          # 引数なし → 自動検出
+        skip = n_existing
+        if skip == 0:
+            print("      [resume] 既存ファイルなし。最初から取得します。")
+            return [], [], target_eps
+        print(f"      [resume] 既存 {n_existing} 話を検出。第 {skip + 1} 話から再開します。")
+    else:                        # --resume N → 話数指定
+        skip = max(0, resume_arg - 1)
+        if skip == 0:
+            return [], [], target_eps
+        if n_existing >= skip:
+            print(f"      [resume] 第 {resume_arg} 話から再開（既存 {n_existing} 話を読み込み済み）。")
+        else:
+            print(f"      [resume] 第 {resume_arg} 話から再開。")
+
+    # skip 話分を既存セクションから取得。target_eps の長さを超えないよう制限
+    use_n = min(skip, n_existing, len(target_eps))
+    return (
+        existing_sections[:use_n],
+        existing_epub[:use_n],
+        target_eps[skip:],
+    )
 
 
 def _epub_ext(args) -> str:
@@ -2204,35 +2363,53 @@ def run_narou(args):
     target    = episodes[start_idx:end_idx]
     total     = len(target)
 
+    if args.list_only:
+        _show_episode_list(title, author, [ep[1] for ep in target])
+
     # 再開処理
-    resume_from = args.resume or 1
-    if resume_from > 1 and os.path.exists(txt_path):
+    resume_arg = getattr(args, "resume", None)
+    if resume_arg == 0:          # 自動検出
+        existing_sections, existing_epub = _load_existing_txt(txt_path)
+        n_existing = len(existing_sections)
+        if n_existing > 0:
+            resume_from = start_idx + n_existing + 1
+            sections     = existing_sections
+            epub_episodes = existing_epub
+            print(f"\n[Step 2] 既存 {n_existing} 話を検出。第 {resume_from} 話から再開")
+        else:
+            resume_from  = 1
+            sections     = []
+            epub_episodes= []
+            print(f"\n[Step 2] 既存ファイルなし。最初から取得します。")
+    elif resume_arg and resume_arg > 1 and os.path.exists(txt_path):
+        resume_from = resume_arg
         print(f"\n[Step 2] 第{resume_from}話から再開")
-        with open(txt_path, "r", encoding=ENCODING) as f:
-            content = f.read()
-        body = content[len(header):] if content.startswith(header) else content
-        sections = body.split(PAGE_BREAK)
-        if sections and "底本：" in sections[-1]:
-            sections.pop()
-        # 再開時は本文テキストから (subtitle, body_text) を再構築してepub用に保持
-        epub_episodes = []
-        for sec in sections:
-            lines = sec.strip().split("\n")
-            # 見出し行（「は大見出し終わり」の次行が本文）
-            ep_t = ""
-            body_start = 0
-            for li, ln in enumerate(lines):
-                if "は大見出し終わり］" in ln or "は中見出し終わり］" in ln:
-                    body_start = li + 1
-                    break
-                if "は大見出し］" in ln or "は中見出し］" in ln:
-                    m = re.search(r"「(.+?)」は", ln)
-                    if m:
-                        ep_t = m.group(1)
-            epub_episodes.append({
-                "title": ep_t or "（タイトル不明）",
-                "body":  "\n".join(lines[body_start:]).strip(),
-            })
+        sections, epub_episodes = _load_existing_txt(txt_path)
+        if not sections:
+            # フォールバック: ヘッダーベースの旧ロジック
+            with open(txt_path, "r", encoding=ENCODING) as f:
+                content = f.read()
+            body = content[len(header):] if content.startswith(header) else content
+            sections = body.split(PAGE_BREAK)
+            if sections and "底本：" in sections[-1]:
+                sections.pop()
+            epub_episodes = []
+            for sec in sections:
+                lines = sec.strip().split("\n")
+                ep_t = ""
+                body_start = 0
+                for li, ln in enumerate(lines):
+                    if "は大見出し終わり］" in ln or "は中見出し終わり］" in ln:
+                        body_start = li + 1
+                        break
+                    if "は大見出し］" in ln or "は中見出し］" in ln:
+                        m = re.search(r"「(.+?)」は", ln)
+                        if m:
+                            ep_t = m.group(1)
+                epub_episodes.append({
+                    "title": ep_t or "（タイトル不明）",
+                    "body":  "\n".join(lines[body_start:]).strip(),
+                })
     else:
         resume_from  = 1
         sections     = []
@@ -2633,11 +2810,25 @@ def run_kakuyomu(args):
     total        = len(episode_list)
     print(f"      {total} 話を取得します（全 {total_all} 話中）")
 
+    if args.list_only:
+        _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episode_list])
+
+    header   = aozora_header(info["title"], info["author"], info.get("description", ""),
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "カクヨム")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "kakuyomu_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    _old_sections, _old_epub, episode_list = _apply_resume(args, txt_path, episode_list)
+    if not episode_list and _old_sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     print("[3/3] 各エピソードを取得中...")
     episodes_data = []
 
     for i, ep in enumerate(episode_list, 1):
-        print(f"  [{i:4d}/{total}] {ep['title'][:50]}")
+        print(f"  [{i:4d}/{len(episode_list)}] {ep['title'][:50]}")
         try:
             ep_soup   = kky_fetch(session, ep["url"])
             ep_next   = kky_extract_next_data(ep_soup)
@@ -2649,16 +2840,12 @@ def run_kakuyomu(args):
             print(f"  [エラー] スキップします: {e}")
             episodes_data.append({"title": ep["title"], "chapter": ep.get("chapter", ""),
                                   "body": "（取得失敗）"})
-        if i < total:
+        if i < len(episode_list):
             time.sleep(args.delay)
 
     # 青空文庫テキスト組み立て
-    header   = aozora_header(info["title"], info["author"], info.get("description", ""),
-                             source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "カクヨム")
-
-    sections     = []
-    epub_episodes= []
+    sections     = list(_old_sections)
+    epub_episodes= list(_old_epub)
     for ep in episodes_data:
         chapter = ep.get("chapter", "")
         heading = f"{chapter}　{ep['title']}" if chapter else ep["title"]
@@ -2666,10 +2853,6 @@ def run_kakuyomu(args):
         body = normalize_tate(ep["body"]) if ep["body"] and ep["body"] != "（取得失敗）" else ep["body"]
         sections.append(f"{sec_title}\n\n{body}\n")
         epub_episodes.append({"title": heading, "body": body})
-
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "kakuyomu_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -2958,36 +3141,40 @@ def run_alphapolis(args):
     total        = len(episode_list)
     print(f"      {total} 話を取得します（全 {total_all} 話中）")
 
+    if args.list_only:
+        _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episode_list])
+
+    header   = aozora_header(info["title"], info["author"], info.get("description", ""),
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "アルファポリス")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "alphapolis_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, episode_list = _apply_resume(args, txt_path, episode_list)
+    if not episode_list and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     print("[3/3] 各エピソードを取得中...")
     episodes_data = []
 
     for i, ep in enumerate(episode_list, 1):
-        print(f"  [{i:4d}/{total}] {ep['title'][:50]}")
+        print(f"  [{i:4d}/{len(episode_list)}] {ep['title'][:50]}")
         try:
             ep_title, body = alp_extract_episode(session, ep["url"])
             episodes_data.append({"title": ep_title or ep["title"], "body": body})
         except RuntimeError as e:
             print(f"  [エラー] スキップします: {e}")
             episodes_data.append({"title": ep["title"], "body": "（取得失敗）"})
-        if i < total:
+        if i < len(episode_list):
             time.sleep(args.delay)
 
-    header   = aozora_header(info["title"], info["author"], info.get("description", ""),
-                             source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "アルファポリス")
-
-    sections      = []
-    epub_episodes = []
     for ep in episodes_data:
         sec_title = aozora_chapter_title(ep["title"])
         body = (normalize_tate(ep["body"])
                 if ep["body"] and ep["body"] != "（取得失敗）" else ep["body"])
         sections.append(f"{sec_title}\n\n{body}\n")
         epub_episodes.append({"title": ep["title"], "body": body})
-
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "alphapolis_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -3209,14 +3396,34 @@ def run_estar(args):
         if batch_i < len(batch_list):
             time.sleep(args.delay)
 
+    if args.list_only:
+        # ページ単位取得のためタイトルをここで組み立て
+        _ep_list_estar = []
+        _cur_title = ""
+        _page_in_ep = 0
+        for _p in target_pages:
+            _t = all_titles.get(_p, "")
+            if _t:
+                _cur_title = _t
+                _page_in_ep = 1
+                _ep_list_estar.append(_cur_title)
+            else:
+                _page_in_ep += 1
+        _show_episode_list(info["title"], info["author"], _ep_list_estar)
+
     # 青空文庫テキスト組み立て
     print("[3/3] テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url)
     colophon = aozora_colophon(info["title"], work_url, "エブリスタ")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "estar_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target_pages = _apply_resume(args, txt_path, target_pages)
+    if not target_pages and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
 
-    sections         = []
-    epub_episodes    = []
     current_ep_title = ""
     page_in_episode  = 0
 
@@ -3241,9 +3448,6 @@ def run_estar(args):
         sections.append(f"{sec_title}\n\n{body}\n")
         epub_episodes.append({"title": ep_title, "body": body})
 
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "estar_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     got = sum(1 for p in target_pages if p in all_bodies)
@@ -3410,11 +3614,24 @@ def run_hameln(args):
     start_ep = max(1, args.start or 1)
     end_ep   = min(total_eps, args.end or total_eps)
     target   = [ep for ep in all_eps if start_ep <= ep[0] <= end_ep]
+
+    if getattr(args, "list_only", False):
+        _show_episode_list(info["title"], info["author"], [ep[2] for ep in target])
+
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ハーメルン")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "hameln_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target = _apply_resume(args, txt_path, target)
+    if not target and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     print(f"[2/3] エピソードを取得中（{len(target)} 話）...")
     print(f"      ※ Cloudflare対策のため1話あたり約{_HAM_CF_WAIT}秒の待機が発生します")
 
-    sections      = []
-    epub_episodes = []
     got           = 0
 
     with _hameln_playwright() as pw:
@@ -3486,13 +3703,6 @@ def run_hameln(args):
         browser.close()
 
     print("[3/3] テキスト・ePub を生成中...")
-    header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "ハーメルン")
-
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "hameln_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -3770,10 +3980,23 @@ def run_neopage(args):
     end_ep   = min(total_chapters, end_arg or total_chapters)
     target   = chapters[start_ep - 1:end_ep]
 
+    if args.list_only:
+        _show_episode_list(info["title"], info["author"], [ch[1] for ch in target])
+
+    header   = aozora_header(info["title"], info["author"],
+                             info["synopsis"], source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ネオページ")
+    base      = _apply_output_dir(
+        args, args.output or safe_filename(info["title"], "neopage_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target = _apply_resume(args, txt_path, target)
+    if not target and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     # ── 本文組み立て（キャッシュ済みコンテンツを使用） ───────────────────────
     print(f"[3/3] テキスト・ePub を生成中（{len(target)} 話）...")
-    sections      = []
-    epub_episodes = []
     got           = 0
 
     for ep_i, (ch_id, ch_title) in enumerate(target, 1):
@@ -3790,13 +4013,6 @@ def run_neopage(args):
         if body not in ("（取得失敗）", "（有料章または非公開）"):
             got += 1
 
-    header   = aozora_header(info["title"], info["author"],
-                             info["synopsis"], source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "ネオページ")
-    base      = _apply_output_dir(
-        args, args.output or safe_filename(info["title"], "neopage_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon,
                args.encoding, getattr(args, "newline", "os"))
 
@@ -4000,9 +4216,22 @@ def run_solispia(args):
     end_ep   = min(total_eps, getattr(args, "end", None) or total_eps)
     target   = all_eps[start_ep - 1:end_ep]
 
+    if getattr(args, "list_only", False):
+        _show_episode_list(info["title"], info["author"], [ep[1] for ep in target])
+
+    header   = aozora_header(info["title"], info["author"],
+                             info["description"], source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ソリスピア")
+    base     = _apply_output_dir(
+        args, args.output or safe_filename(info["title"], "solispia_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target = _apply_resume(args, txt_path, target)
+    if not target and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     print(f"[2/3] エピソードを取得中（{len(target)} 話）...")
-    sections      = []
-    epub_episodes = []
     got           = 0
 
     for ep_i, (ep_url, ep_title) in enumerate(target, 1):
@@ -4024,13 +4253,6 @@ def run_solispia(args):
             time.sleep(args.delay)
 
     print(f"[3/3] テキスト・ePub を生成中...")
-    header   = aozora_header(info["title"], info["author"],
-                             info["description"], source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "ソリスピア")
-    base     = _apply_output_dir(
-        args, args.output or safe_filename(info["title"], "solispia_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon,
                args.encoding, getattr(args, "newline", "os"))
 
@@ -4221,10 +4443,23 @@ def run_noichigo(args):
     end_ch   = min(total_chapters, args.end or total_chapters)
     target_chapters = chapter_ranges[start_ch - 1:end_ch]
     total_targets   = sum(e - s + 1 for s, e, _ in target_chapters)
-    print(f"[2/3] チャプターを取得中（{len(target_chapters)} チャプター / {total_targets} ページ）...")
 
-    sections      = []
-    epub_episodes = []
+    if args.list_only:
+        _show_episode_list(info["title"], info["author"], [ch[2] for ch in target_chapters])
+
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "野いちご")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "noichigo_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target_chapters = _apply_resume(args, txt_path, target_chapters)
+    if not target_chapters and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
+    print(f"[2/3] チャプターを取得中（{len(target_chapters)} チャプター）...")
+
     got_chapters  = 0
 
     for ch_i, (page_start, page_end, ch_title) in enumerate(target_chapters, 1):
@@ -4262,13 +4497,6 @@ def run_noichigo(args):
             time.sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
-    header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "野いちご")
-
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "noichigo_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -4418,10 +4646,23 @@ def run_berrys(args):
     end_ch   = min(total_chapters, args.end or total_chapters)
     target_chapters = chapter_ranges[start_ch - 1:end_ch]
     total_targets   = sum(e - s + 1 for s, e, _ in target_chapters)
-    print(f"[2/3] チャプターを取得中（{len(target_chapters)} チャプター / {total_targets} ページ）...")
 
-    sections      = []
-    epub_episodes = []
+    if args.list_only:
+        _show_episode_list(info["title"], info["author"], [ch[2] for ch in target_chapters])
+
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "berry's cafe")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "berrys_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target_chapters = _apply_resume(args, txt_path, target_chapters)
+    if not target_chapters and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
+    print(f"[2/3] チャプターを取得中（{len(target_chapters)} チャプター）...")
+
     got_chapters  = 0
 
     for ch_i, (page_start, page_end, ch_title) in enumerate(target_chapters, 1):
@@ -4452,13 +4693,6 @@ def run_berrys(args):
             time.sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
-    header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "berry's cafe")
-
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "berrys_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -4624,10 +4858,24 @@ def run_monogatary(args):
     start_ep = max(1, args.start or 1)
     end_ep   = min(total_episodes, args.end or total_episodes)
     target   = episodes_list[start_ep - 1:end_ep]
+
+    if args.list_only:
+        _show_episode_list(story_title, author,
+                           [ep.get("episodeTitle", f"第{i}話")
+                            for i, ep in enumerate(target, start_ep)])
+
+    header   = aozora_header(story_title, author, synopsis, source_url=story_url)
+    colophon = aozora_colophon(story_title, story_url, "monogatary.com")
+    base      = _apply_output_dir(args, args.output or safe_filename(story_title, "monogatary_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target = _apply_resume(args, txt_path, target)
+    if not target and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     print(f"[2/3] エピソードを取得中（{len(target)} 話）...")
 
-    sections      = []
-    epub_episodes = []
     got           = 0
 
     for ep_i, ep_info in enumerate(target, 1):
@@ -4651,12 +4899,6 @@ def run_monogatary(args):
             time.sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
-    header   = aozora_header(story_title, author, synopsis, source_url=story_url)
-    colophon = aozora_colophon(story_title, story_url, "monogatary.com")
-
-    base      = _apply_output_dir(args, args.output or safe_filename(story_title, "monogatary_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -4816,10 +5058,22 @@ def run_novema(args):
     start_ep = max(1, args.start or 1)
     end_ep   = min(total_eps, args.end or total_eps)
     target_eps = episodes[start_ep - 1:end_ep]
+    if getattr(args, "list_only", False):
+        _show_episode_list(info["title"], info["author"], [ep[1] for ep in target_eps])
+
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ノベマ！")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novema_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target_eps = _apply_resume(args, txt_path, target_eps)
+    if not target_eps and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
-    sections      = []
-    epub_episodes = []
     got_eps       = 0
 
     for ep_i, (page_num, ep_title) in enumerate(target_eps, 1):
@@ -4852,13 +5106,6 @@ def run_novema(args):
             time.sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
-    header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "ノベマ！")
-
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novema_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -5048,10 +5295,22 @@ def run_novelup(args):
     start_ep = max(1, args.start or 1)
     end_ep   = min(total_eps, args.end or total_eps)
     target_eps = episodes[start_ep - 1:end_ep]
+    if getattr(args, "list_only", False):
+        _show_episode_list(info["title"], info["author"], [ep[1] for ep in target_eps])
+
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ノベルアップ＋")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novelup_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target_eps = _apply_resume(args, txt_path, target_eps)
+    if not target_eps and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
-    sections      = []
-    epub_episodes = []
     got_eps       = 0
 
     for ep_i, (ep_id, ep_title) in enumerate(target_eps, 1):
@@ -5073,13 +5332,6 @@ def run_novelup(args):
             time.sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
-    header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "ノベルアップ＋")
-
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novelup_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -5258,10 +5510,22 @@ def run_sutekibungei(args):
     start_ep   = max(1, args.start or 1)
     end_ep     = min(total_eps, args.end or total_eps)
     target_eps = episodes[start_ep - 1:end_ep]
+    if getattr(args, "list_only", False):
+        _show_episode_list(info["title"], info["author"], [ep["title"] for ep in target_eps])
+
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "ステキブンゲイ")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "suteki_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target_eps = _apply_resume(args, txt_path, target_eps)
+    if not target_eps and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
-    sections      = []
-    epub_episodes = []
     got_eps       = 0
 
     for ep_i, ep in enumerate(target_eps, 1):
@@ -5282,13 +5546,6 @@ def run_sutekibungei(args):
             time.sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
-    header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "ステキブンゲイ")
-
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "suteki_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -5488,10 +5745,22 @@ def run_days(args):
     start_ep   = max(1, args.start or 1)
     end_ep     = min(total_eps, args.end or total_eps)
     target_eps = episodes[start_ep - 1:end_ep]
+    if getattr(args, "list_only", False):
+        _show_episode_list(info["title"], info["author"], [ep["title"] for ep in target_eps])
+
+    header   = aozora_header(info["title"], info["author"], info["description"],
+                             source_url=work_url)
+    colophon = aozora_colophon(info["title"], work_url, "NOVEL DAYS")
+    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "days_novel"))
+    txt_path  = base + ".txt"
+    epub_path = base + _epub_ext(args)
+    sections, epub_episodes, target_eps = _apply_resume(args, txt_path, target_eps)
+    if not target_eps and sections:
+        print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
+        return
+
     print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
-    sections      = []
-    epub_episodes = []
     got_eps       = 0
 
     for ep_i, ep in enumerate(target_eps, 1):
@@ -5512,13 +5781,6 @@ def run_days(args):
             time.sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
-    header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
-    colophon = aozora_colophon(info["title"], work_url, "NOVEL DAYS")
-
-    base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "days_novel"))
-    txt_path  = base + ".txt"
-    epub_path = base + _epub_ext(args)
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -5771,6 +6033,9 @@ def run_genpaku(args):
         sys.exit(1)
 
     print(f"      章数    : {len(episodes)}")
+
+    if getattr(args, "list_only", False):
+        _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episodes])
 
     print("[3/3] テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
@@ -6101,6 +6366,9 @@ def run_hyuki(args):
 
     print(f"      章数    : {len(episodes)}")
 
+    if getattr(args, "list_only", False):
+        _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episodes])
+
     print("[3/3] テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url)
@@ -6419,6 +6687,12 @@ def run_aozora(args):
     text, enc = aozora_decode(txt_bytes)
     img_msg = f"  画像 {len(images)} 件" if images else ""
     print(f"      ファイル名: {txt_filename}  エンコーディング: {enc}{img_msg}")
+
+    if getattr(args, "list_only", False):
+        ep_title, ep_author, episodes = aozora_text_to_episodes(text)
+        title  = ep_title  or info.get("title",  "（タイトル不明）")
+        author = ep_author or info.get("author", "（著者不明）")
+        _show_episode_list(title, author, [ep["title"] for ep in episodes])
 
     # テキストファイルを UTF-8 に変換して保存
     # テキストは ZIP 内ファイル名ベース（または -o 指定）を使用
@@ -7258,6 +7532,105 @@ def _follow_one_redirect(url: str) -> tuple[str, str | None]:
     return url, None
 
 
+def _fetch_ogp_cover(page_url: str) -> str:
+    """作品ページの og:image をダウンロードして一時ファイルパスを返す。
+    取得失敗時は "" を返す。呼び出し元が一時ファイルを削除すること。"""
+    import tempfile
+
+    # ── ページ HTML 取得 ──────────────────────────────────────────
+    html = ""
+    try:
+        import requests as _rq
+        _r = _rq.get(page_url,
+                     headers={"User-Agent": UA, "Accept-Language": "ja,en;q=0.9"},
+                     timeout=15)
+        _r.raise_for_status()
+        html = _r.text
+    except Exception:
+        try:
+            import urllib.request as _ur
+            _req = _ur.Request(page_url, headers={"User-Agent": UA})
+            with _ur.urlopen(_req, timeout=15) as _res:
+                html = _res.read().decode("utf-8", errors="replace")
+        except Exception as _e:
+            print(f"[警告] サイト公式サムネイル: ページ取得失敗 ({_e})")
+            print("       自動生成の表紙を使用します。")
+            return ""
+
+    # ── og:image URL 抽出 ─────────────────────────────────────────
+    # property が先のパターン
+    _m = re.search(
+        r'<meta\b[^>]+\bproperty=["\']og:image["\'][^>]+\bcontent=["\']([^"\']+)["\']',
+        html, re.I)
+    # content が先のパターン
+    if not _m:
+        _m = re.search(
+            r'<meta\b[^>]+\bcontent=["\']([^"\']+)["\'][^>]+\bproperty=["\']og:image["\']',
+            html, re.I)
+    if not _m:
+        print("[警告] サイト公式サムネイル: og:image が見つかりませんでした。")
+        print("       自動生成の表紙を使用します。")
+        return ""
+
+    img_url = _m.group(1).strip()
+    # スキーム補完
+    if img_url.startswith("//"):
+        img_url = "https:" + img_url
+    elif img_url.startswith("/"):
+        from urllib.parse import urlparse as _up
+        _p = _up(page_url)
+        img_url = f"{_p.scheme}://{_p.netloc}{img_url}"
+
+    # ── 画像データ取得 ─────────────────────────────────────────────
+    img_data = b""
+    content_type = ""
+    try:
+        import requests as _rq
+        _ir = _rq.get(img_url,
+                      headers={"User-Agent": UA, "Referer": page_url},
+                      timeout=15)
+        _ir.raise_for_status()
+        img_data     = _ir.content
+        content_type = _ir.headers.get("Content-Type", "")
+    except Exception:
+        try:
+            import urllib.request as _ur
+            _ireq = _ur.Request(img_url, headers={"User-Agent": UA, "Referer": page_url})
+            with _ur.urlopen(_ireq, timeout=15) as _ir:
+                img_data     = _ir.read()
+                content_type = _ir.headers.get("Content-Type", "")
+        except Exception as _e:
+            print(f"[警告] サイト公式サムネイル: 画像ダウンロード失敗 ({_e})")
+            print("       自動生成の表紙を使用します。")
+            return ""
+
+    if not img_data:
+        print("[警告] サイト公式サムネイル: 画像データが空です。自動生成の表紙を使用します。")
+        return ""
+
+    # ── 拡張子判定 ─────────────────────────────────────────────────
+    ct_lower = content_type.lower()
+    url_lower = img_url.split("?")[0].lower()
+    if "png" in ct_lower or url_lower.endswith(".png"):
+        ext = ".png"
+    else:
+        ext = ".jpg"
+
+    # ── 一時ファイルに書き出し ─────────────────────────────────────
+    try:
+        _fd, tmp_path = tempfile.mkstemp(suffix=ext)
+        os.close(_fd)
+        with open(tmp_path, "wb") as _f:
+            _f.write(img_data)
+    except OSError as _e:
+        print(f"[警告] サイト公式サムネイル: 一時ファイル作成失敗 ({_e})")
+        print("       自動生成の表紙を使用します。")
+        return ""
+
+    print(f"  サイト公式サムネイル: {img_url}")
+    return tmp_path
+
+
 def expand_short_url(url: str) -> str:
     """短縮URLを展開して実際のURLを返す。短縮URLでなければそのまま返す。
 
@@ -7545,8 +7918,11 @@ def main():
                              " 例: -o mynovel → mynovel.txt / mynovel.epub")
     parser.add_argument("--delay", type=float, default=1.5,
                         help="リクエスト間隔（秒、デフォルト: 1.5）")
-    parser.add_argument("--resume", type=int, default=1, metavar="N",
-                        help="第N話から再開（なろうのみ、デフォルト: 1）")
+    parser.add_argument("--resume", dest="resume", nargs="?", const=0, type=int,
+                        default=None, metavar="N",
+                        help="続きからダウンロード。"
+                             "N を省略すると既存 .txt から話数を自動検出して再開。"
+                             "N を指定すると第 N 話から開始（なろうの従来動作も維持）")
     parser.add_argument("--start", type=int, default=1, metavar="N",
                         help="取得開始話数（デフォルト: 1）")
     parser.add_argument("--end", type=int, default=None, metavar="N",
@@ -7560,6 +7936,8 @@ def main():
                              "。lf=LF(Unix形式) / crlf=CRLF(Windows形式)")
     parser.add_argument("--no-epub", dest="no_epub", action="store_true",
                         help="ePub出力を省略してテキストのみ出力する")
+    parser.add_argument("--list-only", dest="list_only", action="store_true",
+                        help="ダウンロードせずエピソード一覧と話数のみ表示して終了する")
     parser.add_argument("--cover-bg", dest="cover_bg", default=None, metavar="COLOR",
                         help="表紙背景色（#RRGGBB形式。"
                              "省略時はなろう: #18b7cd, カクヨム: #4BAAE0, "
@@ -7578,6 +7956,9 @@ def main():
                         help="表紙に使用するローカル画像ファイル（JPEG/PNG）。"
                              "指定するとPillowによる自動生成表紙の代わりに使用される。"
                              "ファイルが存在しない・非対応形式の場合は自動生成にフォールバック")
+    parser.add_argument("--use-site-cover", dest="use_site_cover", action="store_true",
+                        help="作品ページの公式サムネイル画像（og:image）を表紙として使用する。"
+                             "--cover-image が指定されている場合は --cover-image が優先される")
     parser.add_argument("--font", dest="font", default=None, metavar="FILE",
                         help="ePub本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。"
                              "指定したフォントを body のデフォルトフォントとして CSS に設定する")
@@ -7592,6 +7973,15 @@ def main():
                         help="Kobo端末向けにePubの拡張子を .kepub.epub にする。"
                              "Kobo Clara / Kobo Sage 等のKobo専用リーダーで"
                              "縦書きや目次を正しく処理させるために使用する")
+    parser.add_argument("--append", dest="append_file", default=None, metavar="FILE",
+                        help="既存の青空文庫書式 .txt ファイルを指定し、続きのエピソードを追記する。"
+                             "ファイル内の「底本URL：」からサイトと URL を自動検出し、"
+                             "未取得エピソードをダウンロードして .txt に追加、"
+                             "ePub を新規生成（上書き）する。URL の指定は不要")
+    parser.add_argument("--check-update", dest="check_update_file", default=None, metavar="FILE",
+                        help="既存の .txt ファイルを指定し、サイトの最新話数と比較して"
+                             "新着エピソード数を表示する。ダウンロードは行わない。"
+                             "--append の前に更新確認したいときに使う")
 
     args = parser.parse_args()
 
@@ -7604,10 +7994,50 @@ def main():
             args.cover_bg = "#16234b"
         run_from_file(args)
     else:
-        # ── URLモード ───────────────────────────────────────────
+        # ── --append または URL モード ───────────────────────────
+        if getattr(args, "append_file", None):
+            # 既存 .txt から URL・出力先を自動設定して resume ダウンロード
+            ap = Path(args.append_file).resolve()
+            if not ap.exists():
+                parser.error(f"--append: ファイルが見つかりません: {args.append_file}")
+            extracted_url = _extract_url_from_txt(str(ap))
+            if not extracted_url:
+                parser.error(
+                    f"--append: テキストファイルから底本 URL を取得できませんでした: {args.append_file}\n"
+                    "  novel_downloader.py が生成した「底本URL：」行を含むファイルを指定してください。"
+                )
+            print(f"[情報] 追記モード: {ap.name}")
+            print(f"       底本URL   : {extracted_url}")
+            args.url    = extracted_url
+            args.resume = 0                    # 既存話数を自動検出
+            args.output = ap.stem              # 元ファイルと同名で上書き
+            if not getattr(args, "output_dir", None):
+                parent = str(ap.parent)
+                if parent != ".":
+                    args.output_dir = parent
+
+        # ── --check-update モード ────────────────────────────────
+        _cu_n_existing = 0
+        if getattr(args, "check_update_file", None):
+            cu_txt = Path(args.check_update_file).resolve()
+            if not cu_txt.exists():
+                parser.error(f"--check-update: ファイルが見つかりません: {args.check_update_file}")
+            cu_url = _extract_url_from_txt(str(cu_txt))
+            if not cu_url:
+                parser.error(
+                    f"--check-update: テキストファイルから底本 URL を取得できませんでした: {args.check_update_file}\n"
+                    "  novel_downloader.py が生成した「底本URL：」行を含むファイルを指定してください。"
+                )
+            existing_sections, _ = _load_existing_txt(str(cu_txt))
+            _cu_n_existing = len(existing_sections)
+            args.url      = cu_url
+            args.list_only = True
+            args.no_epub  = True
+            args.resume   = None
+
         if not args.url:
             parser.error(
-                "URLを指定するか、--from-file でローカルテキストファイルを指定してください。"
+                "URLを指定するか、--from-file / --append でローカルファイルを指定してください。"
             )
         args.url = expand_short_url(args.url)
         site = detect_site(args.url)
@@ -7648,78 +8078,108 @@ def main():
             else:
                 args.cover_bg = "#18b7cd"
 
-        if site == "narou":
-            print("サイト判別: 小説家になろう")
-            run_narou(args)
-        elif site == "kakuyomu":
-            print("サイト判別: カクヨム")
-            run_kakuyomu(args)
-        elif site == "alphapolis":
-            print("サイト判別: アルファポリス")
-            run_alphapolis(args)
-        elif site == "estar":
-            print("サイト判別: エブリスタ")
-            run_estar(args)
-        elif site == "noichigo":
-            print("サイト判別: 野いちご")
-            run_noichigo(args)
-        elif site == "berrys":
-            print("サイト判別: berry's cafe")
-            run_berrys(args)
-        elif site == "monogatary":
-            print("サイト判別: monogatary.com")
-            run_monogatary(args)
-        elif site == "hameln":
-            print("サイト判別: ハーメルン")
-            run_hameln(args)
-        elif site == "novema":
-            print("サイト判別: ノベマ！")
-            run_novema(args)
-        elif site == "novelup":
-            print("サイト判別: ノベルアップ＋")
-            run_novelup(args)
-        elif site == "sutekibungei":
-            print("サイト判別: ステキブンゲイ")
-            run_sutekibungei(args)
-        elif site == "days":
-            print("サイト判別: NOVEL DAYS")
-            run_days(args)
-        elif site == "aozora":
-            print("サイト判別: 青空文庫")
-            run_aozora(args)
-        elif site == "genpaku":
-            print("サイト判別: プロジェクト杉田玄白")
-            run_genpaku(args)
-        elif site == "hyuki":
-            print("サイト判別: 結城浩翻訳の部屋")
-            run_hyuki(args)
-        elif site == "neopage":
-            print("サイト判別: ネオページ")
-            run_neopage(args)
-        elif site == "solispia":
-            print("サイト判別: ソリスピア")
-            run_solispia(args)
-        else:
-            print("エラー: 対応しているURLを指定してください。")
-            print("  小説家になろう: https://ncode.syosetu.com/nXXXXxx/")
-            print("  カクヨム      : https://kakuyomu.jp/works/XXXXXXXXXX")
-            print("  アルファポリス: https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX")
-            print("  エブリスタ    : https://estar.jp/novels/XXXXXXXXX")
-            print("  野いちご      : https://www.no-ichigo.jp/book/nXXXXXX")
-            print("  ハーメルン    : https://syosetu.org/novel/XXXXXXX/")
-            print("  ノベマ！      : https://novema.jp/book/nXXXXXX")
-            print("  ノベルアップ＋: https://novelup.plus/story/XXXXXXXXX")
-            print("  ステキブンゲイ: https://sutekibungei.com/novels/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
-            print("  NOVEL DAYS   : https://novel.daysneo.com/works/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.html")
-            print("  青空文庫     : https://www.aozora.gr.jp/cards/XXXXXX/cardXXXXXX.html")
-            print("  青空文庫(新) : https://www.aozora-renewal.cloud/cards/XXXXXX/cardXXXXXX.html")
-            print("  杉田玄白     : https://www.genpaku.org/XXXXXX/XXXXXXj.html")
-            print("  結城浩翻訳   : https://www.hyuki.com/trans/XXXXXX")
-            print("  ネオページ   : https://www.neopage.com/book/XXXXXXXXXXXXXXXXX")
-            print("  ソリスピア   : https://solispia.com/title/XXXX")
-            print("  berry's cafe : https://www.berrys-cafe.jp/book/nXXXXXXX")
-            print("  monogatary   : https://monogatary.com/story/XXXXXXX")
-            sys.exit(1)
+        # ── --use-site-cover: og:image を表紙に使用 ────────────────
+        _use_site_cover_tmp = ""
+        if getattr(args, "use_site_cover", False) and not getattr(args, "cover_image", None):
+            _use_site_cover_tmp = _fetch_ogp_cover(args.url)
+            if _use_site_cover_tmp:
+                args.cover_image = _use_site_cover_tmp
+
+        global _CHECK_UPDATE_MODE
+        _CHECK_UPDATE_MODE = getattr(args, "check_update_file", None) is not None
+        try:
+            if site == "narou":
+                print("サイト判別: 小説家になろう")
+                run_narou(args)
+            elif site == "kakuyomu":
+                print("サイト判別: カクヨム")
+                run_kakuyomu(args)
+            elif site == "alphapolis":
+                print("サイト判別: アルファポリス")
+                run_alphapolis(args)
+            elif site == "estar":
+                print("サイト判別: エブリスタ")
+                run_estar(args)
+            elif site == "noichigo":
+                print("サイト判別: 野いちご")
+                run_noichigo(args)
+            elif site == "berrys":
+                print("サイト判別: berry's cafe")
+                run_berrys(args)
+            elif site == "monogatary":
+                print("サイト判別: monogatary.com")
+                run_monogatary(args)
+            elif site == "hameln":
+                print("サイト判別: ハーメルン")
+                run_hameln(args)
+            elif site == "novema":
+                print("サイト判別: ノベマ！")
+                run_novema(args)
+            elif site == "novelup":
+                print("サイト判別: ノベルアップ＋")
+                run_novelup(args)
+            elif site == "sutekibungei":
+                print("サイト判別: ステキブンゲイ")
+                run_sutekibungei(args)
+            elif site == "days":
+                print("サイト判別: NOVEL DAYS")
+                run_days(args)
+            elif site == "aozora":
+                print("サイト判別: 青空文庫")
+                run_aozora(args)
+            elif site == "genpaku":
+                print("サイト判別: プロジェクト杉田玄白")
+                run_genpaku(args)
+            elif site == "hyuki":
+                print("サイト判別: 結城浩翻訳の部屋")
+                run_hyuki(args)
+            elif site == "neopage":
+                print("サイト判別: ネオページ")
+                run_neopage(args)
+            elif site == "solispia":
+                print("サイト判別: ソリスピア")
+                run_solispia(args)
+            else:
+                print("エラー: 対応しているURLを指定してください。")
+                print("  小説家になろう: https://ncode.syosetu.com/nXXXXxx/")
+                print("  カクヨム      : https://kakuyomu.jp/works/XXXXXXXXXX")
+                print("  アルファポリス: https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX")
+                print("  エブリスタ    : https://estar.jp/novels/XXXXXXXXX")
+                print("  野いちご      : https://www.no-ichigo.jp/book/nXXXXXX")
+                print("  ハーメルン    : https://syosetu.org/novel/XXXXXXX/")
+                print("  ノベマ！      : https://novema.jp/book/nXXXXXX")
+                print("  ノベルアップ＋: https://novelup.plus/story/XXXXXXXXX")
+                print("  ステキブンゲイ: https://sutekibungei.com/novels/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
+                print("  NOVEL DAYS   : https://novel.daysneo.com/works/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.html")
+                print("  青空文庫     : https://www.aozora.gr.jp/cards/XXXXXX/cardXXXXXX.html")
+                print("  青空文庫(新) : https://www.aozora-renewal.cloud/cards/XXXXXX/cardXXXXXX.html")
+                print("  杉田玄白     : https://www.genpaku.org/XXXXXX/XXXXXXj.html")
+                print("  結城浩翻訳   : https://www.hyuki.com/trans/XXXXXX")
+                print("  ネオページ   : https://www.neopage.com/book/XXXXXXXXXXXXXXXXX")
+                print("  ソリスピア   : https://solispia.com/title/XXXX")
+                print("  berry's cafe : https://www.berrys-cafe.jp/book/nXXXXXXX")
+                print("  monogatary   : https://monogatary.com/story/XXXXXXX")
+                sys.exit(1)
+        except _CheckUpdateDone as _cu:
+            # --check-update: 取得したエピソード一覧を既存話数と比較して表示
+            n_total = len(_cu.ep_titles)
+            n_new   = n_total - _cu_n_existing
+            print(f"\nタイトル : {_cu.title}")
+            print(f"著者     : {_cu.author}")
+            print(f"既存     : {_cu_n_existing} 話 / サイト全話: {n_total} 話")
+            if n_new <= 0:
+                print("[情報] 新着なし（最新話まで取得済み）")
+            else:
+                new_titles = _cu.ep_titles[_cu_n_existing:]
+                first = new_titles[0]
+                last  = new_titles[-1]
+                range_str = f"（{first}）" if n_new == 1 else f"（{first}〜{last}）"
+                print(f"[情報] 新着エピソード: {n_new} 話 {range_str}")
+            sys.exit(0)
+        finally:
+            _CHECK_UPDATE_MODE = False
+            if _use_site_cover_tmp and os.path.exists(_use_site_cover_tmp):
+                os.unlink(_use_site_cover_tmp)
 
 
 if __name__ == "__main__":

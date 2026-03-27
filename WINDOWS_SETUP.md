@@ -188,10 +188,13 @@ python novel_downloader.py https://bit.ly/XXXXXXXXXX
 | テキストだけ欲しい（ePub 不要） | `python novel_downloader.py URL --no-epub` |
 | 出力ファイル名を指定したい | `python novel_downloader.py URL -o mynovel` |
 | 出力先フォルダを指定したい | `python novel_downloader.py URL --output-dir C:\Users\ユーザー名\novels` |
-| 途中から再開したい（なろう） | `python novel_downloader.py URL --resume 51` |
+| 途中から再開したい | `python novel_downloader.py URL --resume 51` |
 | 特定の話数だけ取得したい | `python novel_downloader.py URL --start 1 --end 10` |
 | フォントを ePub に埋め込む | `python novel_downloader.py URL --font font\AyatiShowaSerif-Regular.ttf` |
 | 自分で用意した画像を表紙にする | `python novel_downloader.py URL --cover-image cover.jpg` |
+| サイト公式サムネイルを表紙にする | `python novel_downloader.py URL --use-site-cover` |
+| 続きを追記する（ePub も再生成） | `python novel_downloader.py --append 作品タイトル.txt` |
+| 新着話数を確認する（ダウンロードなし） | `python novel_downloader.py --check-update 作品タイトル.txt` |
 
 ### JPG 表紙について
 
