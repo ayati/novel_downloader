@@ -505,6 +505,19 @@ html.hltr {{
   font-size: 1em;
 }}
 
+/* 縦組みページの body フォント（serif-ja-v: RS が解釈する仮想フォント名） */
+html.vrtl body {{
+  font-family: {custom_family}serif-ja-v, serif-ja, "游明朝", "YuMincho",
+               "ヒラギノ明朝 ProN", "HiraMinProN-W3", "Noto Serif CJK JP", serif;
+}}
+
+/* 横組みページの body フォント（serif-ja: RS が解釈する仮想フォント名） */
+html.hltr body {{
+  font-family: {custom_family}serif-ja, "游明朝", "YuMincho",
+               "ヒラギノ明朝 ProN", "HiraMinProN-W3", "Noto Serif CJK JP", serif;
+}}
+
+/* フォールバック（class非対応環境） */
 body {{
   margin: 1em;
   font-family: {custom_family}"游明朝", "YuMincho", "ヒラギノ明朝 ProN", "HiraMinProN-W3",
@@ -1197,7 +1210,7 @@ def _make_cover_xhtml(title: str, author: str, synopsis: str,
     )
     return _XHTML_TMPL.format(title=_esc(title), body=body,
                                html_class="vrtl",
-                               epub_type=' epub:type="frontmatter"')
+                               epub_type='')
 
 
 _VERTICAL_IMAGE_CSS = """\
@@ -1270,7 +1283,7 @@ def _make_episode_xhtml(ep_title: str, body_text: str) -> str:
     )
     return _XHTML_TMPL.format(title=_esc(ep_title), body=body,
                                html_class="vrtl",
-                               epub_type=' epub:type="chapter"')
+                               epub_type='')
 
 
 def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
@@ -1291,7 +1304,7 @@ def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
     )
     return _XHTML_TMPL.format(title="奥付", body=body,
                                html_class="hltr",
-                               epub_type=' epub:type="backmatter"')
+                               epub_type='')
 
 
 def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
