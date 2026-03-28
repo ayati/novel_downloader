@@ -99,7 +99,7 @@ import uuid
 import zipfile
 import argparse
 import unicodedata
-from datetime import date
+from datetime import date, datetime, timezone
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlparse, urljoin, parse_qs
@@ -241,6 +241,7 @@ def aozora_chapter_title(subtitle: str, level: str = "大見出し") -> str:
 def safe_filename(title: str, fallback: str = "novel") -> str:
     """ファイル名に使えない文字を除去してベース名（拡張子なし）を返す。"""
     name = re.sub(r'[\\/:*?"<>|]', "_", title).strip()
+    name = Path(name).name  # ../ 等のパス成分を除去
     return (name[:60] if name else fallback)
 
 
@@ -266,6 +267,13 @@ def _show_episode_list(title: str, author: str, ep_titles: list[str]) -> None:
     for i, t in enumerate(ep_titles, 1):
         print(f"  {i:{width}}. {t}")
     sys.exit(0)
+
+
+def _dry_run_exit(args):
+    """--dry-run 指定時にメッセージを表示してダウンロードをスキップする。"""
+    if getattr(args, "dry_run", False):
+        print("\n[dry-run] ダウンロードは行いません。")
+        sys.exit(0)
 
 
 def _apply_output_dir(args, base: str) -> str:
@@ -1292,15 +1300,18 @@ def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
 def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
               cover_fmt: str = "", font_filename: str = "",
               toc_at_end: bool = False,
-              inline_images: list = None) -> str:
+              inline_images: list = None,
+              synopsis: str = "") -> str:
     """
     OPF（package.opf）を生成する。
     cover_fmt: "png" | "svg" | "" (表紙画像なし)
     font_filename: 埋め込みフォントのファイル名（例: "AyatiShowaSerif-Regular.otf"）
     toc_at_end: True のとき目次を奥付の後に配置（デフォルト: 表紙の後・本文の前）
     inline_images: 本文中のインライン画像ファイル名リスト（青空文庫 ZIP 内の画像等）
+    synopsis: あらすじ（dc:description に設定）
     """
-    today = date.today().strftime("%Y-%m-%d")
+    today    = date.today().strftime("%Y-%m-%d")
+    now_iso  = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     manifest_items = [
         '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
@@ -1377,6 +1388,7 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     manifest_str = "\n    ".join(manifest_items)
     spine_str    = "\n    ".join(spine_items)
     cover_meta   = ('\n    <meta name="cover" content="cover-image"/>' if cover_fmt else "")
+    desc_meta    = (f"\n    <dc:description>{_esc(synopsis)}</dc:description>" if synopsis else "")
 
     return f"""\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1388,10 +1400,11 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">urn:uuid:{book_id}</dc:identifier>
     <dc:title>{_esc(title)}</dc:title>
-    <dc:creator>{_esc(author)}</dc:creator>
+    <dc:creator id="creator">{_esc(author)}</dc:creator>
+    <meta refines="#creator" property="role" scheme="marc:relators">aut</meta>
     <dc:language>ja</dc:language>
-    <dc:date>{today}</dc:date>
-    <meta property="dcterms:modified">{today}T00:00:00Z</meta>{cover_meta}
+    <dc:date>{today}</dc:date>{desc_meta}
+    <meta property="dcterms:modified">{now_iso}</meta>{cover_meta}
     <meta property="rendition:layout">reflowable</meta>
     <meta property="rendition:orientation">auto</meta>
     <meta property="rendition:spread">none</meta>
@@ -1939,7 +1952,8 @@ def build_epub(
                     _make_opf(title, author, book_id, ep_titles, cover_fmt,
                               font_filename=font_filename,
                               toc_at_end=toc_at_end,
-                              inline_images=list(images.keys()) if images else None))
+                              inline_images=list(images.keys()) if images else None,
+                              synopsis=synopsis))
 
         # nav.xhtml（episodes をそのまま渡して章/部グループを目次に反映）
         zf.writestr("OEBPS/nav.xhtml",
@@ -2438,6 +2452,7 @@ def run_narou(args):
 
     if args.list_only:
         _show_episode_list(title, author, [ep[1] for ep in target])
+    _dry_run_exit(args)
 
     # 再開処理
     resume_arg = getattr(args, "resume", None)
@@ -2924,6 +2939,7 @@ def run_kakuyomu(args):
 
     if args.list_only:
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episode_list])
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info.get("description", ""),
                              source_url=work_url)
@@ -3059,6 +3075,7 @@ def alp_get_episode_list(soup) -> list:
             continue
         episodes = []
         for chapter in chapter_episodes:
+            chapter_title = chapter.get("title", "").strip()
             for ep in chapter.get("episodes", []):
                 if not ep.get("isPublic", True):
                     continue
@@ -3070,7 +3087,7 @@ def alp_get_episode_list(soup) -> list:
                 main_title = ep.get("mainTitle", "").strip()
                 sub_title  = ep.get("subTitle", "").strip()
                 title = f"{main_title}　{sub_title}" if sub_title else main_title
-                episodes.append({"url": href, "title": title})
+                episodes.append({"url": href, "title": title, "chapter": chapter_title})
         if episodes:
             return episodes
 
@@ -3259,6 +3276,7 @@ def run_alphapolis(args):
 
     if args.list_only:
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episode_list])
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info.get("description", ""),
                              source_url=work_url)
@@ -3278,10 +3296,12 @@ def run_alphapolis(args):
         print(f"  [{i:4d}/{len(episode_list)}] {ep['title'][:50]}")
         try:
             ep_title, body = alp_extract_episode(session, ep["url"])
-            episodes_data.append({"title": ep_title or ep["title"], "body": body})
+            episodes_data.append({"title": ep_title or ep["title"], "body": body,
+                                  "chapter": ep.get("chapter", "")})
         except RuntimeError as e:
             print(f"  [エラー] スキップします: {e}")
-            episodes_data.append({"title": ep["title"], "body": "（取得失敗）"})
+            episodes_data.append({"title": ep["title"], "body": "（取得失敗）",
+                                  "chapter": ep.get("chapter", "")})
         if i < len(episode_list):
             time.sleep(args.delay)
 
@@ -3290,7 +3310,8 @@ def run_alphapolis(args):
         body = (normalize_tate(ep["body"])
                 if ep["body"] and ep["body"] != "（取得失敗）" else ep["body"])
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ep["title"], "body": body})
+        epub_episodes.append({"title": ep["title"], "body": body,
+                               "group": ep.get("chapter") or None})
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -3459,6 +3480,30 @@ def est_parse_episode_titles(nuxt_src: str, batch_page: int = 1) -> dict:
     return result
 
 
+def est_parse_chapter_titles(nuxt_src: str, batch_page: int = 1) -> dict:
+    """
+    ビューアページの __NUXT__ から各ページの chapterTitle を抽出する。
+    chapterTitle はエピソードオブジェクトの最終フィールドなので、
+    直前 1500 文字以内の pageNo を参照して対応付ける。
+    戻り値: {pageNo: chapterTitle}
+    """
+    var_map = _est_parse_nuxt_vars(nuxt_src)
+    result = {}
+    for m in re.finditer(r',chapterTitle:"([^"]+)"', nuxt_src):
+        chapter = m.group(1).strip()
+        if not chapter:
+            continue
+        # chapterTitle より手前 1500 文字以内の pageNo を取得
+        ctx = nuxt_src[max(0, m.start() - 1500):m.start()]
+        pageno_m = re.search(r',pageNo:(\d+|[a-z])[,}]', ctx)
+        if not pageno_m:
+            continue
+        raw = pageno_m.group(1)
+        page_no = int(raw) if raw.isdigit() else var_map.get(raw, batch_page)
+        result[page_no] = chapter
+    return result
+
+
 def run_estar(args):
     """エブリスタ小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
@@ -3489,14 +3534,16 @@ def run_estar(args):
         print("エラー: 総ページ数を取得できませんでした。")
         sys.exit(1)
     print(f"      総ページ数: {total_pages}")
+    _dry_run_exit(args)
 
     start_page   = max(1, args.start or 1)
     end_page     = min(total_pages, args.end or total_pages)
     target_pages = list(range(start_page, end_page + 1))
     print(f"[2/3] エピソードを取得中（{len(target_pages)} ページ / 全 {total_pages} ページ）...")
 
-    all_bodies  = {}   # {pageNo: body_str}
-    all_titles  = {}   # {pageNo: episodeTitle}（エピソード開始ページのみ）
+    all_bodies         = {}   # {pageNo: body_str}
+    all_titles         = {}   # {pageNo: episodeTitle}（エピソード開始ページのみ）
+    all_chapter_titles = {}   # {pageNo: chapterTitle}
 
     batch_list = list(range(start_page, end_page + 1, 15))
     for batch_i, batch_page in enumerate(batch_list, 1):
@@ -3507,6 +3554,7 @@ def run_estar(args):
             nuxt_src = est_extract_nuxt(viewer_html)
             all_bodies.update(est_parse_viewer_page(nuxt_src, batch_page))
             all_titles.update(est_parse_episode_titles(nuxt_src, batch_page))
+            all_chapter_titles.update(est_parse_chapter_titles(nuxt_src, batch_page))
         except RuntimeError as e:
             print(f"    [エラー] バッチ取得失敗: {e}")
         if batch_i < len(batch_list):
@@ -3541,6 +3589,7 @@ def run_estar(args):
         return
 
     current_ep_title = ""
+    current_chapter  = ""
     page_in_episode  = 0
 
     for page_no in target_pages:
@@ -3555,6 +3604,10 @@ def run_estar(args):
         else:
             page_in_episode += 1
 
+        chapter_upd = all_chapter_titles.get(page_no, "")
+        if chapter_upd:
+            current_chapter = chapter_upd
+
         if page_in_episode <= 1:
             ep_title = current_ep_title or f"第{page_no}話"
         else:
@@ -3562,7 +3615,8 @@ def run_estar(args):
                         if current_ep_title else f"第{page_no}話")
         sec_title = aozora_chapter_title(ep_title)
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ep_title, "body": body})
+        epub_episodes.append({"title": ep_title, "body": body,
+                               "group": current_chapter or None})
 
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
@@ -3622,8 +3676,9 @@ def hameln_get_work_info(soup) -> dict:
 
 
 def hameln_get_episode_list(soup) -> list:
-    """トップページからエピソード一覧を [(ep_num, href, title), ...] で返す。"""
+    """トップページからエピソード一覧を [(ep_num, href, title, chapter), ...] で返す。"""
     episodes = []
+    current_chapter = ""
     table = soup.find("table")
     if not table:
         return episodes
@@ -3631,7 +3686,16 @@ def hameln_get_episode_list(soup) -> list:
         span = row.find("span", id=True)
         a    = row.find("a", href=True)
         if span and a and span["id"].isdigit():
-            episodes.append((int(span["id"]), a["href"], a.get_text(strip=True)))
+            episodes.append((int(span["id"]), a["href"], a.get_text(strip=True), current_chapter))
+        else:
+            # 章ヘッダー行: <td colspan=2><strong>章名</strong></td>
+            td = row.find("td", attrs={"colspan": True})
+            if td:
+                strong = td.find("strong")
+                if strong:
+                    chapter_text = strong.get_text(strip=True)
+                    if chapter_text:
+                        current_chapter = chapter_text
     return episodes
 
 
@@ -3733,6 +3797,7 @@ def run_hameln(args):
 
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep[2] for ep in target])
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url)
@@ -3755,7 +3820,7 @@ def run_hameln(args):
             headless=True,
             args=["--disable-blink-features=AutomationControlled"],
         )
-        for ep_i, (ep_num, ep_href, ep_title_list) in enumerate(target, 1):
+        for ep_i, (ep_num, ep_href, ep_title_list, ep_chapter) in enumerate(target, 1):
             ep_file = ep_href.lstrip("./")   # "./N.html" → "N.html"
             ep_url  = f"{_HAM_BASE}/novel/{work_id}/{ep_file}"
             print(f"  [{ep_i:3d}/{len(target)}] {ep_title_list}")
@@ -3794,19 +3859,22 @@ def run_hameln(args):
                     body = normalize_tate(body)
                     sec_title = aozora_chapter_title(ep_title)
                     sections.append(f"{sec_title}\n\n{body}\n")
-                    epub_episodes.append({"title": ep_title, "body": body})
+                    epub_episodes.append({"title": ep_title, "body": body,
+                                          "group": ep_chapter or None})
                     got += 1
                 else:
                     print(f"    [警告] 本文が見つかりません（CF未解決の可能性）")
                     sec_title = aozora_chapter_title(ep_title)
                     sections.append(f"{sec_title}\n\n（取得失敗）\n")
-                    epub_episodes.append({"title": ep_title, "body": "（取得失敗）"})
+                    epub_episodes.append({"title": ep_title, "body": "（取得失敗）",
+                                          "group": ep_chapter or None})
 
             except Exception as e:
                 print(f"    [エラー] {e}")
                 sec_title = aozora_chapter_title(ep_title)
                 sections.append(f"{sec_title}\n\n（取得失敗）\n")
-                epub_episodes.append({"title": ep_title, "body": "（取得失敗）"})
+                epub_episodes.append({"title": ep_title, "body": "（取得失敗）",
+                                      "group": ep_chapter or None})
                 if ctx:
                     try:
                         ctx.close()
@@ -3865,7 +3933,9 @@ def _neopage_fetch(url: str, retries: int = 3) -> str:
         try:
             resp = sess.get(url, timeout=30)
             resp.raise_for_status()
-            resp.encoding = resp.apparent_encoding or "utf-8"
+            # サーバーが charset=utf-8 を明示しているため apparent_encoding は使わない
+            # （chardet が Windows-1254 等に誤検出してタイトル文字化けが起きる）
+            resp.encoding = resp.encoding or "utf-8"
             return resp.text
         except Exception as e:
             if attempt >= retries:
@@ -3964,7 +4034,7 @@ def neopage_get_work_info(html: str, book_id: str) -> dict:
 def neopage_fetch_chapter(chapter_id: str, retries: int = 3) -> dict:
     """
     /v1/book/content/{chapter_id} API から章データを返す。
-    keys: name / content / next_chapter_id / is_last
+    keys: name / content / next_chapter_id / is_last / volume_name
     content が null（有料章等）の場合は空文字。
     """
     url  = f"{_NEOPAGE_BASE}/v1/book/content/{chapter_id}"
@@ -3985,6 +4055,7 @@ def neopage_fetch_chapter(chapter_id: str, retries: int = 3) -> dict:
                 "next_chapter_id": (next_ch.get("chapter_id") or "")
                                    if isinstance(next_ch, dict) else "",
                 "is_last":         bool(ch.get("isLastChapter")),
+                "volume_name":     ch.get("volume_name") or "",
             }
         except RuntimeError:
             raise
@@ -3992,7 +4063,8 @@ def neopage_fetch_chapter(chapter_id: str, retries: int = 3) -> dict:
             if attempt >= retries:
                 raise RuntimeError(f"章取得失敗: {chapter_id} ({e})")
             time.sleep(5)
-    return {"name": "", "content": "", "next_chapter_id": "", "is_last": True}
+    return {"name": "", "content": "", "next_chapter_id": "", "is_last": True,
+            "volume_name": ""}
 
 
 def neopage_content_to_aozora(content_html: str) -> str:
@@ -4064,9 +4136,10 @@ def run_neopage(args):
     max_chain = end_arg if end_arg else (info["total_chapter"] or 9999) + 50
 
     print("[2/3] 章リストを構築中...")
-    chapters       = []  # [(chapter_id, chapter_title), ...]
+    chapters       = []  # [(chapter_id, chapter_title, volume_name), ...]
     content_cache  = {}  # {chapter_id: content_html}  ← 本文キャッシュ
     cur_id         = info["first_chapter_id"]
+    current_volume = ""  # volume_name は各章の先頭話にのみ設定されるため引き継ぐ
 
     while cur_id and len(chapters) < max_chain:
         try:
@@ -4074,8 +4147,10 @@ def run_neopage(args):
         except RuntimeError as e:
             print(f"  [警告] 章情報取得失敗 (id={cur_id}): {e}")
             break
+        if ch_data["volume_name"]:
+            current_volume = ch_data["volume_name"]
         ch_title = ch_data["name"] or f"第{len(chapters) + 1}話"
-        chapters.append((cur_id, ch_title))
+        chapters.append((cur_id, ch_title, current_volume))
         content_cache[cur_id] = ch_data["content"]  # キャッシュ
         n = len(chapters)
         if n % 20 == 0:
@@ -4097,7 +4172,8 @@ def run_neopage(args):
     target   = chapters[start_ep - 1:end_ep]
 
     if args.list_only:
-        _show_episode_list(info["title"], info["author"], [ch[1] for ch in target])
+        _show_episode_list(info["title"], info["author"], [ch[1] for ch in target])  # ch[1]=title
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"],
                              info["synopsis"], source_url=work_url)
@@ -4115,7 +4191,7 @@ def run_neopage(args):
     print(f"[3/3] テキスト・ePub を生成中（{len(target)} 話）...")
     got           = 0
 
-    for ep_i, (ch_id, ch_title) in enumerate(target, 1):
+    for ep_i, (ch_id, ch_title, ch_volume) in enumerate(target, 1):
         content = content_cache.get(ch_id, "")
         if content:
             body = neopage_content_to_aozora(content)
@@ -4125,7 +4201,7 @@ def run_neopage(args):
 
         sec_title = aozora_chapter_title(ch_title)
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ch_title, "body": body})
+        epub_episodes.append({"title": ch_title, "body": body, "group": ch_volume or None})
         if body not in ("（取得失敗）", "（有料章または非公開）"):
             got += 1
 
@@ -4176,7 +4252,7 @@ def _solispia_fetch(url: str, retries: int = 3):
         try:
             resp = sess.get(url, timeout=30)
             resp.raise_for_status()
-            resp.encoding = resp.apparent_encoding or "utf-8"
+            resp.encoding = resp.encoding or "utf-8"
             return BeautifulSoup(resp.text, "html.parser")
         except Exception as e:
             if attempt >= retries:
@@ -4198,10 +4274,33 @@ def solispia_get_work_info(soup) -> dict:
 
 def solispia_get_episode_list(soup) -> list:
     """
-    タイトルページから全エピソードの (url, title) リストを返す。
-    デスクトップ用 div.episode コンテナのみ使用（モバイル用 div.episode-small との重複を回避）。
+    タイトルページから全エピソードの (url, title, chapter_name) リストを返す。
+    div.chapters > details.chapter-group の2階層構造から章名を取得する。
+    章グループがない場合は chapter_name = "" のフラットフォールバックを使用。
     """
-    # デスクトップ用コンテナを優先（class が "episode" のみの div）
+    chapters_div = soup.find("div", class_="chapters")
+    if chapters_div:
+        episodes  = []
+        seen_urls = set()
+        for group in chapters_div.find_all("details", class_="chapter-group"):
+            # 章名: summary > span.chapter-title
+            summary = group.find("summary", class_="chapter-summary")
+            ch_span = summary.find("span", class_="chapter-title") if summary else None
+            chapter_name = ch_span.get_text(strip=True) if ch_span else ""
+            # エピソードリンク
+            for a in group.find_all("a", class_=lambda c: c and "row-link" in c):
+                href = a.get("href", "").strip()
+                if not href or href in seen_urls:
+                    continue
+                title_span = a.find("span", class_="textleft")
+                ep_title   = title_span.get_text(strip=True) if title_span else a.get_text(strip=True)
+                if ep_title:
+                    episodes.append((href, ep_title, chapter_name))
+                    seen_urls.add(href)
+        if episodes:
+            return episodes
+
+    # フォールバック: デスクトップ用 div.episode から章情報なしで収集
     container = soup.find("div", class_="episode") or soup
     episodes  = []
     seen_urls = set()
@@ -4212,7 +4311,7 @@ def solispia_get_episode_list(soup) -> list:
         title_span = a.find("span", class_="textleft")
         ep_title   = title_span.get_text(strip=True) if title_span else a.get_text(strip=True)
         if ep_title:
-            episodes.append((href, ep_title))
+            episodes.append((href, ep_title, ""))
             seen_urls.add(href)
     return episodes
 
@@ -4333,7 +4432,8 @@ def run_solispia(args):
     target   = all_eps[start_ep - 1:end_ep]
 
     if getattr(args, "list_only", False):
-        _show_episode_list(info["title"], info["author"], [ep[1] for ep in target])
+        _show_episode_list(info["title"], info["author"], [ep[1] for ep in target])  # ep[1]=title
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"],
                              info["description"], source_url=work_url)
@@ -4350,7 +4450,7 @@ def run_solispia(args):
     print(f"[2/3] エピソードを取得中（{len(target)} 話）...")
     got           = 0
 
-    for ep_i, (ep_url, ep_title) in enumerate(target, 1):
+    for ep_i, (ep_url, ep_title, ep_chapter) in enumerate(target, 1):
         print(f"  [{ep_i:3d}/{len(target)}] {ep_title[:40]}")
         try:
             ep_soup = _solispia_fetch(ep_url)
@@ -4362,7 +4462,7 @@ def run_solispia(args):
 
         sec_title = aozora_chapter_title(ep_title)
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ep_title, "body": body})
+        epub_episodes.append({"title": ep_title, "body": body, "group": ep_chapter or None})
         if body != "（取得失敗）":
             got += 1
         if ep_i < len(target):
@@ -4442,18 +4542,47 @@ def noichigo_get_work_info(soup) -> dict:
 
 def noichigo_get_chapter_list(soup) -> list:
     """
-    チャプター一覧を [(page_num, chapter_title), ...] で返す。
-    bookChapterList の各 <a href="/book/nXXX/NUM"> から取得。
+    チャプター一覧を [(page_num, chapter_title, group_name), ...] で返す。
+    bookChapterList の2階層構造を解析する：
+      - 外側の <li> に <p> + 内側 <ul><li> がある場合: <p> テキストを group_name として付与
+      - 外側の <li> が単独 <a> の場合: group_name = ""
     """
     chapter_list = soup.find("div", class_="bookChapterList")
     if not chapter_list:
         return []
     chapters = []
-    for a in chapter_list.find_all("a", href=True):
-        href = a["href"]
-        m = re.search(r"/book/[^/]+/(\d+)$", href)
-        if m:
-            chapters.append((int(m.group(1)), a.get_text(strip=True)))
+    outer_ul = chapter_list.find("ul")
+    if not outer_ul:
+        # フォールバック: 全 <a> をフラット収集
+        for a in chapter_list.find_all("a", href=True):
+            href = a["href"]
+            m = re.search(r"/book/[^/]+/(\d+)$", href)
+            if m:
+                chapters.append((int(m.group(1)), a.get_text(strip=True), ""))
+        return chapters
+
+    for outer_li in outer_ul.find_all("li", recursive=False):
+        inner_ul = outer_li.find("ul")
+        inner_items = inner_ul.find_all("li", recursive=False) if inner_ul else []
+        if inner_items:
+            # 章グループ: 外側 <a> タグから章名を取得して各チャプターに付与
+            outer_a = outer_li.find("a", href=True, recursive=False)
+            group_name = outer_a.get_text(strip=True) if outer_a else ""
+            for inner_li in inner_items:
+                a = inner_li.find("a", href=True)
+                if a:
+                    href = a["href"]
+                    m = re.search(r"/book/[^/]+/(\d+)$", href)
+                    if m:
+                        chapters.append((int(m.group(1)), a.get_text(strip=True), group_name))
+        else:
+            # 単独チャプター（グループなし）
+            a = outer_li.find("a", href=True)
+            if a:
+                href = a["href"]
+                m = re.search(r"/book/[^/]+/(\d+)$", href)
+                if m:
+                    chapters.append((int(m.group(1)), a.get_text(strip=True), ""))
     return chapters
 
 
@@ -4546,22 +4675,23 @@ def run_noichigo(args):
     if total_pages:
         print(f"      総ページ数  : {total_pages}")
 
-    # チャプター範囲を構築 [(page_start, page_end, title), ...]
+    # チャプター範囲を構築 [(page_start, page_end, title, group_name), ...]
     chapter_ranges = []
-    for i, (page_start, ch_title) in enumerate(chapters):
+    for i, (page_start, ch_title, ch_group) in enumerate(chapters):
         if i + 1 < len(chapters):
             page_end = chapters[i + 1][0] - 1
         else:
             page_end = total_pages if total_pages else page_start
-        chapter_ranges.append((page_start, page_end, ch_title))
+        chapter_ranges.append((page_start, page_end, ch_title, ch_group))
 
     start_ch = max(1, args.start or 1)
     end_ch   = min(total_chapters, args.end or total_chapters)
     target_chapters = chapter_ranges[start_ch - 1:end_ch]
-    total_targets   = sum(e - s + 1 for s, e, _ in target_chapters)
+    total_targets   = sum(e - s + 1 for s, e, _t, _g in target_chapters)
 
     if args.list_only:
         _show_episode_list(info["title"], info["author"], [ch[2] for ch in target_chapters])
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url)
@@ -4578,7 +4708,7 @@ def run_noichigo(args):
 
     got_chapters  = 0
 
-    for ch_i, (page_start, page_end, ch_title) in enumerate(target_chapters, 1):
+    for ch_i, (page_start, page_end, ch_title, ch_group) in enumerate(target_chapters, 1):
         print(f"  [{ch_i:3d}/{len(target_chapters)}] {ch_title}（p.{page_start}–{page_end}）")
         page_bodies = []
         for page_no in range(page_start, page_end + 1):
@@ -4607,7 +4737,7 @@ def run_noichigo(args):
         body = normalize_tate(body)
         sec_title = aozora_chapter_title(ch_title)
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ch_title, "body": body})
+        epub_episodes.append({"title": ch_title, "body": body, "group": ch_group or None})
         got_chapters += 1
         if ch_i < len(target_chapters):
             time.sleep(args.delay)
@@ -4749,22 +4879,23 @@ def run_berrys(args):
         if total_pages:
             print(f"      総ページ数  : {total_pages}")
 
-    # チャプター範囲を構築 [(page_start, page_end, title), ...]
+    # チャプター範囲を構築 [(page_start, page_end, title, group_name), ...]
     chapter_ranges = []
-    for i, (page_start, ch_title) in enumerate(chapters):
+    for i, (page_start, ch_title, ch_group) in enumerate(chapters):
         if i + 1 < len(chapters):
             page_end = chapters[i + 1][0] - 1
         else:
             page_end = total_pages if total_pages else page_start
-        chapter_ranges.append((page_start, page_end, ch_title))
+        chapter_ranges.append((page_start, page_end, ch_title, ch_group))
 
     start_ch = max(1, args.start or 1)
     end_ch   = min(total_chapters, args.end or total_chapters)
     target_chapters = chapter_ranges[start_ch - 1:end_ch]
-    total_targets   = sum(e - s + 1 for s, e, _ in target_chapters)
+    total_targets   = sum(e - s + 1 for s, e, _t, _g in target_chapters)
 
     if args.list_only:
         _show_episode_list(info["title"], info["author"], [ch[2] for ch in target_chapters])
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url)
@@ -4781,7 +4912,7 @@ def run_berrys(args):
 
     got_chapters  = 0
 
-    for ch_i, (page_start, page_end, ch_title) in enumerate(target_chapters, 1):
+    for ch_i, (page_start, page_end, ch_title, ch_group) in enumerate(target_chapters, 1):
         print(f"  [{ch_i:3d}/{len(target_chapters)}] {ch_title}（p.{page_start}–{page_end}）")
         page_bodies = []
         for page_no in range(page_start, page_end + 1):
@@ -4803,7 +4934,7 @@ def run_berrys(args):
         body = normalize_tate(body)
         sec_title = aozora_chapter_title(ch_title)
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ch_title, "body": body})
+        epub_episodes.append({"title": ch_title, "body": body, "group": ch_group or None})
         got_chapters += 1
         if ch_i < len(target_chapters):
             time.sleep(args.delay)
@@ -4979,6 +5110,7 @@ def run_monogatary(args):
         _show_episode_list(story_title, author,
                            [ep.get("episodeTitle", f"第{i}話")
                             for i, ep in enumerate(target, start_ep)])
+    _dry_run_exit(args)
 
     header   = aozora_header(story_title, author, synopsis, source_url=story_url)
     colophon = aozora_colophon(story_title, story_url, "monogatary.com")
@@ -5094,21 +5226,14 @@ def novema_get_work_info(soup) -> dict:
 
 def novema_get_episode_list(soup) -> list:
     """
-    エピソード一覧を [(page_num, episode_title), ...] で返す。
+    エピソード一覧を [(page_num, episode_title, chapter_name), ...] で返す。
     bookChapterList の2階層構造を解析する：
-      - 外側の <li> に内側の <ul><li> がある場合: 内側の各 <li><a> をエピソードとして収集
-      - 外側の <li> に内側の <ul><li> がない場合: 外側の <li><a> をエピソードとして収集
+      - 外側の <li> に <p> + 内側 <ul><li> がある場合: 章グループ名を chapter_name として付与
+      - 外側の <li> に内側の <ul><li> がない場合: 単独エピソード（chapter_name = ""）
     """
     chapter_list = soup.find("div", class_="bookChapterList")
     if not chapter_list:
-        # フォールバック: 全 <a> リンクからエピソードURLを収集
-        episodes = []
-        for a in chapter_list.find_all("a", href=True) if chapter_list else []:
-            href = a["href"]
-            m = re.search(r"/book/[^/]+/(\d+)$", href)
-            if m:
-                episodes.append((int(m.group(1)), a.get_text(strip=True)))
-        return episodes
+        return []
 
     episodes = []
     outer_ul = chapter_list.find("ul")
@@ -5119,22 +5244,24 @@ def novema_get_episode_list(soup) -> list:
         inner_ul = outer_li.find("ul")
         inner_items = inner_ul.find_all("li", recursive=False) if inner_ul else []
         if inner_items:
-            # 章グループ: 内側の各エピソードを収集
+            # 章グループ: 外側 <a> タグから章名を取得して各エピソードに付与
+            outer_a = outer_li.find("a", href=True, recursive=False)
+            chapter_name = outer_a.get_text(strip=True) if outer_a else ""
             for inner_li in inner_items:
                 a = inner_li.find("a", href=True)
                 if a:
                     href = a["href"]
                     m = re.search(r"/book/[^/]+/(\d+)$", href)
                     if m:
-                        episodes.append((int(m.group(1)), a.get_text(strip=True)))
+                        episodes.append((int(m.group(1)), a.get_text(strip=True), chapter_name))
         else:
-            # 単独エピソード
+            # 単独エピソード（章グループなし）
             a = outer_li.find("a", href=True)
             if a:
                 href = a["href"]
                 m = re.search(r"/book/[^/]+/(\d+)$", href)
                 if m:
-                    episodes.append((int(m.group(1)), a.get_text(strip=True)))
+                    episodes.append((int(m.group(1)), a.get_text(strip=True), ""))
 
     return episodes
 
@@ -5176,6 +5303,7 @@ def run_novema(args):
     target_eps = episodes[start_ep - 1:end_ep]
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep[1] for ep in target_eps])
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url)
@@ -5192,7 +5320,7 @@ def run_novema(args):
 
     got_eps       = 0
 
-    for ep_i, (page_num, ep_title) in enumerate(target_eps, 1):
+    for ep_i, (page_num, ep_title, ep_chapter) in enumerate(target_eps, 1):
         print(f"  [{ep_i:3d}/{len(target_eps)}] {ep_title}")
         try:
             ep_url  = f"{_NOVEMA_BASE}/book/{work_id}/{page_num}"
@@ -5216,7 +5344,7 @@ def run_novema(args):
         body = normalize_tate(body)
         sec_title = aozora_chapter_title(ep_title)
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ep_title, "body": body})
+        epub_episodes.append({"title": ep_title, "body": body, "group": ep_chapter or None})
         got_eps += 1
         if ep_i < len(target_eps):
             time.sleep(args.delay)
@@ -5297,19 +5425,27 @@ def novelup_get_work_info(soup) -> dict:
 
 def novelup_get_episode_list(soup) -> list:
     """
-    エピソード一覧を [(episode_id, episode_title), ...] で返す。
-    div.episodeList 内の div.episodeListItem a.episodeTitle から取得。
-    div.episodeListItem.chapter は章ヘッダーなのでスキップ。
+    エピソード一覧を [(episode_id, episode_title, chapter), ...] で返す。
+    div.episodeList 内の div.episodeListItem を順に走査し、
+    class="episodeListItem chapter" は章ヘッダーとして current_chapter を更新する。
     """
     ep_list_div = soup.find("div", class_="episodeList")
     if not ep_list_div:
         return []
     episodes = []
-    for a in ep_list_div.find_all("a", class_="episodeTitle"):
+    current_chapter = ""
+    for item in ep_list_div.find_all("div", class_="episodeListItem"):
+        classes = item.get("class", [])
+        if "chapter" in classes:
+            current_chapter = item.get_text(strip=True)
+            continue
+        a = item.find("a", class_="episodeTitle")
+        if not a:
+            continue
         href = a.get("href", "")
         m = re.search(r"/story/[^/]+/(\d+)$", href)
         if m:
-            episodes.append((m.group(1), a.get_text(strip=True)))
+            episodes.append((m.group(1), a.get_text(strip=True), current_chapter))
     return episodes
 
 
@@ -5413,6 +5549,7 @@ def run_novelup(args):
     target_eps = episodes[start_ep - 1:end_ep]
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep[1] for ep in target_eps])
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url)
@@ -5429,7 +5566,7 @@ def run_novelup(args):
 
     got_eps       = 0
 
-    for ep_i, (ep_id, ep_title) in enumerate(target_eps, 1):
+    for ep_i, (ep_id, ep_title, ep_chapter) in enumerate(target_eps, 1):
         print(f"  [{ep_i:3d}/{len(target_eps)}] {ep_title}")
         try:
             ep_url  = f"{_NOVELUP_BASE}/story/{work_id}/{ep_id}"
@@ -5442,7 +5579,8 @@ def run_novelup(args):
         body = normalize_tate(body)
         sec_title = aozora_chapter_title(ep_title)
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ep_title, "body": body})
+        epub_episodes.append({"title": ep_title, "body": body,
+                               "group": ep_chapter or None})
         got_eps += 1
         if ep_i < len(target_eps):
             time.sleep(args.delay)
@@ -5628,6 +5766,7 @@ def run_sutekibungei(args):
     target_eps = episodes[start_ep - 1:end_ep]
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in target_eps])
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url)
@@ -5656,7 +5795,8 @@ def run_sutekibungei(args):
         body = normalize_tate(body)
         sec_title = aozora_chapter_title(ep["title"])
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ep["title"], "body": body})
+        epub_episodes.append({"title": ep["title"], "body": body,
+                               "group": ep.get("chapter") or None})
         got_eps += 1
         if ep_i < len(target_eps):
             time.sleep(args.delay)
@@ -5742,25 +5882,34 @@ def days_get_work_info(soup) -> dict:
 
 def days_get_episode_list(soup) -> list:
     """
-    エピソード一覧を [{"title": str, "url": str}, ...] で返す。
-    div.contents ol li a から /works/episode/{32hex}.html 形式のリンクを取得。
+    エピソード一覧を [{"title": str, "url": str, "chapter": str}, ...] で返す。
+    div.contents ol 内の h4（章ヘッダー）と a（エピソードリンク）を文書順に走査する。
+    <li> のネストが不正な HTML のため <li> 階層には依存せずフラット走査する。
     """
     episodes = []
-    for a in soup.select("div.contents ol li a"):
-        href = a.get("href", "")
-        if not re.search(r"/works/episode/[0-9a-f]{32}\.html$", href):
-            continue
-        # 日付 span (.date) を除いた最初の span からタイトルを取得
-        ep_title = ""
-        for span in a.find_all("span"):
-            if "date" not in span.get("class", []):
-                ep_title = span.get_text(strip=True)
-                break
-        if not ep_title:
-            ep_title = a.get_text(strip=True)
-        url = (_DAYS_BASE + href) if href.startswith("/") else href
-        if ep_title:
-            episodes.append({"title": ep_title, "url": url})
+    current_chapter = ""
+    ol = soup.select_one("div.contents ol")
+    if not ol:
+        return episodes
+    for tag in ol.find_all(["h4", "a"]):
+        if tag.name == "h4":
+            current_chapter = tag.get_text(strip=True)
+        else:  # a
+            href = tag.get("href", "")
+            if not re.search(r"/works/episode/[0-9a-f]{32}\.html$", href):
+                continue
+            # 日付 span (.date) を除いた最初の span からタイトルを取得
+            ep_title = ""
+            for span in tag.find_all("span"):
+                if "date" not in span.get("class", []):
+                    ep_title = span.get_text(strip=True)
+                    break
+            if not ep_title:
+                ep_title = tag.get_text(strip=True)
+            url = (_DAYS_BASE + href) if href.startswith("/") else href
+            if ep_title:
+                episodes.append({"title": ep_title, "url": url,
+                                  "chapter": current_chapter})
     return episodes
 
 
@@ -5863,6 +6012,7 @@ def run_days(args):
     target_eps = episodes[start_ep - 1:end_ep]
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in target_eps])
+    _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url)
@@ -5891,7 +6041,8 @@ def run_days(args):
         body = normalize_tate(body)
         sec_title = aozora_chapter_title(ep["title"])
         sections.append(f"{sec_title}\n\n{body}\n")
-        epub_episodes.append({"title": ep["title"], "body": body})
+        epub_episodes.append({"title": ep["title"], "body": body,
+                               "group": ep.get("chapter") or None})
         got_eps += 1
         if ep_i < len(target_eps):
             time.sleep(args.delay)
@@ -6152,6 +6303,7 @@ def run_genpaku(args):
 
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episodes])
+    _dry_run_exit(args)
 
     print("[3/3] テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
@@ -6484,6 +6636,7 @@ def run_hyuki(args):
 
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episodes])
+    _dry_run_exit(args)
 
     print("[3/3] テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
@@ -6809,6 +6962,7 @@ def run_aozora(args):
         title  = ep_title  or info.get("title",  "（タイトル不明）")
         author = ep_author or info.get("author", "（著者不明）")
         _show_episode_list(title, author, [ep["title"] for ep in episodes])
+    _dry_run_exit(args)
 
     # テキストファイルを UTF-8 に変換して保存
     # テキストは ZIP 内ファイル名ベース（または -o 指定）を使用
@@ -8098,6 +8252,9 @@ def main():
                         help="既存の .txt ファイルを指定し、サイトの最新話数と比較して"
                              "新着エピソード数を表示する。ダウンロードは行わない。"
                              "--append の前に更新確認したいときに使う")
+    parser.add_argument("--dry-run", dest="dry_run", action="store_true",
+                        help="作品情報（タイトル・著者・総話数）を確認して終了する。"
+                             "ダウンロード・ファイル出力は一切行わない")
 
     args = parser.parse_args()
 

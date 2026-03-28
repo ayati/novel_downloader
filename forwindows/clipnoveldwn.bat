@@ -16,7 +16,7 @@ set "OPT_FORMAT=--kobo"
 
 rem その他追加オプション（不要な場合は空にする）
 rem 例: --timeout 30  --encoding utf-8 など
-set "OPT_EXTRA="
+set "OPT_EXTRA=--use-site-cover"
 
 rem =====================================================================
 rem ★ ユーザー設定ここまで ★

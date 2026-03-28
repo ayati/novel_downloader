@@ -27,7 +27,7 @@ rem オプション定義（重複しないよう各項目1つだけ設定）
 set "OPT_OUTPUT=--output-dir !OD!\epub"
 set "OPT_FONT=--font !OD!\fonts\AyatiShowaSerif-Regular.ttf"
 set "OPT_FORMAT=--kobo"
-set "OPT_EXTRA="
+set "OPT_EXTRA=--use-site-cover"
 
 rem =====================================================================
 rem ★ ユーザー設定ここまで ★
