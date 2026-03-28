@@ -334,18 +334,21 @@ python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --kobo --output-di
 mimetype
 META-INF/container.xml
 OEBPS/package.opf
-OEBPS/nav.xhtml
+OEBPS/nav.xhtml              ← RS向け機械読み取り専用（spine に含めない）
+OEBPS/toc.xhtml              ← 読者向け縦組み目次ページ（spine に含める）
 OEBPS/css/novel.css
 OEBPS/css/vertical_image.css
 OEBPS/fonts/                 ← 埋め込みフォント（--font 指定時のみ）
 OEBPS/images/cover.jpg       ← 表紙画像（JPG または SVG）
 OEBPS/cover-image.xhtml      ← 画像表紙ページ（epub:type="cover"）
 OEBPS/cover.xhtml            ← タイトル・著者・あらすじページ
-OEBPS/ep0001.xhtml           ← 各話（epub:type="chapter"）
+OEBPS/ep0001.xhtml           ← 各話
 OEBPS/ep0002.xhtml
 ...
 OEBPS/colophon.xhtml         ← 奥付
 ```
+
+spine 読み順（デフォルト）: cover-image → cover → toc → ep0001…epNNNN → colophon
 
 - 縦書き（`-epub-writing-mode` / `-webkit-writing-mode` / `writing-mode: vertical-rl`）
 - 游明朝 / ヒラギノ明朝 / Noto Serif CJK JP を優先したフォント指定
