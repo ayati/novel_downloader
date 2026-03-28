@@ -472,19 +472,40 @@ def _make_epub_css(font_name: str = "", font_filename: str = "") -> str:
     return f"""\
 @charset "UTF-8";
 
-{font_face}/* ── 縦書き基本設定 ── */
-html {{
+{font_face}/* ── 縦書き基本設定（フォールバック: class非対応環境・Amazon Kindle等） ── */
+html, body {{
   -epub-writing-mode: vertical-rl;
   -webkit-writing-mode: vertical-rl;
   writing-mode: vertical-rl;
+}}
+html {{
   line-height: 2.0;
   font-size: 1em;
 }}
 
-body {{
+/* ── DPFJガイド準拠: class対応RSはこちらが優先 ── */
+html.vrtl,
+html.vrtl body {{
   -epub-writing-mode: vertical-rl;
   -webkit-writing-mode: vertical-rl;
   writing-mode: vertical-rl;
+}}
+html.hltr,
+html.hltr body {{
+  -epub-writing-mode: horizontal-tb;
+  -webkit-writing-mode: horizontal-tb;
+  writing-mode: horizontal-tb;
+}}
+html.vrtl {{
+  line-height: 2.0;
+  font-size: 1em;
+}}
+html.hltr {{
+  line-height: 1.8;
+  font-size: 1em;
+}}
+
+body {{
   margin: 1em;
   font-family: {custom_family}"游明朝", "YuMincho", "ヒラギノ明朝 ProN", "HiraMinProN-W3",
                "Noto Serif CJK JP", serif;
@@ -649,7 +670,7 @@ _XHTML_TMPL = """\
 <html xmlns="http://www.w3.org/1999/xhtml"
       xmlns:epub="http://www.idpf.org/2007/ops"
       xml:lang="ja" lang="ja"
-      style="-epub-writing-mode:vertical-rl; -webkit-writing-mode:vertical-rl; writing-mode:vertical-rl;">
+      class="{html_class}">
 <head>
   <meta charset="UTF-8"/>
   <title>{title}</title>
@@ -1175,6 +1196,7 @@ def _make_cover_xhtml(title: str, author: str, synopsis: str,
         f'{syn_html}'
     )
     return _XHTML_TMPL.format(title=_esc(title), body=body,
+                               html_class="vrtl",
                                epub_type=' epub:type="frontmatter"')
 
 
@@ -1223,7 +1245,8 @@ def _make_cover_image_xhtml(title: str, fmt: str = "jpg") -> str:
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml"
       xmlns:epub="http://www.idpf.org/2007/ops"
-      xml:lang="ja" lang="ja">
+      xml:lang="ja" lang="ja"
+      class="hltr">
 <head>
   <meta charset="UTF-8"/>
   <title>{_esc(title)}</title>
@@ -1246,6 +1269,7 @@ def _make_episode_xhtml(ep_title: str, body_text: str) -> str:
         + _body_lines_to_xhtml(body_text)
     )
     return _XHTML_TMPL.format(title=_esc(ep_title), body=body,
+                               html_class="vrtl",
                                epub_type=' epub:type="chapter"')
 
 
@@ -1266,6 +1290,7 @@ def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
         f'</div>'
     )
     return _XHTML_TMPL.format(title="奥付", body=body,
+                               html_class="hltr",
                                epub_type=' epub:type="backmatter"')
 
 
@@ -1333,7 +1358,8 @@ def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml"
       xmlns:epub="http://www.idpf.org/2007/ops"
-      xml:lang="ja" lang="ja">
+      xml:lang="ja" lang="ja"
+      class="vrtl">
 <head><meta charset="UTF-8"/><title>{_esc(title)}</title>
 <link rel="stylesheet" type="text/css" href="css/novel.css"/>
 <style>

@@ -204,7 +204,17 @@ OEBPS/colophon.xhtml         ← 奥付
 spine 読み順（デフォルト）: cover-image → cover → **nav（目次）** → ep0001…epNNNN → colophon
 `--toc-at-end` 指定時: cover-image → cover → ep0001…epNNNN → colophon → **nav（目次）**
 
-すべてのコンテンツページ（ep*.xhtml・cover.xhtml・colophon.xhtml）の `<html>` に `style="-epub-writing-mode:vertical-rl; writing-mode:vertical-rl;"` をインライン付与（Send to Kindle 等 CSS を解釈しない環境向けフォールバック）。CSS も `html, body { writing-mode: vertical-rl }` でフォールバック指定。**全ページ縦書き統一が必須**（横書きページを混在させると Amazon Kindle 変換エラーになる）。
+DPFJガイド v1.1.4 準拠の組み方向制御：`<html class="vrtl/hltr">` で切り替え。
+
+| ファイル | class | 組み方向 |
+|---|---|---|
+| cover-image.xhtml | `hltr` | 横組み（表紙画像ページ） |
+| cover.xhtml | `vrtl` | 縦組み（タイトルページ） |
+| nav.xhtml | `vrtl` | 縦組み（目次） |
+| ep*.xhtml | `vrtl` | 縦組み（本文） |
+| colophon.xhtml | `hltr` | 横組み（奥付） |
+
+CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非対応環境（Amazon Kindle 等）向けフォールバック、(2) `html.vrtl / html.vrtl body` / `html.hltr / html.hltr body` — class 対応 RS 向け上書き。`_XHTML_TMPL` は `{html_class}` パラメータで class を切り替える（inline style は除去済み）。
 
 縦中横（`.tcy`）対応：
 - 明示タグ `［＃縦中横］TEXT［＃縦中横終わり］` → `<span class="tcy">TEXT</span>`（センチネル2フェーズ変換で `_apply_ruby_auto` と干渉しない）
