@@ -942,9 +942,10 @@ _IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg"}
 # センチネル経由で _apply_ruby_auto のエスケープと干渉しない形で変換する
 _TCY_RE          = re.compile(r"［＃縦中横］(.*?)［＃縦中横終わり］")
 _TCY_SENTINEL_RE = re.compile(r"\x00TCY\x01(.*?)\x00TCYEND\x01")
-# テキストノード内の1-3桁の連続数字（縦中横自動検出）
-# (?<!\d) / (?!\d) で4桁以上（年号等）は対象外とする
-_TCY_DIGITS_RE   = re.compile(r"(?<!\d)\d{1,3}(?!\d)")
+# テキストノード内の1-3桁の連続数字・1-3文字の半角英字（縦中横自動検出）
+# 数字: (?<!\d)/(?!\d) で4桁以上（年号等）は対象外
+# 英字: (?<![A-Za-z])/(?![A-Za-z]) で4文字以上の英単語は対象外
+_TCY_DIGITS_RE   = re.compile(r"(?<!\d)\d{1,3}(?!\d)|(?<![A-Za-z])[A-Za-z]{1,3}(?![A-Za-z])")
 
 
 def _apply_tcy_pre(text: str) -> str:
@@ -1320,7 +1321,7 @@ def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
         f'</div>'
     )
     return _XHTML_TMPL.format(title="奥付", body=body,
-                               html_class="hltr",
+                               html_class="vrtl",
                                epub_type='')
 
 
@@ -1359,7 +1360,7 @@ def _make_toc_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
     toc_str = "\n    ".join(prelim_items + ep_items + back_items)
 
     body = (
-        f'<h1 class="ep-title">{_esc(title)}</h1>\n'
+        f'<h2 class="ep-title">{_esc(title)}</h2>\n'
         f'<ol id="toc">\n'
         f'  {toc_str}\n'
         f'</ol>'
@@ -1388,6 +1389,7 @@ def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
     if cover_fmt:
         prelim_items.append('<li class="toc-prelim"><a href="cover-image.xhtml">表紙</a></li>')
     prelim_items.append('<li class="toc-prelim"><a href="cover.xhtml">タイトルページ</a></li>')
+    prelim_items.append('<li class="toc-prelim"><a href="toc.xhtml">目次</a></li>')
 
     # 本文エピソード
     # group が変わったとき（None→名前付き、または別の名前付き）にフラットな章ヘッダー行を挿入し、

@@ -220,7 +220,7 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 
 縦中横（`.tcy`）対応：
 - 明示タグ `［＃縦中横］TEXT［＃縦中横終わり］` → `<span class="tcy">TEXT</span>`（センチネル2フェーズ変換で `_apply_ruby_auto` と干渉しない）
-- 自動検出：`_auto_tcy_xhtml()` がテキストノード内の**1〜3桁の孤立数字**（前後に数字が隣接しない）を自動でラップ。4桁以上（年号等）は対象外。HTMLエンティティ（`&#160;` 等）は保護する（split パターンに `&#\d+;|&[a-zA-Z]+;` を含め `&` 始まりトークンは素通し）
+- 自動検出：`_auto_tcy_xhtml()` がテキストノード内の**1〜3桁の孤立数字**および**1〜3文字の孤立半角英字**を自動でラップ（`_TCY_DIGITS_RE`）。4桁以上（年号等）・4文字以上の英単語は対象外。HTMLエンティティ（`&#160;` 等）は保護する（split パターンに `&#\d+;|&[a-zA-Z]+;` を含め `&` 始まりトークンは素通し）
 - `page-spread-right` を cover-page の spine itemref に付与（日本語 RTL 書籍の表紙は右ページ）
 
 各 XHTML に `epub:type` を付与。楽天 Kobo・iPad/iOS Kindle リーダー向け互換対応済み。
