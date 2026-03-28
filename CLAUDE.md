@@ -121,13 +121,13 @@ python novel_downloader.py --from-file mynovel.txt
 
 1. **共通ユーティリティ**（行 ~148–）：`normalize_tate`、`aozora_header/colophon/chapter_title`、`safe_filename`、`_apply_output_dir`、`write_file` — 青空文庫書式テキストの共通処理。`_apply_output_dir` は `--output-dir` を全 `run_*` 関数に横断適用するヘルパー。`_show_episode_list` は `--list-only` / `--check-update` 用（`_CHECK_UPDATE_MODE` フラグが立っているときは `_CheckUpdateDone` 例外を送出してエピソードリストを呼び出し元に返す）。`_dry_run_exit(args)` は `--dry-run` 指定時にメッセージを表示して `sys.exit(0)` する（全 `run_*` 関数の `list_only` チェック直後に配置）。`_load_existing_txt(txt_path)` は既存 `.txt` から sections と epub_episodes を復元し `_apply_resume(args, txt_path, target_eps)` が resume ロジックをカプセル化（全 run_* 関数から呼ばれる）。`_extract_url_from_txt(txt_path)` はヘッダーの「底本URL：」行または奥付 URL から元 URL を取得し `--append` / `--check-update` モードで使用する。`_fetch_ogp_cover(page_url)` は `og:image` を一時ファイルにダウンロードして返す（`--use-site-cover` 用、`main()` のディスパッチ直前に呼ばれ finally で削除）。ルビ関連ユーティリティ（`_resolve_ruby_base`、`_ruby_needs_pipe`、`_bs4_prev_text`）もこのセクションに集約。
 
-2. **ePub3 ビルダー**（行 ~436–1981）：stdlib の `zipfile` で ZIP を直接生成。主要関数：
+2. **ePub3 ビルダー**（行 ~436–1981）：stdlib の `zipfile` で ZIP を直接生成。DPFJガイド v1.1.4 準拠で `<html class="vrtl">` / `<html class="hltr">` による組み方向制御を採用（縦組み: ep*.xhtml・cover.xhtml・nav.xhtml、横組み: cover-image.xhtml・colophon.xhtml）。主要関数：
    - `_char_class`（行 659）— 文字の種別（0=漢字・1=ひらがな等）を返す。`々仝〆〇ヶ` は青空文庫規定で漢字（0）扱い
    - `_apply_ruby_auto`（行 798）— 直前の漢字からルビ親文字を自動検出
    - `_jisage_to_int`（行 886）— 全角数字・漢数字の字下げ量を int に変換
    - `_body_lines_to_xhtml`（行 897）— 青空文庫本文を XHTML に変換。見出しタグ（大/中/小見出し）を `midashi-oo`/`midashi-naka`/`midashi-sho` クラスの `<p>` に変換。字下げタグ（`［＃N字下げ］`・`［＃ここからN字下げ］`・`［＃ここから改行天付き、折り返してN字下げ］`）をブロック/単行/ぶら下げインデントの CSS クラスに変換。図タグ（`の図`・`のキャプション付きの図`・`はキャプション`・`ここからキャプション`）を `<figure>/<img>/<figcaption>` に変換
    - `make_cover_image`（行 1700）— JPEG 表紙を生成（Pillow、quality=90）、なければ SVG にフォールバック
-   - `_make_nav_xhtml`（行 1207）— ナビゲーションドキュメントを生成。`episodes` は `list[str]` または `list[dict{"title", "body", "group"?}]` を受け付ける。`group` が設定されたエピソードが新しいグループに切り替わる直前に `<li class="toc-chapter"><span>グループ名</span></li>` を挿入する（フラット構造：ネスト `<ol>` は使わず全エピソードを同一インデントレベルに配置することで、章情報のあるエピソードとないエピソードの混在による段差を回避）
+   - `_make_nav_xhtml`（行 1207）— ナビゲーションドキュメントを生成。`episodes` は `list[str]` または `list[dict{"title", "body", "group"?}]` を受け付ける。`group` が設定されたエピソードが新しいグループに切り替わる直前に `<li class="toc-chapter"><a href="ep{n:04d}.xhtml">グループ名</a></li>` を挿入する（フラット構造：ネスト `<ol>` は使わず全エピソードを同一インデントレベルに配置。**注意**: ePub3 nav の `<li>` は `<a>` か `<span>+<ol>` のみ許可。`<span>` 単独は epubcheck RSC-005 エラーになり Send to Kindle も失敗するため、章ヘッダーはその章の先頭エピソードへの `<a>` リンクとする）
    - `_make_opf`（行 ~1300）— `package.opf` を生成。`synopsis` パラメータを受け取り `<dc:description>` に設定（非空時のみ出力）。`<dc:creator id="creator">` に `<meta refines="#creator" property="role" scheme="marc:relators">aut</meta>` を付与（著者ロール明示）。`dcterms:modified` は `datetime.now(timezone.utc)` で実時刻の ISO 8601 形式（以前は `T00:00:00Z` 固定）
    - `build_epub`（行 ~1868）— XHTML / CSS / OPF を ZIP にまとめて ePub を組み立てる。`images: dict` パラメータで青空文庫 ZIP 内画像を `OEBPS/images/` に埋め込み可能。`synopsis` は `_make_opf` に渡され `dc:description` へ
 
@@ -204,7 +204,14 @@ OEBPS/colophon.xhtml         ← 奥付
 spine 読み順（デフォルト）: cover-image → cover → **nav（目次）** → ep0001…epNNNN → colophon
 `--toc-at-end` 指定時: cover-image → cover → ep0001…epNNNN → colophon → **nav（目次）**
 
-縦書き（`writing-mode: vertical-rl`）。各 XHTML に `epub:type` を付与。楽天 Kobo・iPad/iOS Kindle リーダー向け互換対応済み。
+すべてのコンテンツページ（ep*.xhtml・cover.xhtml・colophon.xhtml）の `<html>` に `style="-epub-writing-mode:vertical-rl; writing-mode:vertical-rl;"` をインライン付与（Send to Kindle 等 CSS を解釈しない環境向けフォールバック）。CSS も `html, body { writing-mode: vertical-rl }` でフォールバック指定。**全ページ縦書き統一が必須**（横書きページを混在させると Amazon Kindle 変換エラーになる）。
+
+縦中横（`.tcy`）対応：
+- 明示タグ `［＃縦中横］TEXT［＃縦中横終わり］` → `<span class="tcy">TEXT</span>`（センチネル2フェーズ変換で `_apply_ruby_auto` と干渉しない）
+- 自動検出：`_auto_tcy_xhtml()` がテキストノード内の**1〜3桁の孤立数字**（前後に数字が隣接しない）を自動でラップ。4桁以上（年号等）は対象外。HTMLエンティティ（`&#160;` 等）は保護する（split パターンに `&#\d+;|&[a-zA-Z]+;` を含め `&` 始まりトークンは素通し）
+- `page-spread-right` を cover-page の spine itemref に付与（日本語 RTL 書籍の表紙は右ページ）
+
+各 XHTML に `epub:type` を付与。楽天 Kobo・iPad/iOS Kindle リーダー向け互換対応済み。
 
 OPF `<metadata>` の主要フィールド：
 - `<dc:creator id="creator">` + `<meta refines="#creator" property="role" scheme="marc:relators">aut</meta>`（著者ロール）

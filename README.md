@@ -339,7 +339,7 @@ OEBPS/css/novel.css
 OEBPS/css/vertical_image.css
 OEBPS/fonts/                 ← 埋め込みフォント（--font 指定時のみ）
 OEBPS/images/cover.jpg       ← 表紙画像（JPG または SVG）
-OEBPS/image-cover.xhtml      ← 画像表紙ページ（epub:type="cover"）
+OEBPS/cover-image.xhtml      ← 画像表紙ページ（epub:type="cover"）
 OEBPS/cover.xhtml            ← タイトル・著者・あらすじページ
 OEBPS/ep0001.xhtml           ← 各話（epub:type="chapter"）
 OEBPS/ep0002.xhtml
