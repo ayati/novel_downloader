@@ -587,6 +587,23 @@ p.midashi-sho {{
   margin: 0.5em 0;
 }}
 
+/* ── 目次（toc.xhtml） ── */
+#toc ol {{
+  list-style: decimal;
+}}
+#toc li.toc-prelim {{
+  list-style: none;
+}}
+#toc li.toc-chapter {{
+  list-style: none;
+  margin-top: 0.8em;
+  margin-bottom: 0.2em;
+}}
+#toc li.toc-chapter > a {{
+  font-weight: bold;
+  font-size: 0.95em;
+}}
+
 /* ── 奥付 ── */
 .colophon {{
   font-size: 0.85em;
@@ -1307,6 +1324,50 @@ def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
                                epub_type='')
 
 
+def _make_toc_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
+    """読者向け目次XHTML（toc.xhtml）を生成する。
+    縦組みで spine に含まれる実際に読む目次ページ。
+    nav.xhtml（RS向け機械読み取り専用）とは別ファイル。
+    episodes: list[str] または list[dict{"title", "body", "group"?}]
+    """
+    def _norm(ep):
+        if isinstance(ep, str):
+            return {"title": ep, "group": None}
+        return {"title": ep.get("title", ""), "group": ep.get("group") or None}
+    normalized = [_norm(ep) for ep in episodes]
+
+    prelim_items = ['<li class="toc-prelim"><a href="cover.xhtml">タイトルページ</a></li>']
+    if cover_fmt:
+        prelim_items.insert(0, '<li class="toc-prelim"><a href="cover-image.xhtml">表紙</a></li>')
+
+    ep_items  = []
+    num       = 0
+    prev_group = None
+    for ep in normalized:
+        num += 1
+        group = ep["group"]
+        if group is not None and group != prev_group:
+            ep_items.append(
+                f'<li class="toc-chapter"><a href="ep{num:04d}.xhtml">{_esc(group)}</a></li>'
+            )
+            prev_group = group
+        ep_items.append(
+            f'<li value="{num}"><a href="ep{num:04d}.xhtml">{_esc(ep["title"])}</a></li>'
+        )
+
+    back_items = ['<li class="toc-prelim"><a href="colophon.xhtml">奥付</a></li>']
+    toc_str = "\n    ".join(prelim_items + ep_items + back_items)
+
+    body = (
+        f'<h1 class="ep-title">{_esc(title)}</h1>\n'
+        f'<ol id="toc">\n'
+        f'  {toc_str}\n'
+        f'</ol>'
+    )
+    return _XHTML_TMPL.format(title="目次", body=body,
+                               html_class="vrtl", epub_type='')
+
+
 def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
     """ナビゲーションドキュメント（nav.xhtml）を生成する。
     表紙・タイトルページ・奥付はナンバリングなしのリンクのみ。
@@ -1361,7 +1422,7 @@ def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
 <nav epub:type="landmarks" id="landmarks">
   <ol>
     <li><a epub:type="cover"       href="{cover_href}">表紙</a></li>
-    <li><a epub:type="toc"         href="nav.xhtml">目次</a></li>
+    <li><a epub:type="toc"         href="toc.xhtml">目次</a></li>
     <li><a epub:type="bodymatter"  href="{body_start}">本文</a></li>
   </ol>
 </nav>"""
@@ -1413,6 +1474,7 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
 
     manifest_items = [
         '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
+        '<item id="toc" href="toc.xhtml" media-type="application/xhtml+xml"/>',
         '<item id="css" href="css/novel.css" media-type="text/css"/>',
     ]
 
@@ -1451,9 +1513,9 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
         spine_items.append('<itemref idref="cover-page" linear="yes" properties="page-spread-right"/>')
     spine_items.append('<itemref idref="cover"/>')
 
-    # 目次を前配置（デフォルト）: 表紙の直後・本文の前
+    # 読者向け目次（toc.xhtml）を前配置（デフォルト）: 表紙の直後・本文の前
     if not toc_at_end:
-        spine_items.append('<itemref idref="nav"/>')
+        spine_items.append('<itemref idref="toc"/>')
 
     for i, _ in enumerate(ep_titles):
         n = i + 1
@@ -1466,9 +1528,11 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     )
     spine_items.append('<itemref idref="colophon"/>')
 
-    # 目次を後配置（--toc-at-end）: 奥付の後
+    # 読者向け目次（toc.xhtml）を後配置（--toc-at-end）: 奥付の後
     if toc_at_end:
-        spine_items.append('<itemref idref="nav"/>')
+        spine_items.append('<itemref idref="toc"/>')
+
+    # nav.xhtml は spine に含めない（properties="nav" のみで RS が認識、DPFJガイド準拠）
 
     # インライン画像（青空文庫 ZIP 内の挿絵等）を manifest に追加
     if inline_images:
@@ -2053,9 +2117,13 @@ def build_epub(
                               inline_images=list(images.keys()) if images else None,
                               synopsis=synopsis))
 
-        # nav.xhtml（episodes をそのまま渡して章/部グループを目次に反映）
+        # nav.xhtml（RS向け機械読み取り専用、spine には linear="no" で含める）
         zf.writestr("OEBPS/nav.xhtml",
                     _make_nav_xhtml(title, episodes, cover_fmt))
+
+        # toc.xhtml（読者向け縦組み目次、spine に linear="yes" で含める）
+        zf.writestr("OEBPS/toc.xhtml",
+                    _make_toc_xhtml(title, episodes, cover_fmt))
 
         # 本文CSS（フォント指定あり時は @font-face を追加）
         zf.writestr("OEBPS/css/novel.css",

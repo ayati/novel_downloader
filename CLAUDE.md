@@ -187,7 +187,8 @@ python novel_downloader.py --from-file mynovel.txt
 mimetype
 META-INF/container.xml
 OEBPS/package.opf
-OEBPS/nav.xhtml              ← 縦書き目次ページ（spine に明示挿入）
+OEBPS/nav.xhtml              ← RS向け機械読み取り専用（spine に含めない、properties="nav"）
+OEBPS/toc.xhtml              ← 読者向け縦組み目次ページ（spine に含める）
 OEBPS/css/novel.css
 OEBPS/css/vertical_image.css ← 画像表紙専用 CSS
 OEBPS/fonts/                 ← 埋め込みフォント（--font 指定時のみ）
@@ -201,8 +202,9 @@ OEBPS/ep0002.xhtml
 OEBPS/colophon.xhtml         ← 奥付
 ```
 
-spine 読み順（デフォルト）: cover-image → cover → **nav（目次）** → ep0001…epNNNN → colophon
-`--toc-at-end` 指定時: cover-image → cover → ep0001…epNNNN → colophon → **nav（目次）**
+spine 読み順（デフォルト）: cover-image → cover → **toc（目次）** → ep0001…epNNNN → colophon
+`--toc-at-end` 指定時: cover-image → cover → ep0001…epNNNN → colophon → **toc（目次）**
+nav.xhtml は spine に含めない（`properties="nav"` のみで RS が認識、DPFJガイド準拠）
 
 DPFJガイド v1.1.4 準拠の組み方向制御：`<html class="vrtl/hltr">` で切り替え。
 
@@ -229,7 +231,11 @@ OPF `<metadata>` の主要フィールド：
 - `<meta property="dcterms:modified">` — `datetime.now(timezone.utc)` による実時刻 ISO 8601（例: `2026-03-28T03:34:39Z`）
 - `<meta name="primary-writing-mode" content="horizontal-rl"/>` — iPad/iOS Kindle 縦書き対応
 
-nav.xhtml のエピソードリストは、`epub_episodes` の `"group"` フィールドが切り替わるたびに `<li class="toc-chapter">` の章ヘッダー行をフラットに挿入する。全エピソードは同一インデントレベル（ネスト `<ol>` なし）。
+目次は2ファイル構成：
+- `toc.xhtml`（`_make_toc_xhtml()`）: 読者が読む縦組み目次ページ。spine に含まれ `_XHTML_TMPL` で生成（`class="vrtl"`）。`epub:type` なし。
+- `nav.xhtml`（`_make_nav_xhtml()`）: RS向け機械読み取り専用（`properties="nav"`）。spine に含めない。landmarks の `epub:type="toc"` href は `toc.xhtml` を指す。
+
+両ファイルとも `epub_episodes` の `"group"` フィールドが切り替わるたびに `<li class="toc-chapter"><a href="ep{n:04d}.xhtml">グループ名</a></li>` を挿入（フラット構造、ネスト `<ol>` なし）。
 
 ## 主な規約
 
