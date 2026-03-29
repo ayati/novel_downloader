@@ -692,6 +692,40 @@ figcaption.caption {{
   text-align: center;
   margin-top: 0.3em;
 }}
+
+/* ── 横書き時の字下げ上書き（html.hltr スコープ） ── */
+/* 縦書きでは padding-top が行送り方向の字下げになるが、横書きでは padding-left を使う */
+html.hltr div.aozora-indent-1em  {{ padding-top: 0; padding-left: 1em;  }}
+html.hltr div.aozora-indent-2em  {{ padding-top: 0; padding-left: 2em;  }}
+html.hltr div.aozora-indent-3em  {{ padding-top: 0; padding-left: 3em;  }}
+html.hltr div.aozora-indent-4em  {{ padding-top: 0; padding-left: 4em;  }}
+html.hltr div.aozora-indent-5em  {{ padding-top: 0; padding-left: 5em;  }}
+html.hltr div.aozora-indent-6em  {{ padding-top: 0; padding-left: 6em;  }}
+html.hltr div.aozora-indent-7em  {{ padding-top: 0; padding-left: 7em;  }}
+html.hltr div.aozora-indent-8em  {{ padding-top: 0; padding-left: 8em;  }}
+html.hltr div.aozora-indent-9em  {{ padding-top: 0; padding-left: 9em;  }}
+html.hltr div.aozora-indent-10em {{ padding-top: 0; padding-left: 10em; }}
+
+html.hltr div.aozora-hanging-1em  {{ padding-top: 0; padding-left: 1em;  }}
+html.hltr div.aozora-hanging-1em  > p.body-line {{ text-indent: -1em;  }}
+html.hltr div.aozora-hanging-2em  {{ padding-top: 0; padding-left: 2em;  }}
+html.hltr div.aozora-hanging-2em  > p.body-line {{ text-indent: -2em;  }}
+html.hltr div.aozora-hanging-3em  {{ padding-top: 0; padding-left: 3em;  }}
+html.hltr div.aozora-hanging-3em  > p.body-line {{ text-indent: -3em;  }}
+html.hltr div.aozora-hanging-4em  {{ padding-top: 0; padding-left: 4em;  }}
+html.hltr div.aozora-hanging-4em  > p.body-line {{ text-indent: -4em;  }}
+html.hltr div.aozora-hanging-5em  {{ padding-top: 0; padding-left: 5em;  }}
+html.hltr div.aozora-hanging-5em  > p.body-line {{ text-indent: -5em;  }}
+html.hltr div.aozora-hanging-6em  {{ padding-top: 0; padding-left: 6em;  }}
+html.hltr div.aozora-hanging-6em  > p.body-line {{ text-indent: -6em;  }}
+html.hltr div.aozora-hanging-7em  {{ padding-top: 0; padding-left: 7em;  }}
+html.hltr div.aozora-hanging-7em  > p.body-line {{ text-indent: -7em;  }}
+html.hltr div.aozora-hanging-8em  {{ padding-top: 0; padding-left: 8em;  }}
+html.hltr div.aozora-hanging-8em  > p.body-line {{ text-indent: -8em;  }}
+html.hltr div.aozora-hanging-9em  {{ padding-top: 0; padding-left: 9em;  }}
+html.hltr div.aozora-hanging-9em  > p.body-line {{ text-indent: -9em;  }}
+html.hltr div.aozora-hanging-10em {{ padding-top: 0; padding-left: 10em; }}
+html.hltr div.aozora-hanging-10em > p.body-line {{ text-indent: -10em; }}
 """
 
 _XHTML_TMPL = """\
@@ -1010,7 +1044,7 @@ def _jisage_to_int(s: str) -> int:
     return max(1, n) if n else 1
 
 
-def _body_lines_to_xhtml(text: str) -> str:
+def _body_lines_to_xhtml(text: str, horizontal: bool = False) -> str:
     """
     本文テキスト（改行区切り）をXHTML要素列に変換する。
 
@@ -1196,11 +1230,15 @@ def _body_lines_to_xhtml(text: str) -> str:
         result.append(f'<p class="illustration">{pending_fig_html}</p>')
 
     # 縦中横センチネル→<span class="tcy"> 変換、および2-3桁数字の自動縦中横
+    # 横書きモードでは縦中横は不要なのでスキップ
+    if horizontal:
+        return "\n".join(_apply_tcy_post(r) for r in result)
     return "\n".join(_auto_tcy_xhtml(_apply_tcy_post(r)) for r in result)
 
 
 def _make_cover_xhtml(title: str, author: str, synopsis: str,
-                      source_url: str = "", site_name: str = "") -> str:
+                      source_url: str = "", site_name: str = "",
+                      horizontal: bool = False) -> str:
     """テキスト表紙XHTMLを生成する。底本URLをハイパーリンク付きで掲載する。"""
     syn_html = ""
     if synopsis:
@@ -1227,7 +1265,7 @@ def _make_cover_xhtml(title: str, author: str, synopsis: str,
         f'{syn_html}'
     )
     return _XHTML_TMPL.format(title=_esc(title), body=body,
-                               html_class="vrtl",
+                               html_class="hltr" if horizontal else "vrtl",
                                epub_type='')
 
 
@@ -1293,18 +1331,20 @@ def _make_cover_image_xhtml(title: str, fmt: str = "jpg") -> str:
 """
 
 
-def _make_episode_xhtml(ep_title: str, body_text: str) -> str:
+def _make_episode_xhtml(ep_title: str, body_text: str,
+                        horizontal: bool = False) -> str:
     """1話分のXHTMLを生成する。"""
     body = (
         f'<h2 class="ep-title">{_esc(ep_title)}</h2>\n'
-        + _body_lines_to_xhtml(body_text)
+        + _body_lines_to_xhtml(body_text, horizontal=horizontal)
     )
     return _XHTML_TMPL.format(title=_esc(ep_title), body=body,
-                               html_class="vrtl",
+                               html_class="hltr" if horizontal else "vrtl",
                                epub_type='')
 
 
-def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
+def _make_colophon_xhtml(title: str, source_url: str, site_name: str,
+                         horizontal: bool = False) -> str:
     """奥付XHTMLを生成する。底本URLはハイパーリンクとして出力する。"""
     today = date.today().strftime("%Y年%m月%d日")
     url_link = (
@@ -1321,11 +1361,12 @@ def _make_colophon_xhtml(title: str, source_url: str, site_name: str) -> str:
         f'</div>'
     )
     return _XHTML_TMPL.format(title="奥付", body=body,
-                               html_class="vrtl",
+                               html_class="hltr" if horizontal else "vrtl",
                                epub_type='')
 
 
-def _make_toc_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
+def _make_toc_xhtml(title: str, episodes: list, cover_fmt: str = "",
+                    horizontal: bool = False) -> str:
     """読者向け目次XHTML（toc.xhtml）を生成する。
     縦組みで spine に含まれる実際に読む目次ページ。
     nav.xhtml（RS向け機械読み取り専用）とは別ファイル。
@@ -1366,10 +1407,12 @@ def _make_toc_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
         f'</ol>'
     )
     return _XHTML_TMPL.format(title="目次", body=body,
-                               html_class="vrtl", epub_type='')
+                               html_class="hltr" if horizontal else "vrtl",
+                               epub_type='')
 
 
-def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
+def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "",
+                    horizontal: bool = False) -> str:
     """ナビゲーションドキュメント（nav.xhtml）を生成する。
     表紙・タイトルページ・奥付はナンバリングなしのリンクのみ。
     本文エピソードは 1 から始まる番号付きリストで表示し、
@@ -1429,13 +1472,14 @@ def _make_nav_xhtml(title: str, episodes: list, cover_fmt: str = "") -> str:
   </ol>
 </nav>"""
 
+    _nav_class = "hltr" if horizontal else "vrtl"
     return f"""\
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml"
       xmlns:epub="http://www.idpf.org/2007/ops"
       xml:lang="ja" lang="ja"
-      class="vrtl">
+      class="{_nav_class}">
 <head><meta charset="UTF-8"/><title>{_esc(title)}</title>
 <link rel="stylesheet" type="text/css" href="css/novel.css"/>
 <style>
@@ -1462,7 +1506,8 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
               cover_fmt: str = "", font_filename: str = "",
               toc_at_end: bool = False,
               inline_images: list = None,
-              synopsis: str = "") -> str:
+              synopsis: str = "",
+              horizontal: bool = False) -> str:
     """
     OPF（package.opf）を生成する。
     cover_fmt: "png" | "svg" | "" (表紙画像なし)
@@ -1512,7 +1557,10 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
 
     spine_items = []
     if cover_fmt:
-        spine_items.append('<itemref idref="cover-page" linear="yes" properties="page-spread-right"/>')
+        # 縦書き（RTL）は表紙を右ページに固定。横書き（LTR）はページスプレッド指定不要
+        cover_spread = ('' if horizontal
+                        else ' properties="page-spread-right"')
+        spine_items.append(f'<itemref idref="cover-page" linear="yes"{cover_spread}/>')
     spine_items.append('<itemref idref="cover"/>')
 
     # 読者向け目次（toc.xhtml）を前配置（デフォルト）: 表紙の直後・本文の前
@@ -1553,6 +1601,12 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     spine_str    = "\n    ".join(spine_items)
     cover_meta   = ('\n    <meta name="cover" content="cover-image"/>' if cover_fmt else "")
     desc_meta    = (f"\n    <dc:description>{_esc(synopsis)}</dc:description>" if synopsis else "")
+    # 縦書き: iPad/iOS Kindle 縦書き対応のため primary-writing-mode を明示。横書きは不要
+    writing_mode_meta = (
+        "" if horizontal
+        else '\n    <meta name="primary-writing-mode" content="horizontal-rl"/>'
+    )
+    page_dir = "ltr" if horizontal else "rtl"
 
     return f"""\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1571,15 +1625,14 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     <meta property="dcterms:modified">{now_iso}</meta>{cover_meta}
     <meta property="rendition:layout">reflowable</meta>
     <meta property="rendition:orientation">auto</meta>
-    <meta property="rendition:spread">none</meta>
-    <meta name="primary-writing-mode" content="horizontal-rl"/>
+    <meta property="rendition:spread">none</meta>{writing_mode_meta}
   </metadata>
 
   <manifest>
     {manifest_str}
   </manifest>
 
-  <spine page-progression-direction="rtl">
+  <spine page-progression-direction="{page_dir}">
     {spine_str}
   </spine>
 
@@ -2042,9 +2095,10 @@ def build_epub(
     font_path: str = "",
     toc_at_end: bool = False,
     images: dict = None,     # {"filename.png": bytes} — 本文中のインライン画像
+    horizontal: bool = False,  # True: 横書きePub3を生成
 ):
     """
-    縦書きePub3ファイルを生成する。
+    ePub3ファイルを生成する。horizontal=True で横書き、False（デフォルト）で縦書き。
 
     ePub3構造（画像表紙あり）:
       mimetype
@@ -2117,15 +2171,18 @@ def build_epub(
                               font_filename=font_filename,
                               toc_at_end=toc_at_end,
                               inline_images=list(images.keys()) if images else None,
-                              synopsis=synopsis))
+                              synopsis=synopsis,
+                              horizontal=horizontal))
 
         # nav.xhtml（RS向け機械読み取り専用、spine には linear="no" で含める）
         zf.writestr("OEBPS/nav.xhtml",
-                    _make_nav_xhtml(title, episodes, cover_fmt))
+                    _make_nav_xhtml(title, episodes, cover_fmt,
+                                    horizontal=horizontal))
 
-        # toc.xhtml（読者向け縦組み目次、spine に linear="yes" で含める）
+        # toc.xhtml（読者向け目次、spine に linear="yes" で含める）
         zf.writestr("OEBPS/toc.xhtml",
-                    _make_toc_xhtml(title, episodes, cover_fmt))
+                    _make_toc_xhtml(title, episodes, cover_fmt,
+                                    horizontal=horizontal))
 
         # 本文CSS（フォント指定あり時は @font-face を追加）
         zf.writestr("OEBPS/css/novel.css",
@@ -2144,12 +2201,14 @@ def build_epub(
         # テキスト表紙（タイトル・著者・あらすじ）→ spine 2ページ目
         zf.writestr("OEBPS/cover.xhtml",
                     _make_cover_xhtml(title, author, synopsis,
-                                      source_url=source_url, site_name=site_name))
+                                      source_url=source_url, site_name=site_name,
+                                      horizontal=horizontal))
 
         # 各話
         for i, ep in enumerate(episodes):
             zf.writestr(f"OEBPS/ep{i+1:04d}.xhtml",
-                        _make_episode_xhtml(ep["title"], ep["body"]))
+                        _make_episode_xhtml(ep["title"], ep["body"],
+                                            horizontal=horizontal))
 
         # インライン画像（青空文庫 ZIP 内の挿絵等）
         if images:
@@ -2158,7 +2217,8 @@ def build_epub(
 
         # 奥付
         zf.writestr("OEBPS/colophon.xhtml",
-                    _make_colophon_xhtml(title, source_url, site_name))
+                    _make_colophon_xhtml(title, source_url, site_name,
+                                         horizontal=horizontal))
 
 
 # ══════════════════════════════════════════
@@ -2733,7 +2793,8 @@ def run_narou(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
     if resume_from == 1:
@@ -3171,7 +3232,8 @@ def run_kakuyomu(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -3498,7 +3560,8 @@ def run_alphapolis(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -3805,7 +3868,8 @@ def run_estar(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -4073,7 +4137,8 @@ def run_hameln(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -4392,7 +4457,8 @@ def run_neopage(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -4656,7 +4722,8 @@ def run_solispia(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -4929,7 +4996,8 @@ def run_noichigo(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -5126,7 +5194,8 @@ def run_berrys(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -5333,7 +5402,8 @@ def run_monogatary(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -5536,7 +5606,8 @@ def run_novema(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -5772,7 +5843,8 @@ def run_novelup(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -5988,7 +6060,8 @@ def run_sutekibungei(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -6234,7 +6307,8 @@ def run_days(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -6505,7 +6579,8 @@ def run_genpaku(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -6838,7 +6913,8 @@ def run_hyuki(args):
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
-                   toc_at_end=getattr(args, "toc_at_end", False))
+                   toc_at_end=getattr(args, "toc_at_end", False),
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -7155,7 +7231,8 @@ def run_aozora(args):
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
-                   images=images or None)
+                   images=images or None,
+                   horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -7316,7 +7393,8 @@ def run_from_file(args):
                "", "ローカルファイル", episodes, cover_bg=cover_bg,
                cover_image_path=getattr(args, "cover_image", None) or "",
                font_path=getattr(args, "font", "") or "",
-               toc_at_end=getattr(args, "toc_at_end", False))
+               toc_at_end=getattr(args, "toc_at_end", False),
+               horizontal=getattr(args, "horizontal", False))
     print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -8411,6 +8489,10 @@ def main():
                         help="Kobo端末向けにePubの拡張子を .kepub.epub にする。"
                              "Kobo Clara / Kobo Sage 等のKobo専用リーダーで"
                              "縦書きや目次を正しく処理させるために使用する")
+    parser.add_argument("--horizontal", dest="horizontal", action="store_true",
+                        help="横書きePub3を生成する。縦中横（tcy）処理をスキップし、"
+                             "全ページを横組み（html.hltr）で出力する。"
+                             "page-progression-direction は ltr に設定される")
     parser.add_argument("--append", dest="append_file", default=None, metavar="FILE",
                         help="既存の青空文庫書式 .txt ファイルを指定し、続きのエピソードを追記する。"
                              "ファイル内の「底本URL：」からサイトと URL を自動検出し、"
