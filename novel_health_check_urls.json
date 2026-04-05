@@ -1,0 +1,94 @@
+{
+  "_comment": [
+    "novel_health_check.py が使用するテスト用URLの設定ファイル。",
+    "サイトアップデートでURLが無効になった場合は、各サイトのランキング上位等の",
+    "安定した人気作品のURLに差し替えてください。",
+    "url が空文字列のサイトはスキップされます。",
+    "設定済みURLは 2026-04-05 時点で --dry-run による動作確認済みです。"
+  ],
+  "narou": {
+    "name": "小説家になろう",
+    "url": "https://ncode.syosetu.com/n0022gd/",
+    "note": "水属性の魔法使い（935話、連載中）。無効になった場合は https://yomou.syosetu.com/rank/list/type/monthly_total/ から再選定"
+  },
+  "kakuyomu": {
+    "name": "カクヨム",
+    "url": "https://kakuyomu.jp/works/822139846234329769",
+    "note": "ハズレスキル「小箱」（45話、連載中、2026/04/05更新）。無効になった場合は https://kakuyomu.jp/rankings から再選定"
+  },
+  "alphapolis": {
+    "name": "アルファポリス",
+    "url": "https://www.alphapolis.co.jp/novel/243223524/173169133",
+    "note": "異世界転生！ハイハイからの倍人生（252話、連載中）。無効になった場合は https://www.alphapolis.co.jp/novel/ranking から再選定"
+  },
+  "estar": {
+    "name": "エブリスタ",
+    "url": "https://estar.jp/novels/26384598",
+    "note": "緑の手のキトル（148ページ、連載中）。無効になった場合は https://estar.jp/rankings から再選定"
+  },
+  "noichigo": {
+    "name": "野いちご",
+    "url": "https://www.no-ichigo.jp/book/n1179797",
+    "note": "あの花が咲く丘で、君とまた出会えたら。（11章 220p、完結・書籍化作品、汐見夏衛）。無効になった場合は https://www.no-ichigo.jp/read/top/top_ranking から再選定"
+  },
+  "hameln": {
+    "name": "ハーメルン",
+    "url": "https://syosetu.org/novel/261939/",
+    "note": "気儘に生きた転生馬物語（62話、2026/02更新）。playwright が必要（pip install playwright && python -m playwright install chromium）。未インストール時は自動スキップ。無効になった場合は https://syosetu.org/top/ranked/ から再選定"
+  },
+  "novema": {
+    "name": "ノベマ！",
+    "url": "https://novema.jp/book/n1640364",
+    "note": "未完成な僕たちは、明日を描く。（13話、完結、水月つゆ）。無効になった場合は https://novema.jp/ranking から再選定"
+  },
+  "novelup": {
+    "name": "ノベルアップ＋",
+    "url": "https://novelup.plus/story/805623797",
+    "note": "意味がわかると怖ーい話（24話、連載中、鼎ロア）。無効になった場合は https://novelup.plus/ranking から再選定"
+  },
+  "sutekibungei": {
+    "name": "ステキブンゲイ",
+    "url": "https://sutekibungei.com/novels/3e1e7f05-cf51-4e00-84d1-6f2dc37fefe2",
+    "note": "最短距離（14話、葉方萌生）。無効になった場合は https://sutekibungei.com/ranking から再選定"
+  },
+  "days": {
+    "name": "NOVEL DAYS",
+    "url": "https://novel.daysneo.com/works/6334ad91c5383b45831243333e2dbc30.html",
+    "note": "早退届（678話、連載中、2026/04/03更新、成瀬川るるせ）。無効になった場合は https://novel.daysneo.com/rankings/ から再選定"
+  },
+  "neopage": {
+    "name": "ネオページ",
+    "url": "https://www.neopage.com/book/344801882003007000",
+    "note": "俺だけ毎日チュートリアルで報酬無双（165話、2025/11更新、宍戸亮）。章リスト全取得のためdry-runに60〜90秒かかる。--timeout 120 推奨。無効になった場合は https://www.neopage.com/ranking から再選定"
+  },
+  "solispia": {
+    "name": "ソリスピア",
+    "url": "https://solispia.com/title/597",
+    "note": "銀杖のティスタ（101話、連載中、2026/03/31更新、マー）。無効になった場合は https://solispia.com/rankings/all/weekly/long-novels から再選定"
+  },
+  "berrys": {
+    "name": "berry's cafe",
+    "url": "https://www.berrys-cafe.jp/book/n1777895",
+    "note": "冷徹社長との出張一夜は溺愛の始まりでした（10話、2026/03/22更新、日下奈緒）。無効になった場合は https://www.berrys-cafe.jp/ranking から再選定"
+  },
+  "monogatary": {
+    "name": "monogatary.com",
+    "url": "https://monogatary.com/story/88714",
+    "note": "マウンティングアプリ（1話、カミツレ）。monogataryは短編単話作品が多い。無効になった場合は https://monogatary.com/stories/popularity から再選定"
+  },
+  "aozora": {
+    "name": "青空文庫",
+    "url": "https://www.aozora.gr.jp/cards/000035/card1567.html",
+    "note": "走れメロス（太宰治）。ZIPダウンロードが発生するため他サイトより若干遅い。無効になった場合は https://www.aozora.gr.jp/index_pages/person35.html から再選定"
+  },
+  "genpaku": {
+    "name": "プロジェクト杉田玄白",
+    "url": "https://www.genpaku.org/alice02/alice02j.html",
+    "note": "鏡の国のアリス（15章、ルイス・キャロル、山形浩生訳）。無効になった場合は https://www.genpaku.org/sugitalist01.html から再選定"
+  },
+  "hyuki": {
+    "name": "結城浩翻訳の部屋",
+    "url": "https://www.hyuki.com/trans/leaf",
+    "note": "最後の一枚の葉（1話、O.ヘンリー、結城浩訳）。無効になった場合は https://www.hyuki.com/trans/ から再選定"
+  }
+}

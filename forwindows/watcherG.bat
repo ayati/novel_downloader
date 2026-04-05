@@ -18,7 +18,7 @@ set "DOWNLOADER=G:\マイドライブ\novel_downloader.exe"
 
 rem オプション定義
 set "OPT_OUTPUT=--output-dir "G:\マイドライブ\epub""
-set "OPT_FONT=--font "G:\マイドライブ\fonts\AyatiShowaSerif-Regular.ttf""
+set "OPT_FONT=--font "G:\マイドライブ\fonts\AyatiRoundedSerif.ttf""
 set "OPT_FORMAT=--kobo"
 set "OPT_EXTRA=--use-site-cover"
 

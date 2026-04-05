@@ -95,6 +95,8 @@ import re
 import os
 import io
 import json
+import contextlib
+import tempfile
 import uuid
 import zipfile
 import argparse
@@ -8051,8 +8053,6 @@ def _follow_one_redirect(url: str) -> tuple[str, str | None]:
 def _fetch_ogp_cover(page_url: str) -> str:
     """作品ページの og:image をダウンロードして一時ファイルパスを返す。
     取得失敗時は "" を返す。呼び出し元が一時ファイルを削除すること。"""
-    import tempfile
-
     # ── ページ HTML 取得 ──────────────────────────────────────────
     html = ""
     try:
@@ -8629,6 +8629,391 @@ def _append_one(txt_path: str, base_args: argparse.Namespace) -> dict:
     return result
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  ウォッチモード（--watch）
+# ══════════════════════════════════════════════════════════════════════
+
+def _parse_watch_list(path: str) -> list:
+    """ウォッチリストファイルをパースして [{url, title, auto}] を返す。
+
+    フォーマット:
+        # コメント（行頭・行末どちらもOK）
+        https://...  | title=表示名 | auto=true
+        https://...  | auto=false
+    """
+    entries = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError as e:
+        raise SystemExit(f"[エラー] ウォッチリストを読み込めません: {e}")
+
+    for lineno, raw in enumerate(lines, 1):
+        # インラインコメント除去（# より前を使う）
+        line = raw.split("#")[0].strip()
+        if not line:
+            continue
+
+        parts = [p.strip() for p in line.split("|")]
+        url = parts[0]
+        if not url.startswith("http"):
+            print(f"[警告] {Path(path).name}:{lineno}: URL として認識できません（スキップ）: {url!r}")
+            continue
+
+        entry = {"url": url, "title": None, "auto": None}
+        for field in parts[1:]:
+            if "=" not in field:
+                continue
+            key, _, val = field.partition("=")
+            key = key.strip().lower()
+            val = val.strip()
+            if key == "title":
+                entry["title"] = val or None
+            elif key == "auto":
+                entry["auto"] = val.lower() in ("true", "1", "yes")
+        entries.append(entry)
+
+    return entries
+
+
+def _load_watch_cache(path: str) -> dict:
+    """ウォッチキャッシュ JSON を読み込む。ファイルがなければ空辞書を返す。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[警告] キャッシュ読み込み失敗（新規扱い）: {e}")
+        return {}
+
+
+def _save_watch_cache(path: str, data: dict) -> None:
+    """ウォッチキャッシュをアトミックに書き込む（一時ファイル → rename）。"""
+    dir_ = os.path.dirname(os.path.abspath(path)) or "."
+    try:
+        fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        print(f"[警告] キャッシュ書き込み失敗: {e}")
+
+
+def _check_update_url(url: str, n_cached: int, delay: float) -> dict:
+    """URL 直接指定でエピソード数をチェックし結果辞書を返す。
+
+    _check_update_one の .txt ファイルなし版。
+    n_cached = 0 のとき「初回登録」として status="init" を返す。
+
+    Returns:
+        {"url": str, "title": str, "author": str,
+         "total": int, "new": int, "new_titles": list[str],
+         "status": "updated"|"uptodate"|"init"|"error",
+         "error": str}
+    """
+    result = {
+        "url": url,
+        "title": "", "author": "",
+        "total": 0, "new": 0, "new_titles": [],
+        "status": "error", "error": "",
+    }
+
+    try:
+        expanded = expand_short_url(url)
+        site     = detect_site(expanded)
+        norm_url = normalize_url(expanded, site)
+    except Exception as e:
+        result["error"] = f"URL 解析失敗: {e}"
+        return result
+
+    entry = _SITE_DISPATCH.get(site)
+    if not entry:
+        result["error"] = f"未対応サイト: {site}"
+        return result
+
+    label, default_color, runner = entry
+
+    fake_args = argparse.Namespace(
+        url=norm_url, output=None, delay=delay,
+        resume=None, start=1, end=None,
+        encoding="utf-8", newline="os",
+        no_epub=True, list_only=True,
+        cover_bg=default_color,
+        from_file=None, from_epub=None,
+        title_override=None, author_override=None,
+        cover_image=None, use_site_cover=False,
+        font=None, toc_at_end=False,
+        output_dir=None, kobo=False, horizontal=False,
+        append_file=None, check_update_file=None,
+        dry_run=False,
+    )
+
+    global _CHECK_UPDATE_MODE
+    _CHECK_UPDATE_MODE = True
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            runner(fake_args)
+        result["error"] = "エピソード一覧を取得できませんでした"
+    except _CheckUpdateDone as cu:
+        n_total = len(cu.ep_titles)
+        result["title"]  = cu.title
+        result["author"] = cu.author
+        result["total"]  = n_total
+        if n_cached == 0:
+            # 初回: 全話数をキャッシュに登録するだけ、通知しない
+            result["status"] = "init"
+        else:
+            n_new = n_total - n_cached
+            result["new"]        = max(0, n_new)
+            result["new_titles"] = cu.ep_titles[n_cached:] if n_new > 0 else []
+            result["status"]     = "updated" if n_new > 0 else "uptodate"
+    except SystemExit:
+        result["error"] = "エピソード一覧を取得できませんでした"
+    except Exception as e:
+        result["error"] = str(e)
+    finally:
+        _CHECK_UPDATE_MODE = False
+
+    return result
+
+
+def _find_txt_by_url(directory: str, url: str) -> str:
+    """ディレクトリ内の .txt から「底本URL：」が url と一致するものを返す。なければ ""。"""
+    dir_path = Path(directory)
+    if not dir_path.is_dir():
+        return ""
+    norm = url.rstrip("/")
+    for txt in sorted(dir_path.glob("*.txt")):
+        found_url = _extract_url_from_txt(str(txt))
+        if found_url and found_url.rstrip("/") == norm:
+            return str(txt)
+    return ""
+
+
+def _notify_stdout(notify_results: list) -> None:
+    """新着・エラーを標準出力に出力する。新着なし・エラーなしなら何も出力しない。"""
+    for r in notify_results:
+        if r["status"] == "updated":
+            label = r.get("list_title") or r.get("title") or r["url"]
+            print(f"[NEW] {label} (+{r['new']}話)")
+            for t in r["new_titles"]:
+                print(f"  + {t}")
+        elif r["status"] == "error":
+            label = r.get("list_title") or r["url"]
+            print(f"[ERROR] {label}")
+            print(f"  ! {r['error']}")
+
+
+def _notify_webhook(notify_results: list, webhook_url: str, fmt: str = "discord") -> None:
+    """新着エントリをまとめて Webhook に 1 回 POST する。
+
+    fmt="discord" → {"content": "..."}  （Discord Webhook 互換）
+    fmt="slack"   → {"text": "..."}     （Slack Incoming Webhook 互換）
+    """
+    lines = []
+    for r in notify_results:
+        if r["status"] == "updated":
+            label = r.get("list_title") or r.get("title") or r["url"]
+            lines.append(f"【{label}】+{r['new']}話")
+            for t in r["new_titles"][:5]:
+                lines.append(f"  {t}")
+            if r["new"] > 5:
+                lines.append(f"  … 他 {r['new'] - 5} 話")
+    for r in notify_results:
+        if r["status"] == "error":
+            label = r.get("list_title") or r["url"]
+            lines.append(f"[ERROR] {label}: {r['error']}")
+
+    if not lines:
+        return
+
+    text = "\n".join(lines)
+    payload = {"text": text} if fmt == "slack" else {"content": text}
+    body = json.dumps(payload).encode("utf-8")
+    req = Request(
+        webhook_url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "novel-downloader-watch/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=15) as resp:
+            if resp.status >= 400:
+                print(f"[警告] Webhook 送信失敗: HTTP {resp.status}")
+    except Exception as e:
+        print(f"[警告] Webhook 送信失敗: {e}")
+
+
+def run_watch(args) -> int:
+    """--watch モードのメイン処理。終了コードを返す。"""
+    import datetime as _dt
+
+    watch_file   = args.watch
+    cache_file   = getattr(args, "watch_cache", ".novel_watch_cache.json")
+    notify_mode  = getattr(args, "notify", "stdout")
+    webhook_url  = getattr(args, "webhook_url", None)
+    webhook_fmt  = getattr(args, "webhook_format", "discord")
+    auto_default = getattr(args, "watch_auto_default", False)
+    output_dir   = getattr(args, "output_dir", None) or "."
+
+    entries = _parse_watch_list(watch_file)
+    if not entries:
+        print("[情報] ウォッチリストにエントリがありません。")
+        return 0
+
+    cache = _load_watch_cache(cache_file)
+    notify_results = []
+    has_error = False
+
+    for i, entry in enumerate(entries):
+        raw_url    = entry["url"]
+        list_title = entry["title"]
+        auto       = entry["auto"] if entry["auto"] is not None else auto_default
+
+        # URL 正規化（キャッシュキーの確定）
+        try:
+            expanded = expand_short_url(raw_url)
+            site     = detect_site(expanded)
+            norm_url = normalize_url(expanded, site)
+        except Exception as e:
+            r = {
+                "url": raw_url, "list_title": list_title,
+                "title": "", "author": "",
+                "total": 0, "new": 0, "new_titles": [],
+                "status": "error", "error": str(e),
+            }
+            notify_results.append(r)
+            has_error = True
+            if i < len(entries) - 1:
+                time.sleep(args.delay)
+            continue
+
+        cached   = cache.get(norm_url, {})
+        n_cached = cached.get("last_episode", 0)
+
+        result = _check_update_url(norm_url, n_cached, args.delay)
+        result["list_title"] = list_title
+        now_iso = _dt.datetime.now().replace(microsecond=0).isoformat()
+
+        if result["status"] == "error":
+            has_error = True
+            if norm_url in cache:
+                cache[norm_url]["last_checked"] = now_iso
+            _save_watch_cache(cache_file, cache)
+            notify_results.append(result)
+
+        elif result["status"] == "init":
+            # 初回: キャッシュ登録のみ、通知・自動DL なし
+            display = list_title or result["title"] or norm_url
+            last_title = result.get("new_titles", [""])[-1] if result.get("new_titles") else ""
+            print(f"[INIT] {display}: 全{result['total']}話をキャッシュに登録しました"
+                  f"（次回チェックから新着を通知します）")
+            cache[norm_url] = {
+                "title":        result["title"],
+                "last_episode": result["total"],
+                "last_title":   last_title,
+                "last_checked": now_iso,
+                "output_file":  None,
+            }
+            _save_watch_cache(cache_file, cache)
+
+        elif result["status"] == "uptodate":
+            cache.setdefault(norm_url, {})
+            cache[norm_url]["last_checked"] = now_iso
+            _save_watch_cache(cache_file, cache)
+
+        else:  # updated
+            notify_results.append(result)
+
+            last_title = result["new_titles"][-1] if result["new_titles"] else cached.get("last_title", "")
+            cache.setdefault(norm_url, {})
+            cache[norm_url].update({
+                "title":        result["title"],
+                "last_episode": result["total"],
+                "last_title":   last_title,
+                "last_checked": now_iso,
+            })
+
+            # ── 自動ダウンロード ──────────────────────────────────────
+            if auto:
+                existing_txt = cache[norm_url].get("output_file") or ""
+                if existing_txt and not Path(existing_txt).exists():
+                    existing_txt = ""  # ファイルが消えた場合は再探索
+
+                if not existing_txt:
+                    existing_txt = _find_txt_by_url(output_dir, norm_url)
+
+                if existing_txt:
+                    print(f"\n[AUTO-DL] {result['title']} — 追記: {Path(existing_txt).name}")
+                    ar = _append_one(existing_txt, args)
+                    if ar["status"] == "ok":
+                        cache[norm_url]["output_file"] = str(Path(existing_txt).resolve())
+                        print(f"  → {ar['added']} 話追記完了")
+                    else:
+                        print(f"  → 追記失敗: {ar['error']}")
+                        has_error = True
+                else:
+                    # 既存 .txt なし → 新規フルダウンロード
+                    print(f"\n[AUTO-DL] {result['title']} — 新規ダウンロード")
+                    dl_entry = _SITE_DISPATCH.get(site)
+                    if dl_entry:
+                        _, default_color, runner = dl_entry
+                        fresh_args = argparse.Namespace(
+                            url=norm_url, output=None, delay=args.delay,
+                            resume=None, start=1, end=None,
+                            encoding=getattr(args, "encoding", "utf-8"),
+                            newline=getattr(args, "newline", "os"),
+                            no_epub=getattr(args, "no_epub", False),
+                            list_only=False,
+                            cover_bg=default_color,
+                            from_file=None, from_epub=None,
+                            title_override=None, author_override=None,
+                            cover_image=getattr(args, "cover_image", None),
+                            use_site_cover=getattr(args, "use_site_cover", False),
+                            font=getattr(args, "font", None),
+                            toc_at_end=getattr(args, "toc_at_end", False),
+                            output_dir=output_dir if output_dir != "." else None,
+                            kobo=getattr(args, "kobo", False),
+                            horizontal=getattr(args, "horizontal", False),
+                            append_file=None, check_update_file=None,
+                            dry_run=False,
+                        )
+                        try:
+                            runner(fresh_args)
+                            found = _find_txt_by_url(output_dir, norm_url)
+                            if found:
+                                cache[norm_url]["output_file"] = str(Path(found).resolve())
+                                print(f"  → ダウンロード完了: {Path(found).name}")
+                        except Exception as e:
+                            print(f"  → ダウンロード失敗: {e}")
+                            has_error = True
+
+            _save_watch_cache(cache_file, cache)
+
+        if i < len(entries) - 1:
+            time.sleep(args.delay)
+
+    # ── 通知 ─────────────────────────────────────────────────────────
+    if notify_mode == "webhook" and webhook_url:
+        _notify_webhook(notify_results, webhook_url, webhook_fmt)
+    else:
+        _notify_stdout(notify_results)
+
+    return 1 if has_error else 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -8741,8 +9126,37 @@ def main():
     parser.add_argument("--dry-run", dest="dry_run", action="store_true",
                         help="作品情報（タイトル・著者・総話数）を確認して終了する。"
                              "ダウンロード・ファイル出力は一切行わない")
+    parser.add_argument("--watch", dest="watch", default=None, metavar="FILE",
+                        help="ウォッチリストファイル（URLリスト）を指定して新着を監視する。"
+                             "新着があれば通知し、auto=true のエントリは自動 DL する。"
+                             "キャッシュは --watch-cache で指定したファイルに保存される")
+    parser.add_argument("--notify", dest="notify", default="stdout",
+                        choices=["stdout", "webhook"],
+                        help="通知方法（stdout: 標準出力（デフォルト）/ webhook: Webhook POST）")
+    parser.add_argument("--webhook-url", dest="webhook_url", default=None, metavar="URL",
+                        help="Webhook 送信先 URL（--notify webhook 時に必須）。"
+                             "Discord / Slack の Incoming Webhook URL を指定する")
+    parser.add_argument("--webhook-format", dest="webhook_format", default="discord",
+                        choices=["discord", "slack"],
+                        help="Webhook ペイロード形式（discord: content フィールド（デフォルト）"
+                             " / slack: text フィールド）")
+    parser.add_argument("--watch-cache", dest="watch_cache",
+                        default=".novel_watch_cache.json", metavar="FILE",
+                        help="ウォッチキャッシュファイルのパス"
+                             "（デフォルト: .novel_watch_cache.json）")
+    parser.add_argument("--watch-auto-default", dest="watch_auto_default", action="store_true",
+                        help="ウォッチリストで auto= を指定しなかったエントリに"
+                             "自動 DL を適用する（デフォルトは自動 DL なし）")
 
     args = parser.parse_args()
+
+    # ── --watch: ウォッチモード ──────────────────────────────────────
+    if getattr(args, "watch", None):
+        if not Path(args.watch).exists():
+            parser.error(f"--watch: ファイルが見つかりません: {args.watch}")
+        if args.notify == "webhook" and not args.webhook_url:
+            parser.error("--notify webhook には --webhook-url が必要です")
+        sys.exit(run_watch(args))
 
     # ── --check-update-dir: ディレクトリ一括更新チェック ──────────
     if getattr(args, "check_update_dir", None):
