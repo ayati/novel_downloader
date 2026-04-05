@@ -8403,6 +8403,232 @@ def normalize_url(url: str, site: str) -> str:
     return url
 
 
+# ══════════════════════════════════════════
+#  サイトディスパッチテーブル
+# ══════════════════════════════════════════
+
+# (表示名, デフォルト表紙色, run_関数)
+_SITE_DISPATCH: dict[str, tuple[str, str, callable]] = {
+    "narou":      ("小説家になろう",       "#18b7cd", run_narou),
+    "kakuyomu":   ("カクヨム",             "#4BAAE0", run_kakuyomu),
+    "alphapolis": ("アルファポリス",       "#e05c2c", run_alphapolis),
+    "estar":      ("エブリスタ",           "#00A0E9", run_estar),
+    "noichigo":   ("野いちご",             "#FA8296", run_noichigo),
+    "berrys":     ("berry's cafe",         "#C8245A", run_berrys),
+    "monogatary": ("monogatary.com",       "#231815", run_monogatary),
+    "hameln":     ("ハーメルン",           "#6E654C", run_hameln),
+    "novema":     ("ノベマ！",             "#595757", run_novema),
+    "novelup":    ("ノベルアップ＋",       "#0CBF97", run_novelup),
+    "sutekibungei": ("ステキブンゲイ",     "#E4097D", run_sutekibungei),
+    "days":       ("NOVEL DAYS",           "#CBA13F", run_days),
+    "aozora":     ("青空文庫",             "#000066", run_aozora),
+    "genpaku":    ("プロジェクト杉田玄白", "#1D3461", run_genpaku),
+    "hyuki":      ("結城浩翻訳の部屋",     "#2D6A4F", run_hyuki),
+    "neopage":    ("ネオページ",           "#E94F37", run_neopage),
+    "solispia":   ("ソリスピア",           "#7C3AED", run_solispia),
+}
+
+
+def _check_update_one(txt_path: str, delay: float = 1.5) -> dict:
+    """1 ファイルの更新チェックを実行し結果辞書を返す。
+
+    Returns:
+        {"file": str, "title": str, "author": str,
+         "existing": int, "total": int, "new": int,
+         "new_titles": list[str], "status": "updated"|"uptodate"|"error",
+         "error": str}
+    """
+    result = {
+        "file": os.path.basename(txt_path),
+        "title": "", "author": "",
+        "existing": 0, "total": 0, "new": 0,
+        "new_titles": [],
+        "status": "error", "error": "",
+    }
+
+    # URL 抽出
+    url = _extract_url_from_txt(txt_path)
+    if not url:
+        result["error"] = "底本URL が見つかりません"
+        return result
+
+    # 既存話数カウント
+    existing_sections, _ = _load_existing_txt(txt_path)
+    n_existing = len(existing_sections)
+    result["existing"] = n_existing
+
+    # サイト判定
+    try:
+        url = expand_short_url(url)
+        site = detect_site(url)
+        url  = normalize_url(url, site)
+    except Exception as e:
+        result["error"] = f"URL 解析失敗: {e}"
+        return result
+
+    entry = _SITE_DISPATCH.get(site)
+    if not entry:
+        result["error"] = f"未対応サイト: {site}"
+        return result
+
+    label, default_color, runner = entry
+
+    # argparse の Namespace を組み立てて check-update 相当のディスパッチを行う
+    fake_args = argparse.Namespace(
+        url=url, output=None, delay=delay,
+        resume=None, start=1, end=None,
+        encoding="utf-8", newline="os",
+        no_epub=True, list_only=True,
+        cover_bg=default_color,
+        from_file=None, from_epub=None,
+        title_override=None, author_override=None,
+        cover_image=None, use_site_cover=False,
+        font=None, toc_at_end=False,
+        output_dir=None, kobo=False, horizontal=False,
+        append_file=None, check_update_file=None,
+        dry_run=False,
+    )
+
+    global _CHECK_UPDATE_MODE
+    _CHECK_UPDATE_MODE = True
+    try:
+        runner(fake_args)
+        # _CheckUpdateDone が来なかった場合 — list_only で sys.exit(0) が来るはず
+        # だが _show_episode_list が _CHECK_UPDATE_MODE 時は例外を送出するのでここには来ない
+        result["error"] = "エピソード一覧を取得できませんでした"
+    except _CheckUpdateDone as cu:
+        n_total = len(cu.ep_titles)
+        n_new   = n_total - n_existing
+        result["title"]    = cu.title
+        result["author"]   = cu.author
+        result["total"]    = n_total
+        result["new"]      = max(0, n_new)
+        result["new_titles"] = cu.ep_titles[n_existing:] if n_new > 0 else []
+        result["status"]   = "updated" if n_new > 0 else "uptodate"
+    except SystemExit:
+        # _show_episode_list が _CHECK_UPDATE_MODE でないパスや dry_run_exit 等
+        result["error"] = "エピソード一覧を取得できませんでした"
+    except Exception as e:
+        result["error"] = str(e)
+    finally:
+        _CHECK_UPDATE_MODE = False
+
+    return result
+
+
+def _append_one(txt_path: str, base_args: argparse.Namespace) -> dict:
+    """1 ファイルの追記処理を実行し結果辞書を返す。
+
+    base_args から delay / no_epub / cover_image / use_site_cover / font /
+    toc_at_end / kobo / horizontal / encoding / newline を引き継ぐ。
+
+    Returns:
+        {"file": str, "title": str,
+         "status": "ok"|"nochange"|"error", "error": str,
+         "added": int}
+    """
+    result = {
+        "file": os.path.basename(txt_path),
+        "title": "",
+        "status": "error", "error": "",
+        "added": 0,
+    }
+
+    ap = Path(txt_path).resolve()
+
+    # URL 抽出
+    url = _extract_url_from_txt(str(ap))
+    if not url:
+        result["error"] = "底本URL が見つかりません"
+        return result
+
+    # 既存話数（追記後との差分計算用）
+    existing_before, _ = _load_existing_txt(str(ap))
+    n_before = len(existing_before)
+
+    # サイト判定
+    try:
+        url = expand_short_url(url)
+        site = detect_site(url)
+        url  = normalize_url(url, site)
+    except Exception as e:
+        result["error"] = f"URL 解析失敗: {e}"
+        return result
+
+    entry = _SITE_DISPATCH.get(site)
+    if not entry:
+        result["error"] = f"未対応サイト: {site}"
+        return result
+
+    label, default_color, runner = entry
+
+    # --append 相当の args を組み立てる
+    fake_args = argparse.Namespace(
+        url=url, output=ap.stem, delay=base_args.delay,
+        resume=0,                     # 既存話数を自動検出
+        start=1, end=None,
+        encoding=getattr(base_args, "encoding", "utf-8"),
+        newline=getattr(base_args, "newline", "os"),
+        no_epub=getattr(base_args, "no_epub", False),
+        list_only=False,
+        cover_bg=getattr(base_args, "cover_bg", None) or default_color,
+        from_file=None, from_epub=None,
+        title_override=None, author_override=None,
+        cover_image=getattr(base_args, "cover_image", None),
+        use_site_cover=getattr(base_args, "use_site_cover", False),
+        font=getattr(base_args, "font", None),
+        toc_at_end=getattr(base_args, "toc_at_end", False),
+        output_dir=str(ap.parent) if str(ap.parent) != "." else None,
+        kobo=getattr(base_args, "kobo", False),
+        horizontal=getattr(base_args, "horizontal", False),
+        append_file=None, check_update_file=None,
+        dry_run=False,
+    )
+
+    # og:image 取得（--use-site-cover 指定時）
+    ogp_tmp = ""
+    if fake_args.use_site_cover and not fake_args.cover_image:
+        ogp_tmp = _fetch_ogp_cover(url)
+        if ogp_tmp:
+            fake_args.cover_image = ogp_tmp
+
+    print(f"[情報] 追記モード: {ap.name}")
+    print(f"       底本URL   : {url}")
+    print(f"サイト判別: {label}")
+
+    try:
+        runner(fake_args)
+    except SystemExit:
+        pass  # run_* 内部の sys.exit(1) 等を吸収
+    except Exception as e:
+        result["error"] = str(e)
+        return result
+    finally:
+        if ogp_tmp and os.path.exists(ogp_tmp):
+            os.unlink(ogp_tmp)
+
+    # 追記後の話数を取得して差分を計算
+    existing_after, _ = _load_existing_txt(str(ap))
+    n_after = len(existing_after)
+    added = n_after - n_before
+
+    # タイトルをテキストのヘッダーから取得
+    try:
+        with open(str(ap), "r", encoding="utf-8", errors="replace") as f:
+            first_line = f.readline().strip()
+        result["title"] = first_line
+    except OSError:
+        pass
+
+    if added > 0:
+        result["status"] = "ok"
+        result["added"]  = added
+    else:
+        result["status"] = "nochange"
+
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -8498,15 +8724,223 @@ def main():
                              "ファイル内の「底本URL：」からサイトと URL を自動検出し、"
                              "未取得エピソードをダウンロードして .txt に追加、"
                              "ePub を新規生成（上書き）する。URL の指定は不要")
+    parser.add_argument("--append-dir", dest="append_dir", default=None, metavar="DIR",
+                        help="ディレクトリ内の全 .txt ファイルを走査し、新着エピソードがある"
+                             "作品だけ差分ダウンロード・追記・ePub 再生成する。"
+                             "実行前に対象一覧を表示して確認を求める（--yes でスキップ可）")
+    parser.add_argument("--yes", dest="yes", action="store_true",
+                        help="--append-dir の確認プロンプトをスキップする（自動化用）")
     parser.add_argument("--check-update", dest="check_update_file", default=None, metavar="FILE",
                         help="既存の .txt ファイルを指定し、サイトの最新話数と比較して"
                              "新着エピソード数を表示する。ダウンロードは行わない。"
                              "--append の前に更新確認したいときに使う")
+    parser.add_argument("--check-update-dir", dest="check_update_dir", default=None, metavar="DIR",
+                        help="指定ディレクトリ内の全 .txt ファイルを走査し、"
+                             "各作品の新着エピソードを一括確認する。"
+                             "ダウンロードは行わない")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true",
                         help="作品情報（タイトル・著者・総話数）を確認して終了する。"
                              "ダウンロード・ファイル出力は一切行わない")
 
     args = parser.parse_args()
+
+    # ── --check-update-dir: ディレクトリ一括更新チェック ──────────
+    if getattr(args, "check_update_dir", None):
+        cu_dir = Path(args.check_update_dir).resolve()
+        if not cu_dir.is_dir():
+            parser.error(f"--check-update-dir: ディレクトリが見つかりません: {args.check_update_dir}")
+        txt_files = sorted(cu_dir.glob("*.txt"))
+        if not txt_files:
+            print(f"[情報] {cu_dir} に .txt ファイルがありません。")
+            sys.exit(0)
+
+        # 底本URL を持つファイルのみフィルタ
+        targets = []
+        for tf in txt_files:
+            if _extract_url_from_txt(str(tf)):
+                targets.append(tf)
+            else:
+                print(f"[スキップ] {tf.name} — 底本URL なし")
+        if not targets:
+            print("[情報] 更新チェック対象のファイルがありません。")
+            sys.exit(0)
+
+        print(f"\n{'=' * 60}")
+        print(f" 一括更新チェック: {len(targets)} 作品")
+        print(f"{'=' * 60}\n")
+
+        results = []
+        for i, tf in enumerate(targets):
+            print(f"── [{i + 1}/{len(targets)}] {tf.name} ──")
+            r = _check_update_one(str(tf), delay=args.delay)
+            results.append(r)
+            if i < len(targets) - 1:
+                time.sleep(args.delay)
+
+        # ── サマリー表示 ─────────────────────────────────────────
+        updated  = [r for r in results if r["status"] == "updated"]
+        uptodate = [r for r in results if r["status"] == "uptodate"]
+        errors   = [r for r in results if r["status"] == "error"]
+
+        print(f"\n{'=' * 60}")
+        print(f" チェック結果: {len(targets)} 作品")
+        print(f"{'=' * 60}")
+
+        if updated:
+            print(f"\n[更新あり] {len(updated)} 作品:")
+            for r in updated:
+                titles = r["new_titles"]
+                first = titles[0] if titles else ""
+                last  = titles[-1] if titles else ""
+                rng   = f"（{first}）" if r["new"] == 1 else f"（{first}〜{last}）"
+                title_str = r["title"] or r["file"]
+                print(f"  {title_str} — 新着 {r['new']} 話 {rng}")
+
+        if uptodate:
+            print(f"\n[最新]     {len(uptodate)} 作品:")
+            for r in uptodate:
+                title_str = r["title"] or r["file"]
+                print(f"  {title_str} — {r['existing']} 話（最新話まで取得済み）")
+
+        if errors:
+            print(f"\n[エラー]   {len(errors)} 作品:")
+            for r in errors:
+                print(f"  {r['file']} — {r['error']}")
+
+        print()
+        sys.exit(1 if errors else 0)
+
+    # ── --append-dir: ディレクトリ一括追記 ───────────────────────
+    if getattr(args, "append_dir", None):
+        ad_dir = Path(args.append_dir).resolve()
+        if not ad_dir.is_dir():
+            parser.error(f"--append-dir: ディレクトリが見つかりません: {args.append_dir}")
+        txt_files = sorted(ad_dir.glob("*.txt"))
+        if not txt_files:
+            print(f"[情報] {ad_dir} に .txt ファイルがありません。")
+            sys.exit(0)
+
+        # 底本URL を持つファイルのみフィルタ
+        targets = []
+        skipped_no_url = []
+        for tf in txt_files:
+            if _extract_url_from_txt(str(tf)):
+                targets.append(tf)
+            else:
+                skipped_no_url.append(tf.name)
+        for name in skipped_no_url:
+            print(f"[スキップ] {name} — 底本URL なし")
+        if not targets:
+            print("[情報] 追記対象のファイルがありません。")
+            sys.exit(0)
+
+        # ── Phase 1: 事前チェック ────────────────────────────────
+        print(f"\n{'=' * 60}")
+        print(f" 一括追記チェック: {len(targets)} 作品")
+        print(f"{'=' * 60}\n")
+
+        check_results = []   # (Path, _check_update_one の結果)
+        candidates = []      # 新着ありの (Path, result)
+        for i, tf in enumerate(targets):
+            print(f"── [{i + 1}/{len(targets)}] {tf.name} ──")
+            r = _check_update_one(str(tf), delay=args.delay)
+            check_results.append((tf, r))
+            if r["status"] == "updated":
+                titles = r["new_titles"]
+                first = titles[0] if titles else ""
+                last  = titles[-1] if titles else ""
+                rng   = f"（{first}）" if r["new"] == 1 else f"（{first}〜{last}）"
+                print(f"  → 新着 {r['new']} 話 {rng}")
+                candidates.append((tf, r))
+            elif r["status"] == "uptodate":
+                print(f"  → 新着なし")
+            else:
+                print(f"  → エラー: {r['error']}")
+            if i < len(targets) - 1:
+                time.sleep(args.delay)
+
+        if not candidates:
+            print(f"\n[情報] 新着のある作品がありません。")
+            # エラーがあった場合は報告
+            check_errors = [(tf, r) for tf, r in check_results if r["status"] == "error"]
+            if check_errors:
+                print(f"\n[エラー] {len(check_errors)} 作品:")
+                for tf, r in check_errors:
+                    print(f"  {tf.name} — {r['error']}")
+            sys.exit(1 if check_errors else 0)
+
+        # ── 確認プロンプト ───────────────────────────────────────
+        summary_parts = []
+        for tf, r in candidates:
+            title_str = r["title"] or tf.stem
+            summary_parts.append(f"{title_str}: {r['new']}話")
+        print(f"\n{'─' * 60}")
+        print(f"更新対象: {len(candidates)} 作品（{', '.join(summary_parts)}）")
+
+        if not getattr(args, "yes", False):
+            try:
+                answer = input("続行しますか？ [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n中断しました。")
+                sys.exit(0)
+            if answer != "y":
+                print("中断しました。")
+                sys.exit(0)
+
+        print(f"{'─' * 60}\n")
+
+        # ── Phase 2: 差分ダウンロード ────────────────────────────
+        append_results = []
+        for i, (tf, cu_r) in enumerate(candidates):
+            print(f"\n{'═' * 2} [{i + 1}/{len(candidates)}] {tf.name} {'═' * 40}")
+            ar = _append_one(str(tf), args)
+            append_results.append((tf, cu_r, ar))
+            if i < len(candidates) - 1:
+                time.sleep(args.delay)
+
+        # ── Phase 3: サマリー ────────────────────────────────────
+        ok_list       = [(tf, cu, ar) for tf, cu, ar in append_results if ar["status"] == "ok"]
+        nochange_list = [(tf, cu, ar) for tf, cu, ar in append_results if ar["status"] == "nochange"]
+        err_list      = [(tf, cu, ar) for tf, cu, ar in append_results if ar["status"] == "error"]
+        uptodate_list = [(tf, r) for tf, r in check_results if r["status"] == "uptodate"]
+        check_err_list = [(tf, r) for tf, r in check_results if r["status"] == "error"]
+
+        print(f"\n{'=' * 60}")
+        print(f" 一括追記結果: {len(targets)} 作品")
+        print(f"{'=' * 60}")
+
+        if ok_list:
+            print(f"\n[更新完了] {len(ok_list)} 作品:")
+            for tf, cu, ar in ok_list:
+                title_str = ar["title"] or tf.stem
+                print(f"  {title_str} — {ar['added']} 話追加")
+
+        if nochange_list:
+            print(f"\n[変更なし] {len(nochange_list)} 作品:")
+            for tf, cu, ar in nochange_list:
+                title_str = ar["title"] or tf.stem
+                print(f"  {title_str} — ダウンロード完了（新規エピソードなし）")
+
+        if uptodate_list:
+            print(f"\n[最新]     {len(uptodate_list)} 作品:")
+            for tf, r in uptodate_list:
+                title_str = r["title"] or tf.stem
+                print(f"  {title_str} — {r['existing']} 話（最新話まで取得済み）")
+
+        all_errors = err_list + [(tf, r, None) for tf, r in check_err_list]
+        if all_errors:
+            print(f"\n[エラー]   {len(all_errors)} 作品:")
+            for item in all_errors:
+                if len(item) == 3:
+                    tf, _, ar = item
+                    err_msg = ar["error"] if ar else ""
+                else:
+                    tf, r = item
+                    err_msg = r["error"]
+                print(f"  {tf.name} — {err_msg}")
+
+        print()
+        sys.exit(1 if all_errors else 0)
 
     if args.from_epub:
         # ── ePub → テキスト変換モード ──────────────────────────
@@ -8565,41 +8999,10 @@ def main():
         args.url = expand_short_url(args.url)
         site = detect_site(args.url)
         args.url = normalize_url(args.url, site)
+        # サイト別デフォルト表紙色
         if args.cover_bg is None:
-            if site == "kakuyomu":
-                args.cover_bg = "#4BAAE0"
-            elif site == "alphapolis":
-                args.cover_bg = "#e05c2c"
-            elif site == "estar":
-                args.cover_bg = "#00A0E9"
-            elif site == "noichigo":
-                args.cover_bg = "#FA8296"
-            elif site == "berrys":
-                args.cover_bg = "#C8245A"
-            elif site == "monogatary":
-                args.cover_bg = "#231815"
-            elif site == "hameln":
-                args.cover_bg = "#6E654C"
-            elif site == "novema":
-                args.cover_bg = "#595757"
-            elif site == "novelup":
-                args.cover_bg = "#0CBF97"
-            elif site == "sutekibungei":
-                args.cover_bg = "#E4097D"
-            elif site == "days":
-                args.cover_bg = "#CBA13F"
-            elif site == "aozora":
-                args.cover_bg = "#000066"
-            elif site == "genpaku":
-                args.cover_bg = "#1D3461"
-            elif site == "hyuki":
-                args.cover_bg = "#2D6A4F"
-            elif site == "neopage":
-                args.cover_bg = "#E94F37"
-            elif site == "solispia":
-                args.cover_bg = "#7C3AED"
-            else:
-                args.cover_bg = "#18b7cd"
+            entry = _SITE_DISPATCH.get(site)
+            args.cover_bg = entry[1] if entry else "#18b7cd"
 
         # ── --use-site-cover: og:image を表紙に使用 ────────────────
         _use_site_cover_tmp = ""
@@ -8611,77 +9014,15 @@ def main():
         global _CHECK_UPDATE_MODE
         _CHECK_UPDATE_MODE = getattr(args, "check_update_file", None) is not None
         try:
-            if site == "narou":
-                print("サイト判別: 小説家になろう")
-                run_narou(args)
-            elif site == "kakuyomu":
-                print("サイト判別: カクヨム")
-                run_kakuyomu(args)
-            elif site == "alphapolis":
-                print("サイト判別: アルファポリス")
-                run_alphapolis(args)
-            elif site == "estar":
-                print("サイト判別: エブリスタ")
-                run_estar(args)
-            elif site == "noichigo":
-                print("サイト判別: 野いちご")
-                run_noichigo(args)
-            elif site == "berrys":
-                print("サイト判別: berry's cafe")
-                run_berrys(args)
-            elif site == "monogatary":
-                print("サイト判別: monogatary.com")
-                run_monogatary(args)
-            elif site == "hameln":
-                print("サイト判別: ハーメルン")
-                run_hameln(args)
-            elif site == "novema":
-                print("サイト判別: ノベマ！")
-                run_novema(args)
-            elif site == "novelup":
-                print("サイト判別: ノベルアップ＋")
-                run_novelup(args)
-            elif site == "sutekibungei":
-                print("サイト判別: ステキブンゲイ")
-                run_sutekibungei(args)
-            elif site == "days":
-                print("サイト判別: NOVEL DAYS")
-                run_days(args)
-            elif site == "aozora":
-                print("サイト判別: 青空文庫")
-                run_aozora(args)
-            elif site == "genpaku":
-                print("サイト判別: プロジェクト杉田玄白")
-                run_genpaku(args)
-            elif site == "hyuki":
-                print("サイト判別: 結城浩翻訳の部屋")
-                run_hyuki(args)
-            elif site == "neopage":
-                print("サイト判別: ネオページ")
-                run_neopage(args)
-            elif site == "solispia":
-                print("サイト判別: ソリスピア")
-                run_solispia(args)
+            entry = _SITE_DISPATCH.get(site)
+            if entry:
+                label, _, runner = entry
+                print(f"サイト判別: {label}")
+                runner(args)
             else:
                 print("エラー: 対応しているURLを指定してください。")
-                print("  小説家になろう: https://ncode.syosetu.com/nXXXXxx/")
-                print("  カクヨム      : https://kakuyomu.jp/works/XXXXXXXXXX")
-                print("  アルファポリス: https://www.alphapolis.co.jp/novel/XXXXXXXXX/XXXXXXXXX")
-                print("  エブリスタ    : https://estar.jp/novels/XXXXXXXXX")
-                print("  野いちご      : https://www.no-ichigo.jp/book/nXXXXXX")
-                print("  ハーメルン    : https://syosetu.org/novel/XXXXXXX/")
-                print("  ノベマ！      : https://novema.jp/book/nXXXXXX")
-                print("  ノベルアップ＋: https://novelup.plus/story/XXXXXXXXX")
-                print("  ステキブンゲイ: https://sutekibungei.com/novels/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
-                print("  NOVEL DAYS   : https://novel.daysneo.com/works/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.html")
-                print("  青空文庫     : https://www.aozora.gr.jp/cards/XXXXXX/cardXXXXXX.html")
-                print("  青空文庫(新) : https://www.aozora-renewal.cloud/cards/XXXXXX/cardXXXXXX.html")
-                print("  杉田玄白     : https://www.genpaku.org/XXXXXX/XXXXXXj.html")
-                print("  結城浩翻訳   : https://www.hyuki.com/trans/XXXXXX")
-                print("  ネオページ   : https://www.neopage.com/book/XXXXXXXXXXXXXXXXX")
-                print("  ソリスピア   : https://solispia.com/title/XXXX")
-                print("  berry's cafe : https://www.berrys-cafe.jp/book/nXXXXXXX")
-                print("  monogatary   : https://monogatary.com/story/XXXXXXX")
+                for s_id, (s_label, _, _) in _SITE_DISPATCH.items():
+                    print(f"  {s_label}")
                 sys.exit(1)
         except _CheckUpdateDone as _cu:
             # --check-update: 取得したエピソード一覧を既存話数と比較して表示

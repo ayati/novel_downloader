@@ -91,8 +91,11 @@ python novel_downloader.py --from-file mynovel.txt
 | `--from-file FILE` | — | ローカルテキストから ePub3 を生成 |
 | `--from-epub FILE` | — | ローカル ePub3 から青空文庫書式テキストを生成 |
 | `--append FILE` | — | 既存 `.txt` を指定して続きを追記・ePub 再生成。`底本URL：` から URL を自動検出し `--resume 0` と同等の差分ダウンロードを実行する。URL 指定不要。新規エピソードがない場合は既存ファイルを上書きしない |
+| `--append-dir DIR` | — | ディレクトリ内の全 `.txt` を走査し、新着エピソードがある作品だけ差分ダウンロード・追記・ePub 再生成する。Phase 1 で事前チェック → 確認プロンプト → Phase 2 でダウンロード → サマリー表示。`--yes` で確認スキ��プ |
+| `--yes` | — | `--append-dir` の確認プロンプトをスキップする（自動化用） |
 | `--list-only` | — | ダウンロードせずエピソード一覧と話数のみ表示して終了する |
 | `--check-update FILE` | — | 既存 `.txt` を渡してサイトの最新話数と比較し、新着話数・タイトルを表示して終了。ダウンロード・ファイル上書きは一切行わない。`--append` の前の確認に使う |
+| `--check-update-dir DIR` | — | ディレクトリ内の全 `.txt` を走査し、各作品の新着エピソードを一括確認する。底本URL のないファイルは自動スキップ。ダウンロード・ファイル上書きは一切行わない |
 | `--dry-run` | — | 作品情報（タイトル・著者・総話数）を取得して表示したあと終了する。ダウンロード・ファイル出力は一切行わない。`--list-only` より軽量な接続確認用 |
 | `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
 | `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
@@ -138,7 +141,13 @@ python novel_downloader.py --from-file mynovel.txt
 
 5. **短縮URL展開・og:image取得** — `_SHORT_URL_HOSTS`（30種以上）で短縮サービスを判定。`expand_short_url()` が最大5ホップのリダイレクト追跡。`main()` 内で `detect_site()` の前に呼び出される。
 
-6. **`main()`** — `_host_matches` でドメイン判定（スプーフィング対策）、`detect_site` でサイト判定、`normalize_url` で話数 URL → 作品トップ URL 正規化。引数解析後の処理順：`--append` → `--check-update` → `--use-site-cover`（og:image 取得）→ ディスパッチ（`try/except _CheckUpdateDone/finally`）。`--check-update` は `_CHECK_UPDATE_MODE = True` でディスパッチに乗せ、`_show_episode_list` が `_CheckUpdateDone` を送出したところでキャッチして差分を表示。
+6. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・表紙色設定・ディスパッチで参照。`_check_update_one()` でも使用。
+
+7. **`_check_update_one(txt_path, delay)`** — 1ファイルの更新チェックを実行し結果辞書を返す。`--check-update-dir` / `--append-dir` の Phase 1 で使用。`_extract_url_from_txt` → `expand_short_url` → `detect_site` → `normalize_url` → `_SITE_DISPATCH` 参照でディスパッチ。`_CHECK_UPDATE_MODE = True` で `_CheckUpdateDone` 例外をキャッチして新着話数を算出。
+
+8. **`_append_one(txt_path, base_args)`** — 1ファイルの追記処理を実行し結果辞書を返す。`--append-dir` の Phase 2 で使用。`--append` と同等の args を内部で組み立て、`_SITE_DISPATCH` で `run_*` を呼び出す。追記前後の話数差分で追加話数を算出。
+
+9. **`main()`** — `_host_matches` でドメイン判定（スプーフィング対策）、`detect_site` でサイト判定、`normalize_url` で話数 URL → 作品トップ URL 正規化。引数解析後の処理順：`--check-update-dir`（一括チェック）→ `--append-dir`（一括追記: Phase 1 事前チェック → 確認プロンプト → Phase 2 ダウンロード → サマリー）→ `--from-epub` / `--from-file` → `--append` → `--check-update` → `--use-site-cover`（og:image 取得）→ `_SITE_DISPATCH` によるディスパッチ（`try/except _CheckUpdateDone/finally`）。
 
 ## ePub3 内部構造
 
@@ -226,6 +235,24 @@ python -c "import zipfile; zipfile.ZipFile('<出力.epub>').extractall('/tmp/epu
 ```
 
 > **注意**: `.gitignore` に `*.txt` と `*.epub` が含まれるため、ダウンロード結果の出力ファイルは git 管理対象外。Windows 向けセットアップ手順は `WINDOWS_SETUP.md` を参照。
+
+## ヘルスチェックツール（novel_health_check.py）
+
+各サイトのスクレイピングが正常動作するか定期確認するツール。`--dry-run` をサブプロセスで実行し、タイトル・話数が取得できるかを検証する。テスト用 URL は `novel_health_check_urls.json` で管理。ログは `health_check_logs/` に保存される（git 管理外）。
+
+```bash
+python novel_health_check.py                           # 全サイトをチェック
+python novel_health_check.py --site narou              # 特定サイトのみ
+python novel_health_check.py --site narou estar        # 複数サイト指定
+python novel_health_check.py --list-sites              # 設定済みサイト一覧
+python novel_health_check.py --update-url narou <URL>  # テストURLを更新
+python novel_health_check.py --timeout 120             # タイムアウト変更（デフォルト: 90秒）
+python novel_health_check.py --delay 5                 # サイト間待機変更（デフォルト: 3秒）
+```
+
+終了コード: `0`=全成功、`1`=1件以上失敗、`2`=設定エラー。
+
+新スクレイパーを追加したら `novel_health_check_urls.json` にもエントリを追加する。
 
 ## 新スクレイパー追加手順
 
