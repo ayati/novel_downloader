@@ -197,11 +197,66 @@ python novel_downloader.py https://bit.ly/XXXXXXXXXX
 | 続きを追記する（ePub も再生成） | `python novel_downloader.py --append 作品タイトル.txt` |
 | 新着話数を確認する（ダウンロードなし） | `python novel_downloader.py --check-update 作品タイトル.txt` |
 
+### Discord / Slack への Webhook 通知
+
+`--append` / `--append-dir` / `--check-update` / `--check-update-dir` の結果を Discord や Slack に通知できます。
+新着あり・エラーがあった場合のみ POST されます（新着なし・エラーなし時は無音）。
+
+**Discord に通知する例：**
+
+```
+python novel_downloader.py --append 作品タイトル.txt ^
+    --notify webhook ^
+    --webhook-url https://discord.com/api/webhooks/チャンネルID/トークン
+```
+
+```
+python novel_downloader.py --check-update-dir C:\Users\ユーザー名\novels ^
+    --notify webhook ^
+    --webhook-url https://discord.com/api/webhooks/チャンネルID/トークン
+```
+
+**Slack に通知する例：**
+
+```
+python novel_downloader.py --append-dir C:\Users\ユーザー名\novels --yes ^
+    --notify webhook ^
+    --webhook-url https://hooks.slack.com/services/T.../B.../... ^
+    --webhook-format slack
+```
+
+> **Webhook URL の取得方法**
+> - Discord：通知を送りたいチャンネルの「チャンネルの編集」→「連携サービス」→「ウェブフック」→「新しいウェブフック」で作成し URL をコピー
+> - Slack：[Incoming Webhooks](https://api.slack.com/messaging/webhooks) から App を作成して URL を取得
+
+> **`^` について**
+> Windows のコマンドプロンプトでは行末の `^` が行継続記号です。
+> 1行にまとめて書いても動作します。
+
 ### JPG 表紙について
 
 Pillow がインストール済みであれば、表紙に日本語テキストが入った JPG 画像が自動生成されます。
 Windows 10/11 には MS 明朝・BIZ UDP 明朝などの日本語フォントが標準搭載されているため、
 追加でフォントをインストールしなくても JPG 表紙が生成されます。
+
+**サイト公式のサムネイル画像を表紙にする（`--use-site-cover`）：**
+
+自動生成の代わりに、作品ページに設定されている公式サムネイル（`og:image`）を表紙として使用できます。
+
+```
+python novel_downloader.py URL --use-site-cover
+```
+
+イラスト付きの表紙が設定されている作品では、そのままカバー画像として ePub に埋め込まれます。
+サムネイルが取得できなかった場合は自動生成表紙にフォールバックします。
+
+自分で用意した画像を使いたい場合は `--cover-image` を使います：
+
+```
+python novel_downloader.py URL --cover-image cover.jpg
+```
+
+`--cover-image` と `--use-site-cover` を同時に指定した場合は `--cover-image` が優先されます。
 
 ---
 
