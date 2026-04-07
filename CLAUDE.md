@@ -90,8 +90,8 @@ python novel_downloader.py --from-file mynovel.txt
 | `--cover-bg COLOR` | サイト依存 | 表紙背景色（`#RRGGBB` 形式） |
 | `--from-file FILE` | — | ローカルテキストから ePub3 を生成 |
 | `--from-epub FILE` | — | ローカル ePub3 から青空文庫書式テキストを生成 |
-| `--append FILE` | — | 既存 `.txt` を指定して続きを追記・ePub 再生成。`底本URL：` から URL を自動検出し `--resume 0` と同等の差分ダウンロードを実行する。URL 指定不要。新規エピソードがない場合は既存ファイルを上書きしない |
-| `--append-dir DIR` | — | ディレクトリ内の全 `.txt` を走査し、新着エピソードがある作品だけ差分ダウンロード・追記・ePub 再生成する。Phase 1 で事前チェック → 確認プロンプト → Phase 2 でダウンロード → サマリー表示。`--yes` で確認スキップ |
+| `--append FILE` | — | 既存 `.txt` を指定して続きを追記・ePub 再生成。`底本URL：` から URL を自動検出し `--resume 0` と同等の差分ダウンロードを実行する。URL 指定不要。新規エピソードがない場合は既存ファイルを上書きしない。`--notify webhook` 対応 |
+| `--append-dir DIR` | — | ディレクトリ内の全 `.txt` を走査し、新着エピソードがある作品だけ差分ダウンロード・追記・ePub 再生成する。Phase 1 で事前チェック → 確認プロンプト → Phase 2 でダウンロード → サマリー表示。`--yes` で確認スキップ。`--notify webhook` 対応 |
 | `--yes` | — | `--append-dir` の確認プロンプトをスキップする（自動化用） |
 | `--list-only` | — | ダウンロードせずエピソード一覧と話数のみ表示して終了する |
 | `--check-update FILE` | — | 既存 `.txt` を渡してサイトの最新話数と比較し、新着話数・タイトルを表示して終了。ダウンロード・ファイル上書きは一切行わない。`--append` の前の確認に使う。`--notify webhook` 対応 |
@@ -107,7 +107,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `--kobo` | — | 楽天 Kobo 専用端末（Kobo Clara / Kobo Sage 等）向けに ePub の拡張子を `.kepub.epub` にする。内部的には `_epub_ext(args)` ヘルパーが拡張子を切り替える |
 | `--horizontal` | — | 横書き ePub3 を生成する。全ページを `html.hltr`（横組み）で出力。縦中横（tcy）処理をスキップ、`page-progression-direction="ltr"`、`primary-writing-mode` 省略、cover の `page-spread-right` 除去。字下げ CSS は `html.hltr` スコープで `padding-left` を使用（縦書き時の `padding-top` を上書き） |
 | `--watch FILE` | — | ウォッチリストファイル（URLリスト）を読んで新着を一括チェックする。新着があれば通知し、`auto=true` のエントリは自動 DL する。初回は全話数をキャッシュに登録するだけで通知しない |
-| `--notify {stdout,webhook}` | `stdout` | 通知方法。`stdout`: 標準出力（cron フレンドリー、新着なし・エラーなし時は無音）。`webhook`: `--webhook-url` 宛に POST。`--watch` / `--check-update` / `--check-update-dir` で有効 |
+| `--notify {stdout,webhook}` | `stdout` | 通知方法。`stdout`: 標準出力（cron フレンドリー、新着なし・エラーなし時は無音）。`webhook`: `--webhook-url` 宛に POST。`--watch` / `--append` / `--append-dir` / `--check-update` / `--check-update-dir` で有効 |
 | `--webhook-url URL` | — | Webhook 送信先（`--notify webhook` 時必須）。Discord / Slack の Incoming Webhook URL |
 | `--webhook-format {discord,slack}` | `discord` | Webhook ペイロード形式。`discord`: `{"content":"..."}` / `slack`: `{"text":"..."}` |
 | `--watch-cache FILE` | `.novel_watch_cache.json` | ウォッチキャッシュファイルのパス（アトミック書き込み・エントリ単位で即時更新） |

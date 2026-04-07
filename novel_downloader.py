@@ -9233,6 +9233,8 @@ def main():
 
     # ── --append-dir: ディレクトリ一括追記 ───────────────────────
     if getattr(args, "append_dir", None):
+        if args.notify == "webhook" and not args.webhook_url:
+            parser.error("--notify webhook には --webhook-url が必要です")
         ad_dir = Path(args.append_dir).resolve()
         if not ad_dir.is_dir():
             parser.error(f"--append-dir: ディレクトリが見つかりません: {args.append_dir}")
@@ -9361,6 +9363,40 @@ def main():
                 print(f"  {tf.name} — {err_msg}")
 
         print()
+
+        # --notify webhook 対応
+        if args.notify == "webhook" and args.webhook_url:
+            notify_results = []
+            for tf, cu, ar in append_results:
+                if ar["status"] == "ok":
+                    notify_results.append({
+                        "file": ar["file"],
+                        "title": ar["title"] or cu.get("title", ""),
+                        "status": "updated",
+                        "new": ar["added"],
+                        "new_titles": cu.get("new_titles", [])[:ar["added"]],
+                        "error": "",
+                    })
+                elif ar["status"] == "error":
+                    notify_results.append({
+                        "file": ar["file"],
+                        "title": ar["title"] or cu.get("title", ""),
+                        "status": "error",
+                        "new": 0,
+                        "new_titles": [],
+                        "error": ar["error"],
+                    })
+            for tf, r in check_err_list:
+                notify_results.append({
+                    "file": r["file"],
+                    "title": r.get("title", ""),
+                    "status": "error",
+                    "new": 0,
+                    "new_titles": [],
+                    "error": r["error"],
+                })
+            _notify_webhook(notify_results, args.webhook_url, getattr(args, "webhook_format", "discord"))
+
         sys.exit(1 if all_errors else 0)
 
     if args.from_epub:
@@ -9375,6 +9411,8 @@ def main():
         # ── --append または URL モード ───────────────────────────
         if getattr(args, "append_file", None):
             # 既存 .txt から URL・出力先を自動設定して resume ダウンロード
+            if args.notify == "webhook" and not args.webhook_url:
+                parser.error("--notify webhook には --webhook-url が必要です")
             ap = Path(args.append_file).resolve()
             if not ap.exists():
                 parser.error(f"--append: ファイルが見つかりません: {args.append_file}")
@@ -9434,6 +9472,14 @@ def main():
             if _use_site_cover_tmp:
                 args.cover_image = _use_site_cover_tmp
 
+        # --append webhook 用の事前情報を取得
+        _append_ap_path = None
+        _append_n_before = 0
+        if getattr(args, "append_file", None) and args.notify == "webhook" and args.webhook_url:
+            _append_ap_path = Path(args.append_file).resolve()
+            _ab, _ = _load_existing_txt(str(_append_ap_path))
+            _append_n_before = len(_ab)
+
         global _CHECK_UPDATE_MODE
         _CHECK_UPDATE_MODE = getattr(args, "check_update_file", None) is not None
         try:
@@ -9442,6 +9488,23 @@ def main():
                 label, _, runner = entry
                 print(f"サイト判別: {label}")
                 runner(args)
+                # --append webhook 通知（正常完了時）
+                if _append_ap_path:
+                    _ab_after, _ = _load_existing_txt(str(_append_ap_path))
+                    _added = len(_ab_after) - _append_n_before
+                    try:
+                        with open(str(_append_ap_path), "r", encoding="utf-8", errors="replace") as _f:
+                            _append_title = _f.readline().strip()
+                    except OSError:
+                        _append_title = ""
+                    _notify_webhook([{
+                        "file": _append_ap_path.name,
+                        "title": _append_title,
+                        "status": "updated" if _added > 0 else "uptodate",
+                        "new": max(0, _added),
+                        "new_titles": [],
+                        "error": "",
+                    }], args.webhook_url, getattr(args, "webhook_format", "discord"))
             else:
                 print("エラー: 対応しているURLを指定してください。")
                 for s_id, (s_label, _, _) in _SITE_DISPATCH.items():
@@ -9477,6 +9540,23 @@ def main():
                 }
                 _notify_webhook([cu_result], args.webhook_url, getattr(args, "webhook_format", "discord"))
             sys.exit(0)
+        except SystemExit as _se:
+            # --append エラー終了時の webhook 通知（exit code != 0 のみ）
+            if _append_ap_path and _se.code not in (None, 0):
+                try:
+                    with open(str(_append_ap_path), "r", encoding="utf-8", errors="replace") as _f:
+                        _append_title = _f.readline().strip()
+                except OSError:
+                    _append_title = ""
+                _notify_webhook([{
+                    "file": _append_ap_path.name,
+                    "title": _append_title,
+                    "status": "error",
+                    "new": 0,
+                    "new_titles": [],
+                    "error": f"ダウンロードエラー（終了コード: {_se.code}）",
+                }], args.webhook_url, getattr(args, "webhook_format", "discord"))
+            raise
         finally:
             _CHECK_UPDATE_MODE = False
             if _use_site_cover_tmp and os.path.exists(_use_site_cover_tmp):
