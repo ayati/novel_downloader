@@ -8803,12 +8803,12 @@ def _notify_stdout(notify_results: list) -> None:
     """新着・エラーを標準出力に出力する。新着なし・エラーなしなら何も出力しない。"""
     for r in notify_results:
         if r["status"] == "updated":
-            label = r.get("list_title") or r.get("title") or r["url"]
+            label = r.get("list_title") or r.get("title") or r.get("url") or r.get("file", "?")
             print(f"[NEW] {label} (+{r['new']}話)")
             for t in r["new_titles"]:
                 print(f"  + {t}")
         elif r["status"] == "error":
-            label = r.get("list_title") or r["url"]
+            label = r.get("list_title") or r.get("url") or r.get("file", "?")
             print(f"[ERROR] {label}")
             print(f"  ! {r['error']}")
 
@@ -8822,7 +8822,7 @@ def _notify_webhook(notify_results: list, webhook_url: str, fmt: str = "discord"
     lines = []
     for r in notify_results:
         if r["status"] == "updated":
-            label = r.get("list_title") or r.get("title") or r["url"]
+            label = r.get("list_title") or r.get("title") or r.get("url") or r.get("file", "?")
             lines.append(f"【{label}】+{r['new']}話")
             for t in r["new_titles"][:5]:
                 lines.append(f"  {t}")
@@ -8830,7 +8830,7 @@ def _notify_webhook(notify_results: list, webhook_url: str, fmt: str = "discord"
                 lines.append(f"  … 他 {r['new'] - 5} 話")
     for r in notify_results:
         if r["status"] == "error":
-            label = r.get("list_title") or r["url"]
+            label = r.get("list_title") or r.get("url") or r.get("file", "?")
             lines.append(f"[ERROR] {label}: {r['error']}")
 
     if not lines:
@@ -9160,6 +9160,8 @@ def main():
 
     # ── --check-update-dir: ディレクトリ一括更新チェック ──────────
     if getattr(args, "check_update_dir", None):
+        if args.notify == "webhook" and not args.webhook_url:
+            parser.error("--notify webhook には --webhook-url が必要です")
         cu_dir = Path(args.check_update_dir).resolve()
         if not cu_dir.is_dir():
             parser.error(f"--check-update-dir: ディレクトリが見つかりません: {args.check_update_dir}")
@@ -9222,6 +9224,11 @@ def main():
                 print(f"  {r['file']} — {r['error']}")
 
         print()
+
+        # --notify webhook 対応
+        if args.notify == "webhook" and args.webhook_url:
+            _notify_webhook(results, args.webhook_url, getattr(args, "webhook_format", "discord"))
+
         sys.exit(1 if errors else 0)
 
     # ── --append-dir: ディレクトリ一括追記 ───────────────────────
@@ -9390,6 +9397,8 @@ def main():
         # ── --check-update モード ────────────────────────────────
         _cu_n_existing = 0
         if getattr(args, "check_update_file", None):
+            if args.notify == "webhook" and not args.webhook_url:
+                parser.error("--notify webhook には --webhook-url が必要です")
             cu_txt = Path(args.check_update_file).resolve()
             if not cu_txt.exists():
                 parser.error(f"--check-update: ファイルが見つかりません: {args.check_update_file}")
@@ -9440,19 +9449,33 @@ def main():
                 sys.exit(1)
         except _CheckUpdateDone as _cu:
             # --check-update: 取得したエピソード一覧を既存話数と比較して表示
-            n_total = len(_cu.ep_titles)
-            n_new   = n_total - _cu_n_existing
+            n_total    = len(_cu.ep_titles)
+            n_new      = n_total - _cu_n_existing
+            new_titles = _cu.ep_titles[_cu_n_existing:] if n_new > 0 else []
             print(f"\nタイトル : {_cu.title}")
             print(f"著者     : {_cu.author}")
             print(f"既存     : {_cu_n_existing} 話 / サイト全話: {n_total} 話")
             if n_new <= 0:
                 print("[情報] 新着なし（最新話まで取得済み）")
             else:
-                new_titles = _cu.ep_titles[_cu_n_existing:]
                 first = new_titles[0]
                 last  = new_titles[-1]
                 range_str = f"（{first}）" if n_new == 1 else f"（{first}〜{last}）"
                 print(f"[情報] 新着エピソード: {n_new} 話 {range_str}")
+            # --notify webhook 対応
+            if args.notify == "webhook" and args.webhook_url:
+                cu_result = {
+                    "file": Path(args.check_update_file).name,
+                    "title": _cu.title,
+                    "author": _cu.author,
+                    "existing": _cu_n_existing,
+                    "total": n_total,
+                    "new": max(0, n_new),
+                    "new_titles": new_titles,
+                    "status": "updated" if n_new > 0 else "uptodate",
+                    "error": "",
+                }
+                _notify_webhook([cu_result], args.webhook_url, getattr(args, "webhook_format", "discord"))
             sys.exit(0)
         finally:
             _CHECK_UPDATE_MODE = False
