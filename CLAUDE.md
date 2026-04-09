@@ -107,7 +107,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `--kobo` | — | 楽天 Kobo 専用端末（Kobo Clara / Kobo Sage 等）向けに ePub の拡張子を `.kepub.epub` にする。内部的には `_epub_ext(args)` ヘルパーが拡張子を切り替える |
 | `--horizontal` | — | 横書き ePub3 を生成する。全ページを `html.hltr`（横組み）で出力。縦中横（tcy）処理をスキップ、`page-progression-direction="ltr"`、`primary-writing-mode` 省略、cover の `page-spread-right` 除去。字下げ CSS は `html.hltr` スコープで `padding-left` を使用（縦書き時の `padding-top` を上書き） |
 | `--watch FILE` | — | ウォッチリストファイル（URLリスト）を読んで新着を一括チェックする。新着があれば通知し、`auto=true` のエントリは自動 DL する。初回は全話数をキャッシュに登録するだけで通知しない |
-| `--notify {stdout,webhook}` | `stdout` | 通知方法。`stdout`: 標準出力（cron フレンドリー、新着なし・エラーなし時は無音）。`webhook`: `--webhook-url` 宛に POST。`--watch` / `--append` / `--append-dir` / `--check-update` / `--check-update-dir` で有効 |
+| `--notify {stdout,webhook}` | `stdout` | 通知方法。`stdout`: 標準出力（cron フレンドリー、新着なし・エラーなし時は無音）。`webhook`: `--webhook-url` 宛に POST。**通常 URL ダウンロード**（完了時に「全N話ダウンロード完了」通知）・`--watch` / `--append` / `--append-dir` / `--check-update` / `--check-update-dir` で有効。エラー時も通知 |
 | `--webhook-url URL` | — | Webhook 送信先（`--notify webhook` 時必須）。Discord / Slack の Incoming Webhook URL |
 | `--webhook-format {discord,slack}` | `discord` | Webhook ペイロード形式。`discord`: `{"content":"..."}` / `slack`: `{"text":"..."}` |
 | `--watch-cache FILE` | `.novel_watch_cache.json` | ウォッチキャッシュファイルのパス（アトミック書き込み・エントリ単位で即時更新） |

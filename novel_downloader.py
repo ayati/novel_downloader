@@ -160,6 +160,9 @@ RETRY_MAX  = 3
 RETRY_WAIT = 5.0
 PAGE_BREAK = "\n\n［＃改ページ］\n\n"
 
+# write_file() が書き込んだ最後の .txt パス（main() での通知に使用）
+_last_txt_written: str = ""
+
 
 # ══════════════════════════════════════════
 #  共通：青空文庫書式ユーティリティ
@@ -434,11 +437,13 @@ def write_file(filename: str, header: str, sections: list, colophon: str,
     """ヘッダー + 各話（改ページ区切り）+ 奥付 を書き出す。
     newline: 'os'=実行環境の標準改行コード / 'lf'=LF(\\n) / 'crlf'=CRLF(\\r\\n)
     """
+    global _last_txt_written
     nl = None if newline == "os" else ("\r\n" if newline == "crlf" else "\n")
     with open(filename, "w", encoding=encoding, newline=nl) as f:
         f.write(header)
         f.write(PAGE_BREAK.join(sections))
         f.write(colophon)
+    _last_txt_written = filename
 
 
 # ══════════════════════════════════════════
@@ -8828,6 +8833,13 @@ def _notify_webhook(notify_results: list, webhook_url: str, fmt: str = "discord"
                 lines.append(f"  {t}")
             if r["new"] > 5:
                 lines.append(f"  … 他 {r['new'] - 5} 話")
+        elif r["status"] == "completed":
+            label = r.get("title") or r.get("url") or r.get("file", "?")
+            lines.append(f"【{label}】全{r['new']}話ダウンロード完了")
+            for t in r["new_titles"][:5]:
+                lines.append(f"  {t}")
+            if r["new"] > 5:
+                lines.append(f"  … 他 {r['new'] - 5} 話")
     for r in notify_results:
         if r["status"] == "error":
             label = r.get("list_title") or r.get("url") or r.get("file", "?")
@@ -9457,6 +9469,9 @@ def main():
             parser.error(
                 "URLを指定するか、--from-file / --append でローカルファイルを指定してください。"
             )
+        # --notify webhook のバリデーション（全 URL モード共通）
+        if args.notify == "webhook" and not getattr(args, "webhook_url", None):
+            parser.error("--notify webhook には --webhook-url が必要です")
         args.url = expand_short_url(args.url)
         site = detect_site(args.url)
         args.url = normalize_url(args.url, site)
@@ -9480,7 +9495,14 @@ def main():
             _ab, _ = _load_existing_txt(str(_append_ap_path))
             _append_n_before = len(_ab)
 
-        global _CHECK_UPDATE_MODE
+        # 通常ダウンロード webhook 用: ダウンロード開始前に _last_txt_written をリセット
+        _is_plain_dl = (
+            not getattr(args, "append_file", None)
+            and not getattr(args, "check_update_file", None)
+        )
+        global _last_txt_written, _CHECK_UPDATE_MODE
+        if _is_plain_dl:
+            _last_txt_written = ""
         _CHECK_UPDATE_MODE = getattr(args, "check_update_file", None) is not None
         try:
             entry = _SITE_DISPATCH.get(site)
@@ -9488,8 +9510,11 @@ def main():
                 label, _, runner = entry
                 print(f"サイト判別: {label}")
                 runner(args)
-                # --append webhook 通知（正常完了時）
+                # 完了後 webhook 通知
+                _wh_url = getattr(args, "webhook_url", None)
+                _wh_fmt = getattr(args, "webhook_format", "discord")
                 if _append_ap_path:
+                    # --append: 差分話数を通知
                     _ab_after, _ = _load_existing_txt(str(_append_ap_path))
                     _added = len(_ab_after) - _append_n_before
                     try:
@@ -9504,7 +9529,26 @@ def main():
                         "new": max(0, _added),
                         "new_titles": [],
                         "error": "",
-                    }], args.webhook_url, getattr(args, "webhook_format", "discord"))
+                    }], _wh_url, _wh_fmt)
+                elif _is_plain_dl and args.notify == "webhook" and _wh_url and _last_txt_written:
+                    # 通常ダウンロード: 全話数・タイトルを通知
+                    _dl_sections, _dl_epub = _load_existing_txt(_last_txt_written)
+                    _dl_n = len(_dl_sections)
+                    _dl_title = ""
+                    try:
+                        with open(_last_txt_written, "r", encoding="utf-8", errors="replace") as _f:
+                            _dl_title = _f.readline().strip()
+                    except OSError:
+                        pass
+                    _notify_webhook([{
+                        "file": Path(_last_txt_written).name,
+                        "title": _dl_title,
+                        "url": args.url,
+                        "status": "completed",
+                        "new": _dl_n,
+                        "new_titles": [ep["title"] for ep in _dl_epub],
+                        "error": "",
+                    }], _wh_url, _wh_fmt)
             else:
                 print("エラー: 対応しているURLを指定してください。")
                 for s_id, (s_label, _, _) in _SITE_DISPATCH.items():
@@ -9541,21 +9585,42 @@ def main():
                 _notify_webhook([cu_result], args.webhook_url, getattr(args, "webhook_format", "discord"))
             sys.exit(0)
         except SystemExit as _se:
-            # --append エラー終了時の webhook 通知（exit code != 0 のみ）
-            if _append_ap_path and _se.code not in (None, 0):
-                try:
-                    with open(str(_append_ap_path), "r", encoding="utf-8", errors="replace") as _f:
-                        _append_title = _f.readline().strip()
-                except OSError:
-                    _append_title = ""
-                _notify_webhook([{
-                    "file": _append_ap_path.name,
-                    "title": _append_title,
-                    "status": "error",
-                    "new": 0,
-                    "new_titles": [],
-                    "error": f"ダウンロードエラー（終了コード: {_se.code}）",
-                }], args.webhook_url, getattr(args, "webhook_format", "discord"))
+            # エラー終了時の webhook 通知（exit code != 0 のみ）
+            _wh_url = getattr(args, "webhook_url", None)
+            _wh_fmt = getattr(args, "webhook_format", "discord")
+            if _se.code not in (None, 0) and args.notify == "webhook" and _wh_url:
+                if _append_ap_path:
+                    # --append エラー
+                    try:
+                        with open(str(_append_ap_path), "r", encoding="utf-8", errors="replace") as _f:
+                            _append_title = _f.readline().strip()
+                    except OSError:
+                        _append_title = ""
+                    _notify_webhook([{
+                        "file": _append_ap_path.name,
+                        "title": _append_title,
+                        "status": "error",
+                        "new": 0,
+                        "new_titles": [],
+                        "error": f"ダウンロードエラー（終了コード: {_se.code}）",
+                    }], _wh_url, _wh_fmt)
+                elif _is_plain_dl:
+                    # 通常ダウンロード エラー
+                    _err_title = ""
+                    if _last_txt_written:
+                        try:
+                            with open(_last_txt_written, "r", encoding="utf-8", errors="replace") as _f:
+                                _err_title = _f.readline().strip()
+                        except OSError:
+                            pass
+                    _notify_webhook([{
+                        "url": args.url,
+                        "title": _err_title,
+                        "status": "error",
+                        "new": 0,
+                        "new_titles": [],
+                        "error": f"ダウンロードエラー（終了コード: {_se.code}）",
+                    }], _wh_url, _wh_fmt)
             raise
         finally:
             _CHECK_UPDATE_MODE = False
