@@ -349,7 +349,7 @@ def _load_existing_txt(txt_path: str) -> tuple[list[str], list[dict]]:
             if re.search(r"は(?:大|中|小)見出し終わり］", ln):
                 body_start_idx = li + 1
                 break
-            m = re.search(r"「([^」]+)」は(?:大|中|小)見出し］", ln)
+            m = re.search(r"「(.+)」は(?:大|中|小)見出し］", ln)
             if m:
                 ep_title = m.group(1)
         ep_body = "\n".join(lines[body_start_idx:]).strip()
@@ -954,9 +954,9 @@ def _apply_ruby_auto(text: str) -> str:
 
 # 青空文庫タグ処理用の正規表現（モジュールレベルで一度だけコンパイル）
 # 見出し開始マーカー: ［＃「TEXT」は大見出し］ （終わりを含まない）
-_MIDASHI_START_RE = re.compile(r"［＃「[^」]*」は(大|中|小)見出し］")
+_MIDASHI_START_RE = re.compile(r"［＃「.+」は(大|中|小)見出し］")
 # 見出し終了マーカー: ［＃「TEXT」は大見出し終わり］
-_MIDASHI_END_RE   = re.compile(r"［＃「[^」]*」は(大|中|小)見出し終わり］")
+_MIDASHI_END_RE   = re.compile(r"［＃「.+」は(大|中|小)見出し終わり］")
 # 任意の青空文庫タグ（制御タグ除去用）
 _AOZORA_ANY_TAG_RE = re.compile(r"［＃[^］]*］")
 # 見出し CSS クラスマップ
@@ -7069,7 +7069,7 @@ def _split_aozora_by_headings(body_text: str) -> list:
     # 見出し行インデックスとタイトルを収集（終わりマーカーは除外）
     heading_positions: list = []
     for i, ln in enumerate(lines):
-        m = re.search(r"「([^」]+)」は(大|中|小)見出し］", ln)
+        m = re.search(r"「(.+)」は(大|中|小)見出し］", ln)
         if m and "終わり" not in ln:
             heading_positions.append((i, m.group(1)))
 
