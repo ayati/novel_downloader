@@ -7037,6 +7037,178 @@ def aozora_decode(txt_bytes: bytes) -> tuple:
     return txt_bytes.decode("shift_jis", errors="replace"), "shift_jis"
 
 
+# ══════════════════════════════════════════
+#  青空文庫：外字注記 → Unicode 変換
+# ══════════════════════════════════════════
+#
+# 青空文庫テキストには JIS 第3/第4水準の文字や Unicode 特殊文字が
+# ［＃「説明」、識別子］ という注記の形で埋め込まれている。
+# 本セクションでは下記2形式を Unicode 文字に置換する：
+#   ① ※［＃「○○」、U+XXXX］      → 直接 Unicode 変換
+#   ② ※［＃「○○」、第3水準1-X-Y］ → JIS X 0213 plane 1 経由で Unicode 変換
+#      ※［＃「○○」、第4水準2-X-Y］ → JIS X 0213 plane 2 経由で Unicode 変換
+# 解決できなかった注記は元のまま残し、stderr に集約警告を1度出力する。
+
+_GAIJI_TABLE_JIS0213: dict | None = None    # {"2-1-79": "傪", ...}
+
+# 注記全体を捕捉。説明部に「、」「」」が含まれるケース（複合説明）にも
+# 対応するため、内部の構造解析は _resolve_gaiji_id 側で行う。
+_GAIJI_NOTE_RE = re.compile(r"※［＃([^］]+)］")
+_GAIJI_ID_UNICODE_RE = re.compile(r"^U\+([0-9A-Fa-f]{4,6})$")
+_GAIJI_ID_JIS0213_RE = re.compile(r"^第([34])水準[12]-(\d{1,2})-(\d{1,2})$")
+# 「第3水準/第4水準」プレフィックスを省いた素の plane-row-cell 表記。
+# plane は必ず 1 か 2、3桁の数値構成でページ-行（2 数値）と区別される。
+_GAIJI_ID_JIS0213_BARE_RE = re.compile(r"^([12])-(\d{1,2})-(\d{1,2})$")
+
+
+def _load_gaiji_table_jis0213() -> dict:
+    """data/aozora_gaiji_jis0213.tsv を遅延ロードする。"""
+    global _GAIJI_TABLE_JIS0213
+    if _GAIJI_TABLE_JIS0213 is not None:
+        return _GAIJI_TABLE_JIS0213
+    table: dict = {}
+    tsv_path = Path(__file__).parent / "data" / "aozora_gaiji_jis0213.tsv"
+    if not tsv_path.exists():
+        # データファイルが無くても①の Unicode 直接指定は動くようフォールバック
+        _GAIJI_TABLE_JIS0213 = table
+        return table
+    with tsv_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line or line.startswith("#"):
+                continue
+            cols = line.rstrip("\n").split("\t")
+            if len(cols) >= 2 and cols[0] and cols[1]:
+                table[cols[0]] = cols[1]
+    _GAIJI_TABLE_JIS0213 = table
+    return table
+
+
+def _resolve_gaiji_id(identifier: str, table: dict) -> str | None:
+    """注記の識別子部（U+XXXX または 第N水準P-X-Y）を Unicode 文字に解決する。"""
+    # ① U+XXXX
+    m = _GAIJI_ID_UNICODE_RE.match(identifier)
+    if m:
+        try:
+            cp = int(m.group(1), 16)
+            if 0 <= cp <= 0x10FFFF:
+                return chr(cp)
+        except (ValueError, OverflowError):
+            pass
+        return None
+    # ② 第3水準/第4水準（プレフィックス付き）
+    m = _GAIJI_ID_JIS0213_RE.match(identifier)
+    if m:
+        suiijun = m.group(1)               # "3" or "4"
+        plane   = "1" if suiijun == "3" else "2"
+        row     = int(m.group(2))
+        cell    = int(m.group(3))
+        return table.get(f"{plane}-{row}-{cell}")
+    # ②' プレフィックスなしの素の plane-row-cell 表記（1-X-Y / 2-X-Y）
+    m = _GAIJI_ID_JIS0213_BARE_RE.match(identifier)
+    if m:
+        plane = m.group(1)                 # "1" or "2"
+        row   = int(m.group(2))
+        cell  = int(m.group(3))
+        return table.get(f"{plane}-{row}-{cell}")
+    return None
+
+
+def _extract_gaiji_identifier(inside: str) -> str | None:
+    """
+    注記内部 ［＃...］ の文字列から識別子部だけを抽出する。
+    例:
+      「口＋皐」の「白」に代えて「自」、第4水準2-4-33      → 第4水準2-4-33
+      「○」、U+25CB                                      → U+25CB
+      「にんべん＋參」、第4水準2-1-79                      → 第4水準2-1-79
+      「さんずい＋垂」、U+6DB6、235-7                      → U+6DB6
+      「さんずい＋垂」、第3水準1-87-43、235-7              → 第3水準1-87-43
+      濁点付き片仮名ヱ、1-7-84                             → 1-7-84
+
+    青空文庫の正規形式では U+XXXX や 第N水準 の後にページ-行参照が
+    併記されることがある（例: 放浪記）。また「第3水準/第4水準」プレフィックスを
+    省いた素の plane-row-cell 表記も使われる（例: 放浪記の 1-7-84）。
+    「、」で区切られた要素を順に走査し、最初に U+ / 第3水準 / 第4水準 / 素の
+    P-R-C パターンのいずれかにマッチするものを採用する。
+    どれにもマッチしない場合（説明のみ・UCV・ページ-行単独等）は None。
+    """
+    for part in inside.split("、"):
+        candidate = part.strip()
+        if (candidate.startswith("U+")
+                or candidate.startswith("第3水準")
+                or candidate.startswith("第4水準")
+                or _GAIJI_ID_JIS0213_BARE_RE.match(candidate)):
+            return candidate
+    return None
+
+
+def _extract_gaiji_description(inside: str) -> str:
+    """
+    注記内部 ［＃...］ の文字列から説明部だけを抽出する。
+    例:
+      感嘆符三つ、626-10                 → 感嘆符三つ
+      「にんべん＋參」、第4水準2-1-79     → にんべん＋參
+      「口＋皐」の「白」に代えて「自」、… → 「口＋皐」の「白」に代えて「自」
+
+    最初の「、」より前を説明部として採用。説明全体が単一の「」で
+    囲まれている場合のみその外周を外す（複合説明では 「」 を残す）。
+    """
+    pos = inside.find("、")
+    desc = inside if pos < 0 else inside[:pos]
+    desc = desc.strip()
+    if desc.startswith("「") and desc.endswith("」"):
+        inner = desc[1:-1]
+        if "「" not in inner and "」" not in inner:
+            desc = inner
+    return desc
+
+
+def aozora_resolve_gaiji(text: str) -> str:
+    """
+    青空文庫外字注記を Unicode 文字に置換する。
+      ① ※［＃「○○」、U+XXXX］      → 直接 Unicode 変換
+      ② ※［＃「○○」、第3/4水準P-X-Y］ または P-X-Y → JIS X 0213 経由で変換
+      ③ いずれにもマッチしない場合 → 説明部を残して ※（説明）形式へフォールバック
+    フォールバックを適用したケースと、説明も取れず原文保持にしたケースを
+    それぞれ stderr に集約レポート（ℹ＝フォールバック適用、⚠＝原文保持）。
+    """
+    table = _load_gaiji_table_jis0213()
+    fallback: dict[str, int] = {}
+    untouched: dict[str, int] = {}
+
+    def repl(match):
+        full = match.group(0)
+        inside = match.group(1)
+        identifier = _extract_gaiji_identifier(inside)
+        if identifier is not None:
+            resolved = _resolve_gaiji_id(identifier, table)
+            if resolved is not None:
+                return resolved
+        # フォールバック: 説明部を「※（説明）」形式で残す
+        desc = _extract_gaiji_description(inside)
+        if desc:
+            fallback[full] = fallback.get(full, 0) + 1
+            return f"※（{desc}）"
+        untouched[full] = untouched.get(full, 0) + 1
+        return full
+
+    converted = _GAIJI_NOTE_RE.sub(repl, text)
+
+    if fallback:
+        total = sum(fallback.values())
+        print(f"      ℹ Unicode 未解決のため ※（説明）形式へフォールバック "
+              f"{len(fallback)} 種 / {total} 箇所:", file=sys.stderr)
+        for note, n in sorted(fallback.items()):
+            print(f"        {note}（{n}箇所）", file=sys.stderr)
+    if untouched:
+        total = sum(untouched.values())
+        print(f"      ⚠ 説明も取得できず原文保持の外字注記 "
+              f"{len(untouched)} 種 / {total} 箇所:", file=sys.stderr)
+        for note, n in sorted(untouched.items()):
+            print(f"        {note}（{n}箇所）", file=sys.stderr)
+
+    return converted
+
+
 def _strip_heading_block(lines: list) -> int:
     """先頭から見出しブロックを読み飛ばし、本文開始行インデックスを返す。"""
     i = 0
@@ -7205,6 +7377,7 @@ def run_aozora(args):
         sys.exit(1)
 
     text, enc = aozora_decode(txt_bytes)
+    text = aozora_resolve_gaiji(text)
     img_msg = f"  画像 {len(images)} 件" if images else ""
     print(f"      ファイル名: {txt_filename}  エンコーディング: {enc}{img_msg}")
 

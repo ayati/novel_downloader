@@ -147,13 +147,15 @@ python novel_downloader.py --from-file mynovel.txt
 
 5. **短縮URL展開・og:image取得** — `_SHORT_URL_HOSTS`（30種以上）で短縮サービスを判定。`expand_short_url()` が最大5ホップのリダイレクト追跡。`main()` 内で `detect_site()` の前に呼び出される。
 
-6. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・表紙色設定・ディスパッチで参照。`_check_update_one()` でも使用。
+6. **青空文庫外字注記の Unicode 変換** — `aozora_resolve_gaiji(text)` が ZIP デコード直後のテキストに対して `※［＃「説明」、識別子］` 形式の外字注記を解決する。対応識別子は `U+XXXX`（Unicode 直接指定）、`第3水準1-X-Y` / `第4水準2-X-Y`（JIS X 0213 プレフィックス付き）、素の `P-R-C`（プレフィックス省略形、P=1 or 2）の4形式。JIS X 0213 系は `data/aozora_gaiji_jis0213.tsv`（11,233 エントリ、x0213.org 由来、`tools/build_gaiji_table.py` で再生成可）を遅延ロード。`_extract_gaiji_identifier` は注記内部を `、` で分割して走査し、最初に解決可能な識別子にマッチする要素を採用するため、複合説明（説明部に `、` を含む山月記の `※［＃「口＋皐」の「白」に代えて「自」、第4水準2-4-33］`）や併記形（放浪記の `※［＃「さんずい＋垂」、U+6DB6、235-7］`）にも対応する。Unicode 解決不能な注記（Unicode 未収録字形・UCV・78字形・ページ-行のみ等）は `_extract_gaiji_description()` で説明部のみ抽出して `※（説明）` 形式へフォールバック（ドグラ・マグラの `※［＃感嘆符三つ、626-10］` → `※（感嘆符三つ）`）。フォールバック件数は ℹ・原文保持件数は ⚠ で stderr へ集約レポート。
 
-7. **`_check_update_one(txt_path, delay)`** — 1ファイルの更新チェックを実行し結果辞書を返す。`--check-update-dir` / `--append-dir` の Phase 1 で使用。`_extract_url_from_txt` → `expand_short_url` → `detect_site` → `normalize_url` → `_SITE_DISPATCH` 参照でディスパッチ。`_CHECK_UPDATE_MODE = True` で `_CheckUpdateDone` 例外をキャッチして新着話数を算出。
+7. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・表紙色設定・ディスパッチで参照。`_check_update_one()` でも使用。
 
-8. **`_append_one(txt_path, base_args)`** — 1ファイルの追記処理を実行し結果辞書を返す。`--append-dir` の Phase 2 で使用。`--append` と同等の args を内部で組み立て、`_SITE_DISPATCH` で `run_*` を呼び出す。追記前後の話数差分で追加話数を算出。
+8. **`_check_update_one(txt_path, delay)`** — 1ファイルの更新チェックを実行し結果辞書を返す。`--check-update-dir` / `--append-dir` の Phase 1 で使用。`_extract_url_from_txt` → `expand_short_url` → `detect_site` → `normalize_url` → `_SITE_DISPATCH` 参照でディスパッチ。`_CHECK_UPDATE_MODE = True` で `_CheckUpdateDone` 例外をキャッチして新着話数を算出。
 
-9. **ウォッチモード** — `--watch` で `run_watch()` に early dispatch。関連関数：
+9. **`_append_one(txt_path, base_args)`** — 1ファイルの追記処理を実行し結果辞書を返す。`--append-dir` の Phase 2 で使用。`--append` と同等の args を内部で組み立て、`_SITE_DISPATCH` で `run_*` を呼び出す。追記前後の話数差分で追加話数を算出。
+
+10. **ウォッチモード** — `--watch` で `run_watch()` に early dispatch。関連関数：
    - `_parse_watch_list` — `list.txt` を `[{url, title, auto}]` にパース（`#` コメント・`|` 区切り対応）
    - `_load_watch_cache` / `_save_watch_cache` — `.novel_watch_cache.json` の読み書き（`_save_watch_cache` は `tempfile.mkstemp` + `os.replace` でアトミック書き込み）
    - `_check_update_url` — URL 直接指定でエピソード数をチェック（`_check_update_one` の .txt ファイルなし版。ランナーの stdout を `contextlib.redirect_stdout` で抑制）。`n_cached=0` 時は `status="init"` を返す
@@ -162,7 +164,7 @@ python novel_downloader.py --from-file mynovel.txt
    - `_notify_webhook` — 新着エントリをまとめて 1 回 POST。`fmt="discord"` → `{"content":"..."}` / `fmt="slack"` → `{"text":"..."}`
    - `run_watch` — list.txt を走査 → `_check_update_url` → 通知収集 → `auto=true` 時に `_append_one`（既存 .txt あり）または `run_*` 新規 DL → キャッシュ保存 → `_notify_stdout` / `_notify_webhook`
 
-10. **`main()`** — `_host_matches` でドメイン判定（スプーフィング対策）、`detect_site` でサイト判定、`normalize_url` で話数 URL → 作品トップ URL 正規化。引数解析後の処理順：`--watch`（ウォッチモード）→ `--check-update-dir`（一括チェック）→ `--append-dir`（一括追記: Phase 1 事前チェック → 確認プロンプト → Phase 2 ダウンロード → サマリー）→ `--from-epub` / `--from-file` → `--append` → `--check-update` → `--use-site-cover`（og:image 取得）→ `_SITE_DISPATCH` によるディスパッチ（`try/except _CheckUpdateDone/finally`）。
+11. **`main()`** — `_host_matches` でドメイン判定（スプーフィング対策）、`detect_site` でサイト判定、`normalize_url` で話数 URL → 作品トップ URL 正規化。引数解析後の処理順：`--watch`（ウォッチモード）→ `--check-update-dir`（一括チェック）→ `--append-dir`（一括追記: Phase 1 事前チェック → 確認プロンプト → Phase 2 ダウンロード → サマリー）→ `--from-epub` / `--from-file` → `--append` → `--check-update` → `--use-site-cover`（og:image 取得）→ `_SITE_DISPATCH` によるディスパッチ（`try/except _CheckUpdateDone/finally`）。
 
 ## ePub3 内部構造
 
@@ -222,6 +224,7 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 - **特殊記号の文字種**：`々仝〆〇ヶ` は青空文庫規定により漢字（class 0）扱い。ルビ範囲判定（`_char_class`）に影響する
 - **字下げタグ**：`［＃N字下げ］`（単行）→ `text-indent: Nem`、`［＃ここからN字下げ］` → `div.aozora-indent-Nem`（縦書き `padding-top`）、`［＃ここから改行天付き、折り返してN字下げ］` → `div.aozora-hanging-Nem`
 - **青空文庫図タグ**：`「ファイル名」の図（ファイル名）入る` → `<figure><img></figure>`。画像は `OEBPS/images/` に配置し、src は `images/filename`（`../images/` は誤り）
+- **青空文庫外字注記**：`※［＃「説明」、識別子］` を `aozora_resolve_gaiji()` で Unicode 文字に置換。識別子は `U+XXXX` / `第3水準1-X-Y` / `第4水準2-X-Y` / 素の `P-R-C`（プレフィックス省略形、P=1 or 2）の4形式（JIS X 0213）。マッピング表は `data/aozora_gaiji_jis0213.tsv`（11,233 エントリ、`tools/build_gaiji_table.py` で再生成）。`U+XXXX、ページ-行` のような併記形にも対応するため、`、` で区切られた要素を順に走査し最初の解決可能な識別子を採用。複合説明（説明部に `、` を含む）にも対応。**Unicode 解決不能ケース**（Unicode 未収録字形・UCV・78字形・ページ-行のみ等）は `_extract_gaiji_description()` で説明部だけ抜き取り `※（説明）` 形式へフォールバック（例: `※［＃感嘆符三つ、626-10］` → `※（感嘆符三つ）`）。フォールバック適用件数は ℹ で stderr 集約レポート、説明も取得できないレアケースのみ ⚠ で原文保持
 - **表紙背景色のデフォルト**：なろう `#18b7cd`、カクヨム `#4BAAE0`、アルファポリス `#e05c2c`、エブリスタ `#00A0E9`、野いちご `#FA8296`、ハーメルン `#6E654C`、ノベマ！ `#595757`、ノベルアップ＋ `#0CBF97`、ステキブンゲイ `#E4097D`、NOVEL DAYS `#CBA13F`、青空文庫 `#000066`、プロジェクト杉田玄白 `#1D3461`、結城浩翻訳の部屋 `#2D6A4F`、ネオページ `#E94F37`、ソリスピア `#7C3AED`、berry's cafe `#C8245A`、monogatary.com `#231815`、ローカル `#16234b`
 - **リクエスト間隔**：デフォルト 1.5 秒、リトライ最大 3 回（間隔 5 秒）
 
