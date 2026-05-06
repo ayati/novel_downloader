@@ -149,6 +149,8 @@ python novel_downloader.py --from-file mynovel.txt
 
 6. **青空文庫外字注記の Unicode 変換** — `aozora_resolve_gaiji(text)` が ZIP デコード直後のテキストに対して `※［＃「説明」、識別子］` 形式の外字注記を解決する。対応識別子は `U+XXXX`（Unicode 直接指定）、`第3水準1-X-Y` / `第4水準2-X-Y`（JIS X 0213 プレフィックス付き）、素の `P-R-C`（プレフィックス省略形、P=1 or 2）の4形式。JIS X 0213 系は `data/aozora_gaiji_jis0213.tsv`（11,233 エントリ、x0213.org 由来、`tools/build_gaiji_table.py` で再生成可）を遅延ロード。`_extract_gaiji_identifier` は注記内部を `、` で分割して走査し、最初に解決可能な識別子にマッチする要素を採用するため、複合説明（説明部に `、` を含む山月記の `※［＃「口＋皐」の「白」に代えて「自」、第4水準2-4-33］`）や併記形（放浪記の `※［＃「さんずい＋垂」、U+6DB6、235-7］`）にも対応する。Unicode 解決不能な注記（Unicode 未収録字形・UCV・78字形・ページ-行のみ等）は `_extract_gaiji_description()` で説明部のみ抽出して `※（説明）` 形式へフォールバック（ドグラ・マグラの `※［＃感嘆符三つ、626-10］` → `※（感嘆符三つ）`）。フォールバック件数は ℹ・原文保持件数は ⚠ で stderr へ集約レポート。
 
+   **青空文庫テキストの図書カードURL挿入** — `_aozora_insert_source_url(text, card_url)` が `aozora_resolve_gaiji` の直後で呼ばれ、ZIP オリジナル形式を保ったまま 2 行を差し込む：(1) **冒頭**は著者行の直後に空行を挟んで `底本URL：{card_url}` を挿入（記号説明ブロックの手前）、(2) **末尾**は既存の青空文庫奥付ブロックの後ろに `図書カード：{card_url}` を追加。`底本URL：` ラベルは他サイトと統一されているため `_extract_url_from_txt` がそのまま機能し、`--append` / `--check-update` も青空文庫テキストで動作する。
+
 7. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・表紙色設定・ディスパッチで参照。`_check_update_one()` でも使用。
 
 8. **`_check_update_one(txt_path, delay)`** — 1ファイルの更新チェックを実行し結果辞書を返す。`--check-update-dir` / `--append-dir` の Phase 1 で使用。`_extract_url_from_txt` → `expand_short_url` → `detect_site` → `normalize_url` → `_SITE_DISPATCH` 参照でディスパッチ。`_CHECK_UPDATE_MODE = True` で `_CheckUpdateDone` 例外をキャッチして新着話数を算出。
@@ -213,7 +215,9 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 - 明示タグ `［＃縦中横］TEXT［＃縦中横終わり］` → `<span class="tcy">TEXT</span>`（センチネル2フェーズ変換で `_apply_ruby_auto` と干渉しない）
 - 自動検出：`_auto_tcy_xhtml()` がテキストノード内の**1〜3桁の孤立数字**および**1〜3文字の孤立半角英字**を自動でラップ。4桁以上・4文字以上は対象外。
 
-`epub:type` は `epub:type="cover"` / `epub:type="cover-image"`（cover-image.xhtml）と nav の `epub:type="toc"` / `epub:type="landmarks"` のみ付与。本文 body・cover.xhtml・colophon.xhtml の `epub:type` は除去（DPFJガイド準拠）。
+`epub:type` は `epub:type="cover"` / `epub:type="cover-image"`（cover-image.xhtml）と nav の `epub:type="toc"` / `epub:type="landmarks"` のみ付与。本文 body・cover.xhtml・colophon.xhtml の `epub:type` は除去（DPFJガイド準拠）。表紙・奥付の外部URL `<a>` には `epub:type` を一切付けない（`epub:type="link"` は EPUB 3 spec に存在しない値で、リーダーによっては内部ナビゲーションとして誤解釈され外部ジャンプが効かなくなる）。
+
+表紙の底本リンクラベル：`_make_cover_xhtml` は `site_name == "青空文庫"` のときだけ「**青空文庫の図書カード**」と表示し、他サイトは従来通り「`{site_name}で読む`」（例：「カクヨムで読む」）。青空文庫はサイト構造上、リンク先が個別作品の図書カードページ（書誌情報＋ZIPダウンロードリンク）なので「読む」では誤解を招くため。
 
 ## 主な規約
 

@@ -1258,10 +1258,15 @@ def _make_cover_xhtml(title: str, author: str, synopsis: str,
 
     source_html = ""
     if source_url:
-        label = f'{_esc(site_name)}で読む' if site_name else _esc(source_url)
+        if site_name == "青空文庫":
+            label = "青空文庫の図書カード"
+        elif site_name:
+            label = f'{_esc(site_name)}で読む'
+        else:
+            label = _esc(source_url)
         source_html = (
             f'<div class="cover-source">'
-            f'<a href="{_esc(source_url)}" epub:type="link">{label}</a>'
+            f'<a href="{_esc(source_url)}">{label}</a>'
             f'</div>'
         )
 
@@ -1355,7 +1360,7 @@ def _make_colophon_xhtml(title: str, source_url: str, site_name: str,
     """奥付XHTMLを生成する。底本URLはハイパーリンクとして出力する。"""
     today = date.today().strftime("%Y年%m月%d日")
     url_link = (
-        f'<a href="{_esc(source_url)}" epub:type="link">{_esc(source_url)}</a>'
+        f'<a href="{_esc(source_url)}">{_esc(source_url)}</a>'
     )
     # xmlns:epub を body に付与するため XHTML_TMPL を直接使わず個別生成
     body = (
@@ -7270,6 +7275,38 @@ def _split_aozora_by_headings(body_text: str) -> list:
     return sections
 
 
+def _aozora_insert_source_url(text: str, card_url: str) -> str:
+    """青空文庫 ZIP 由来テキストに底本URL（冒頭）と図書カードURL（末尾）を挿入する。
+
+    冒頭：著者行直後に「底本URL：...」を 1 行差し込む。
+          記号説明ブロック（------ で囲まれる）がある場合はその手前。
+          ない場合は著者行の直後に空行を挟んで挿入する。
+    末尾：「底本：」奥付ブロックがあればその後ろに、無ければ全体末尾に
+          「図書カード：...」行を追加する。
+    """
+    if not card_url:
+        return text
+
+    lines = text.split("\n")
+
+    # 著者行（先頭から 2 つ目の非空行）を特定
+    non_blank = [i for i, ln in enumerate(lines[:30]) if ln.strip()]
+    if len(non_blank) >= 2:
+        author_idx = non_blank[1]
+        # 著者行の直後に空行 +「底本URL：」+ 空行 を挿入
+        lines = (
+            lines[:author_idx + 1]
+            + ["", f"底本URL：{card_url}", ""]
+            + lines[author_idx + 1:]
+        )
+
+    text = "\n".join(lines)
+
+    # 末尾に「図書カード：」を追加（既存の青空文庫奥付があればその後ろ）
+    text = text.rstrip() + f"\n\n図書カード：{card_url}\n"
+    return text
+
+
 def aozora_text_to_episodes(text: str) -> tuple:
     """
     青空文庫テキストをパースして (title, author, episodes) を返す。
@@ -7378,6 +7415,7 @@ def run_aozora(args):
 
     text, enc = aozora_decode(txt_bytes)
     text = aozora_resolve_gaiji(text)
+    text = _aozora_insert_source_url(text, work_url)
     img_msg = f"  画像 {len(images)} 件" if images else ""
     print(f"      ファイル名: {txt_filename}  エンコーディング: {enc}{img_msg}")
 
