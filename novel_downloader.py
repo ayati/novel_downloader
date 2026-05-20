@@ -4332,9 +4332,14 @@ def neopage_content_to_aozora(content_html: str) -> str:
         else:
             ruby.replace_with(ruby.get_text())
 
+    # <br> を改行に変換（separator="\n" を使うと replace_with() で
+    # 生成された NavigableString の境界にも改行が入ってしまうため）
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+
     lines = []
     for p in soup.find_all("p"):
-        text = p.get_text(separator="\n").strip()
+        text = p.get_text().strip()
         lines.append(text if text else "")
 
     while lines and lines[-1] == "":
