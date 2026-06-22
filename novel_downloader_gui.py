@@ -215,6 +215,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.settings = load_settings()
         self._proc = None              # 実行中のダウンロードプロセス
         self._worker = None
+        self._abort_event = threading.Event()  # 中止フラグ（事前チェック中の中止にも対応）
         self._queue = queue.Queue()
         self._epub_path = None         # 完了時に開く epub
         self._raw_log = []             # 生ログ（詳細表示用）
@@ -511,6 +512,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._persist()
         self._epub_path = None
         self._raw_log = []
+        self._abort_event.clear()
         self._set_state_running()
         self._proc = "starting"           # 二重起動防止のプレースホルダ
         self._worker = threading.Thread(target=self._download_worker,
@@ -519,13 +521,13 @@ class NovelDownloaderApp(ctk.CTk):
         self._worker.start()
 
     def _abort(self):
+        self._abort_event.set()           # ワーカーが起動前チェックで参照する
         proc = self._proc
-        if hasattr(proc, "terminate"):
+        if hasattr(proc, "terminate"):     # 実プロセス起動済みなら停止（finished で中止判定）
             try:
                 proc.terminate()
             except Exception:
                 pass
-        self._queue.put(("aborted",))
 
     # ── ダウンロードワーカー（別スレッド・§6） ──────────────────
     def _build_cli_args(self, target_url: str, s: dict) -> list:
@@ -557,6 +559,11 @@ class NovelDownloaderApp(ctk.CTk):
             return
         target_url = info.get("normalized_url") or url
 
+        # 事前チェック中に中止されていたらダウンロードを起動しない
+        if self._abort_event.is_set():
+            self._queue.put(("aborted",))
+            return
+
         # 2) ダウンロード起動
         try:
             proc = subprocess.Popen(
@@ -570,6 +577,12 @@ class NovelDownloaderApp(ctk.CTk):
             self._queue.put(("finished", 1))
             return
         self._proc = proc
+        # 起動と中止が競合した場合、起動直後でも止める
+        if self._abort_event.is_set():
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
         # 3) stdout を1行ずつ読む（§9）
         for line in proc.stdout:
@@ -625,6 +638,10 @@ class NovelDownloaderApp(ctk.CTk):
         elif kind == "finished":
             rc = msg[1]
             self._proc = None
+            if self._abort_event.is_set():   # 中止後の終了は「中止」として扱う
+                self._set_state_idle()
+                self.lbl_status.configure(text="中止しました。")
+                return
             if rc == 0:
                 self._fallback_epub_path()
                 self._set_state_done()
