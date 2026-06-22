@@ -1856,7 +1856,8 @@ _FONT_BOLD_PATH, _FONT_BOLD_IDX, _FONT_MEDIUM_PATH, _FONT_MEDIUM_IDX = _find_cjk
 if _FONT_BOLD_PATH:
     _b = os.path.basename(_FONT_BOLD_PATH)
     _m = os.path.basename(_FONT_MEDIUM_PATH) if _FONT_MEDIUM_PATH else _b
-    print(f"[情報] 日本語フォント検出: bold={_b}[{_FONT_BOLD_IDX}]  medium={_m}[{_FONT_MEDIUM_IDX}]")
+    print(f"[情報] 日本語フォント検出: bold={_b}[{_FONT_BOLD_IDX}]  medium={_m}[{_FONT_MEDIUM_IDX}]",
+          file=sys.stderr)
 else:
     print(
         "[警告] 日本語フォントが見つかりませんでした。JPEG表紙はSVGで代替されます。\n"
@@ -1865,7 +1866,8 @@ else:
         "                 または: sudo apt install fonts-ipafont\n"
         "       [Windows] BIZ UDP明朝 / MS明朝 / 游明朝 など日本語フォントが\n"
         "                 C:\\Windows\\Fonts に存在するか確認してください。\n"
-        "                 Microsoft Office をインストールすると游明朝が追加されます。"
+        "                 Microsoft Office をインストールすると游明朝が追加されます。",
+        file=sys.stderr
     )
 
 
@@ -9375,8 +9377,44 @@ def main():
     parser.add_argument("--watch-auto-default", dest="watch_auto_default", action="store_true",
                         help="ウォッチリストで auto= を指定しなかったエントリに"
                              "自動 DL を適用する（デフォルトは自動 DL なし）")
+    parser.add_argument("--detect-site", dest="detect_site", default=None, metavar="URL",
+                        help="URLのサイト種別を判定し JSON 1行で出力して終了"
+                             "（GUI用・読み取り専用・オフライン・短縮URL展開なし）")
+    parser.add_argument("--list-sites", dest="list_sites", action="store_true",
+                        help="対応サイト一覧を JSON で出力して終了（GUI用・読み取り専用）")
 
     args = parser.parse_args()
+
+    # ── --list-sites: 対応サイト一覧（GUI用・読み取り専用・オフライン） ──
+    if getattr(args, "list_sites", False):
+        sites = [{"site": sid, "display_name": label}
+                 for sid, (label, _color, _runner) in _SITE_DISPATCH.items()]
+        sys.stdout.buffer.write(
+            (json.dumps(sites, ensure_ascii=False) + "\n").encode("utf-8"))
+        sys.stdout.flush()
+        sys.exit(0)
+
+    # ── --detect-site: サイト判定（GUI用・読み取り専用・オフライン・短縮URL展開なし） ──
+    if getattr(args, "detect_site", None):
+        _url = args.detect_site
+        _res = {"schema": 1, "site": None, "display_name": None,
+                "needs_playwright": False, "normalized_url": None}
+        try:
+            _site = detect_site(_url)
+            if _site != "unknown" and _site in _SITE_DISPATCH:
+                _label = _SITE_DISPATCH[_site][0]
+                # normalize_url は話数URLで [情報]… を print するため stdout を抑制
+                with contextlib.redirect_stdout(io.StringIO()):
+                    _norm = normalize_url(_url, _site)
+                _res.update(site=_site, display_name=_label,
+                            needs_playwright=(_site == "hameln"),
+                            normalized_url=_norm)
+        except Exception:
+            pass  # 解析不能は site=None のまま返す
+        sys.stdout.buffer.write(
+            (json.dumps(_res, ensure_ascii=False) + "\n").encode("utf-8"))
+        sys.stdout.flush()
+        sys.exit(0)
 
     # ── --watch: ウォッチモード ──────────────────────────────────────
     if getattr(args, "watch", None):

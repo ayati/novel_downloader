@@ -112,6 +112,8 @@ python novel_downloader.py --from-file mynovel.txt
 | `--webhook-format {discord,slack}` | `discord` | Webhook ペイロード形式。`discord`: `{"content":"..."}` / `slack`: `{"text":"..."}` |
 | `--watch-cache FILE` | `.novel_watch_cache.json` | ウォッチキャッシュファイルのパス（アトミック書き込み・エントリ単位で即時更新） |
 | `--watch-auto-default` | — | ウォッチリストで `auto=` 未指定のエントリに自動 DL を適用する |
+| `--detect-site URL` | — | GUI 用の読み取り専用モード。URL のサイト種別を判定し JSON 1行（`{"schema":1,"site","display_name","needs_playwright","normalized_url"}`）を stdout に出力して終了。オフライン・即時・**短縮URL展開なし**。未対応サイトは `site:null`、ハーメルンは `needs_playwright:true`。`detect_site()`/`normalize_url()`/`_SITE_DISPATCH` を流用 |
+| `--list-sites` | — | GUI 用の読み取り専用モード。対応サイト一覧（`[{"site","display_name"}]`）を JSON で stdout に出力して終了。`_SITE_DISPATCH` を挿入順に列挙 |
 
 ## 依存ライブラリ
 
