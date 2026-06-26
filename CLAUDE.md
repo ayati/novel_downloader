@@ -216,6 +216,7 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 縦中横（`.tcy`）対応：
 - 明示タグ `［＃縦中横］TEXT［＃縦中横終わり］` → `<span class="tcy">TEXT</span>`（センチネル2フェーズ変換で `_apply_ruby_auto` と干渉しない）
 - 自動検出：`_auto_tcy_xhtml()` がテキストノード内の**1〜3桁の孤立数字**および**1〜3文字の孤立半角英字**を自動でラップ。4桁以上・4文字以上は対象外。
+  - **連結フレーズ除外**：英数字が半角の連結記号（スペース・カンマ・ピリオド・ハイフン・コロン・スラッシュ・アポストロフィ `[ ,.:/'\-]`）を介して別の英数字と連なる場合は「英語の文章/連結語」と見なし、まとめて横向きのまま残す（縦中横化しない）。`_TCY_DIGITS_RE` の第1選択肢が連結フレーズ全体を先に飲み込むため、内部の短いトークン（1〜3文字）も縦中横にならない。例：`Men in Black` の `Men`/`in`、`U.S.A`、`3.14`、`A-1` は横向き維持。`23時` の `23` や孤立した `OK` は従来通り縦中横化。判定は `_tcy_wrap()`（連結記号を含むマッチはそのまま返す）が行う。
 
 `epub:type` は `epub:type="cover"` / `epub:type="cover-image"`（cover-image.xhtml）と nav の `epub:type="toc"` / `epub:type="landmarks"` のみ付与。本文 body・cover.xhtml・colophon.xhtml の `epub:type` は除去（DPFJガイド準拠）。表紙・奥付の外部URL `<a>` には `epub:type` を一切付けない（`epub:type="link"` は EPUB 3 spec に存在しない値で、リーダーによっては内部ナビゲーションとして誤解釈され外部ジャンプが効かなくなる）。
 

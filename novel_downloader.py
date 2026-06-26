@@ -986,7 +986,26 @@ _TCY_SENTINEL_RE = re.compile(r"\x00TCY\x01(.*?)\x00TCYEND\x01")
 # テキストノード内の1-3桁の連続数字・1-3文字の半角英字（縦中横自動検出）
 # 数字: (?<!\d)/(?!\d) で4桁以上（年号等）は対象外
 # 英字: (?<![A-Za-z])/(?![A-Za-z]) で4文字以上の英単語は対象外
-_TCY_DIGITS_RE   = re.compile(r"(?<!\d)\d{1,3}(?!\d)|(?<![A-Za-z])[A-Za-z]{1,3}(?![A-Za-z])")
+#
+# ただし、英数字が半角スペース・カンマ・ピリオド・ハイフン（コロン・スラッシュ・
+# アポストロフィ含む）を介して別の英数字と連なる場合は「英語の文章/連結語」と見なし、
+# まとめて横向きのまま残す（縦中横にしない）。例: "Men in Black" の Men/in、"U.S.A"。
+# 第1選択肢が連結フレーズを丸ごと飲み込むため、内部の短いトークンは縦中横化されない。
+_TCY_CONNECTOR   = r"[ ,.:/'\-]"
+_TCY_DIGITS_RE   = re.compile(
+    r"[A-Za-z0-9]+(?:" + _TCY_CONNECTOR + r"+[A-Za-z0-9]+)+"  # 連結フレーズ→そのまま
+    r"|(?<!\d)\d{1,3}(?!\d)"                                  # 孤立した1-3桁数字→縦中横
+    r"|(?<![A-Za-z])[A-Za-z]{1,3}(?![A-Za-z])"               # 孤立した1-3文字英字→縦中横
+)
+_TCY_CONNECTOR_RE = re.compile(_TCY_CONNECTOR)
+
+
+def _tcy_wrap(m: "re.Match") -> str:
+    """マッチ部を縦中横化する。連結フレーズ（連結記号を含む）はそのまま返す。"""
+    s = m.group()
+    if _TCY_CONNECTOR_RE.search(s):
+        return s
+    return f'<span class="tcy">{s}</span>'
 
 
 def _apply_tcy_pre(text: str) -> str:
@@ -1024,8 +1043,7 @@ def _auto_tcy_xhtml(html: str) -> str:
         elif in_tcy > 0:
             out.append(part)
         else:
-            out.append(_TCY_DIGITS_RE.sub(
-                lambda m: f'<span class="tcy">{m.group()}</span>', part))
+            out.append(_TCY_DIGITS_RE.sub(_tcy_wrap, part))
     return ''.join(out)
 
 
