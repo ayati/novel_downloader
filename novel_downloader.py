@@ -3701,6 +3701,21 @@ def _est_parse_nuxt_vars(nuxt_src: str) -> dict:
     return {p: int(v) for p, v in zip(params, args) if v.isdigit()}
 
 
+def _est_decode_js_str(raw: str) -> str:
+    """JS 文字列リテラル本体のエスケープ（\\uXXXX・\\n 等）をデコードする。
+
+    estar の __NUXT__ は body・title・chapterTitle を JS 文字列リテラルとして
+    埋め込むため、`\\u003E` のような Unicode エスケープを実際の文字（＞）へ復元する。
+    JSON として解釈できない場合は最低限のエスケープのみ処理してフォールバックする。
+    """
+    try:
+        s = json.loads(f'"{raw}"')
+    except Exception:
+        s = (raw.replace("\\n", "\n").replace("\\r", "")
+                .replace('\\"', '"').replace("\\\\", "\\"))
+    return s.replace("\r", "")
+
+
 def est_parse_viewer_page(nuxt_src: str, batch_page: int = 1) -> dict:
     """
     ビューアページの __NUXT__ から各ページの pageNo・body を抽出する。
@@ -3711,7 +3726,7 @@ def est_parse_viewer_page(nuxt_src: str, batch_page: int = 1) -> dict:
     for m in re.finditer(
         r'novelPageId:"\d+",body:"((?:[^"\\]|\\.)*?)",bodyParsed', nuxt_src
     ):
-        body = m.group(1).replace("\\n", "\n").replace("\\r", "")
+        body = _est_decode_js_str(m.group(1))
         rest = nuxt_src[m.end():m.end() + 500]
         pageno_m = re.search(r',pageNo:(\d+|[a-z])', rest)
         if not pageno_m:
@@ -3739,7 +3754,7 @@ def est_parse_episode_titles(nuxt_src: str, batch_page: int = 1) -> dict:
             continue
         raw = pageno_m.group(1)
         page_no = int(raw) if raw.isdigit() else var_map.get(raw, batch_page)
-        result[page_no] = title_m.group(1)
+        result[page_no] = _est_decode_js_str(title_m.group(1))
     return result
 
 
@@ -3753,7 +3768,7 @@ def est_parse_chapter_titles(nuxt_src: str, batch_page: int = 1) -> dict:
     var_map = _est_parse_nuxt_vars(nuxt_src)
     result = {}
     for m in re.finditer(r',chapterTitle:"([^"]+)"', nuxt_src):
-        chapter = m.group(1).strip()
+        chapter = _est_decode_js_str(m.group(1)).strip()
         if not chapter:
             continue
         # chapterTitle より手前 1500 文字以内の pageNo を取得
