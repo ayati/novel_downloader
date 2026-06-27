@@ -4602,23 +4602,50 @@ def solispia_get_episode_list(soup) -> list:
     return episodes
 
 
-def _solispia_deepest_text_div(el):
+def _solispia_iter_tokens(el):
     """
-    div#novelContent 以下で、テキストノードと <br> を直接子に持つ
-    最深の div を返す。
+    div#novelContent 以下を再帰的に走査し、('text', s) / ('br', None) の
+    トークン列を返す。
+
+    ソリスピアのエピソード本文は2種類の構造を取りうる：
+      (1) 単一の wrapper div の中に <br> で区切られた全段落（多くのエピソード）
+      (2) novelContent 直下に段落ごとの sibling div が並ぶ（一部エピソード）
+    div 境界を <br> と同等の段落区切りとして扱うことで、どちらの構造でも
+    全段落を取りこぼさず走査できる。
     """
-    while True:
-        child_divs = [c for c in el.children
-                      if getattr(c, "name", None) == "div"]
-        if not child_divs:
-            return el
-        el = child_divs[0]
+    tokens = []
+
+    def walk(node):
+        for child in node.children:
+            name = getattr(child, "name", None)
+            if name == "br":
+                tokens.append(("br", None))
+                # html.parser は不正なマークアップで後続テキストを <br> 配下に
+                # ネストすることがある（ソリスピアの一部エピソードで発生）。
+                # 取りこぼさないよう br の子もそのまま走査する。
+                walk(child)
+            elif name is None:  # NavigableString（テキストノード）
+                if str(child).strip():
+                    tokens.append(("text", str(child)))
+            elif name == "div":
+                # div 境界を段落区切りとして扱う
+                tokens.append(("br", None))
+                walk(child)
+                tokens.append(("br", None))
+            else:
+                # span 等の他タグ（テキスト抽出）
+                text = child.get_text()
+                if text.strip():
+                    tokens.append(("text", text))
+
+    walk(el)
+    return tokens
 
 
 def solispia_html_to_aozora(soup) -> str:
     """
     エピソードページの div#novelContent から本文を青空文庫書式で返す。
-    テキストノードと <br> タグを走査し、<br> 2個以上で空行を挿入する。
+    テキストノード・<br>・div 境界を走査し、区切り2個以上で空行を挿入する。
     """
     content_el = soup.find(id="novelContent")
     if not content_el:
@@ -4637,30 +4664,20 @@ def solispia_html_to_aozora(soup) -> str:
         else:
             ruby.replace_with(ruby.get_text())
 
-    deepest  = _solispia_deepest_text_div(content_el)
     lines    = []
     br_count = 0
 
-    for child in deepest.children:
-        child_name = getattr(child, "name", None)
-        if child_name == "br":
+    for kind, val in _solispia_iter_tokens(content_el):
+        if kind == "br":
             br_count += 1
-        elif child_name is None:  # NavigableString（テキストノード）
-            text = str(child)
-            if text.strip():
-                if br_count >= 2:
-                    lines.append("")
-                lines.append(text.rstrip())
-                br_count = 0
-        else:
-            # span 等の他タグ（テキスト抽出）
-            text = child.get_text()
-            if text.strip():
-                if br_count >= 2:
-                    lines.append("")
-                lines.append(text.rstrip())
-                br_count = 0
+        else:  # text
+            if br_count >= 2:
+                lines.append("")
+            lines.append(val.rstrip())
+            br_count = 0
 
+    while lines and not lines[0].strip():
+        lines.pop(0)
     while lines and not lines[-1].strip():
         lines.pop()
 
