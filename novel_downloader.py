@@ -3683,160 +3683,138 @@ def est_fetch(session, url: str, retries: int = 3):
     raise RuntimeError(f"URLの取得に失敗しました: {url}")
 
 
-def est_get_work_info(soup, html: str) -> dict:
-    """作品トップページからタイトル・著者・あらすじ・総ページ数を取得する。"""
+def _est_nuxt_data(html: str) -> list:
+    """HTML から Nuxt 3 の __NUXT_DATA__（devalue 形式の JSON 配列）を抽出する。"""
+    m = re.search(r'<script[^>]+id="__NUXT_DATA__"[^>]*>(.*?)</script>',
+                  html, re.DOTALL)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(1))
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _est_resolve(data: list, idx, depth: int = 0):
+    """devalue 形式の値を再帰解決する。
+
+    __NUXT_DATA__ は JSON 配列で、dict の値・list の要素は同配列への
+    インデックス（例: {"title": 17} → data[17] が実際の文字列）。
+    ["Reactive", n] のようなタグ付き値は data[n] へ委譲する。
+    """
+    if depth > 4:
+        return None
+    v = data[idx] if isinstance(idx, int) and 0 <= idx < len(data) else idx
+    if isinstance(v, dict):
+        return {k: _est_resolve(data, i, depth + 1) for k, i in v.items()}
+    if isinstance(v, list):
+        if (len(v) == 2 and isinstance(v[0], str)
+                and v[0] in ("Reactive", "Ref", "ShallowRef", "ShallowReactive")):
+            return _est_resolve(data, v[1], depth + 1)
+        return [_est_resolve(data, i, depth + 1) for i in v]
+    return v
+
+
+def est_get_work_info(soup, html: str, work_id: str = "") -> dict:
+    """作品トップページ（Nuxt 3 SSR）からタイトル・著者・あらすじ・総ページ数を取得する。"""
     info = {"title": "", "author": "", "description": "", "page_count": 0}
 
-    h1 = soup.find("h1")
-    if h1:
-        info["title"] = h1.get_text(strip=True)
+    # __NUXT_DATA__ から作品 dict（publishedPageCount を持つ）を探す。
+    # おすすめ作品等も同じ形の dict を持つため workId で照合する
+    data = _est_nuxt_data(html)
+    for v in data:
+        if not (isinstance(v, dict) and "publishedPageCount" in v and "user" in v):
+            continue
+        if work_id and str(_est_resolve(data, v.get("workId"))) != work_id:
+            continue
+        title = _est_resolve(data, v.get("title"))
+        desc  = _est_resolve(data, v.get("description"))
+        pc    = _est_resolve(data, v.get("publishedPageCount"))
+        if isinstance(title, str):
+            info["title"] = title
+        if isinstance(desc, str):
+            info["description"] = desc.strip()
+        if isinstance(pc, int) and pc > 0:
+            info["page_count"] = pc
+        user_idx = v.get("user")
+        if isinstance(user_idx, int) and 0 <= user_idx < len(data):
+            user = data[user_idx]
+            if isinstance(user, dict):
+                nick = _est_resolve(data, user.get("nickname"))
+                if isinstance(nick, str):
+                    info["author"] = nick
+        break
 
-    # og:title の形式: "タイトル／著者名"
-    og_title = soup.find("meta", property="og:title")
-    if og_title and og_title.get("content"):
-        content = og_title["content"]
-        if "／" in content:
-            info["author"] = content.split("／")[-1].strip()
-
-    meta_desc = soup.find("meta", attrs={"name": "description"})
-    if meta_desc and meta_desc.get("content"):
-        info["description"] = meta_desc["content"].strip()
-
-    m = re.search(r'publishedPageCount:(\d+)', html)
-    if m:
-        info["page_count"] = int(m.group(1))
+    # フォールバック: メタタグ類
+    if not info["title"]:
+        h1 = soup.find("h1")
+        if h1:
+            info["title"] = h1.get_text(strip=True)
+    if not info["author"]:
+        # og:title の形式: "タイトル／著者名"
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content") and "／" in og_title["content"]:
+            info["author"] = og_title["content"].split("／")[-1].strip()
+    if not info["description"]:
+        meta_desc = soup.find("meta", attrs={"name": "description"})
+        if meta_desc and meta_desc.get("content"):
+            info["description"] = meta_desc["content"].strip()
 
     return info
 
 
-def est_extract_nuxt(html: str) -> str:
-    """HTML から window.__NUXT__ のスクリプト内容を抽出する。"""
-    start = html.find("window.__NUXT__")
-    end   = html.find("</script>", start)
-    return html[start:end] if start >= 0 else ""
+def est_api(session, page_path: str, query: str, data: dict,
+            fragments: list = None, retries: int = 3) -> dict:
+    """GraphQL API（POST /api/graphql）を呼び出してレスポンスの data 部を返す。
 
-
-def _est_parse_nuxt_vars(nuxt_src: str) -> dict:
+    Nuxt 3 移行後は本文・エピソード一覧が SSR に含まれず API 遅延取得のため、
+    ブラウザと同じ名前付きクエリを直接叩く。Cookie（ゲストセッション）は
+    事前の作品トップページ取得で session に確立されている必要がある。
     """
-    NUXT IIFE の引数リストを解析して letter→int のマッピングを返す。
-    例: (function(a,b,c,...){...}(false,null,0,...,1,...)) → {'c':0,'g':1,...}
+    _check_abort()
+    payload = {"query": query, "data": data}
+    if fragments:
+        payload["fragments"] = fragments
+    headers = {"User-Agent": UA, "Accept": "application/json",
+               "x-from": _EST_BASE + page_path}
+    for attempt in range(1, retries + 1):
+        try:
+            resp = session.post(f"{_EST_BASE}/api/graphql", json=payload,
+                                headers=headers, timeout=20)
+            resp.raise_for_status()
+            j = resp.json()
+            if j.get("errors"):
+                raise RuntimeError(f"APIエラー: {j['errors']}")
+            return j.get("data") or {}
+        except AbortRequested:
+            raise
+        except Exception as e:
+            print(f"  [警告] API取得失敗 (試行 {attempt}/{retries}): {e}")
+            if attempt < retries:
+                _sleep(3)
+    raise RuntimeError(f"APIの呼び出しに失敗しました: {query}")
+
+
+def est_get_episode_list(session, work_id: str, delay: float = 1.5) -> list:
+    """エピソード一覧を API で取得する。
+
+    戻り値: [{"pageNo": 開始ページ番号, "title": 話タイトル,
+              "chapterTitle": 章タイトル or None}, ...]
     """
-    sig_m = re.search(r'\(function\(([a-z,]+)\)', nuxt_src)
-    if not sig_m:
-        return {}
-    params = sig_m.group(1).split(',')
-    # 末尾の }(args) を探す（IIFE末尾の引数リスト）
-    idx = nuxt_src.rfind('}(')
-    if idx < 0:
-        return {}
-    args_str = nuxt_src[idx + 2:]
-    # 末尾の );, )); 等を除去
-    args_str = re.sub(r'\)+\s*;?\s*$', '', args_str)
-    # 簡易 JS 引数パーサー（{} や "" 内のカンマを無視して分割）
-    args, current, depth, in_str = [], [], 0, False
-    for ch in args_str:
-        if in_str:
-            current.append(ch)
-            if ch == '"':
-                in_str = False
-        elif ch == '"':
-            in_str = True
-            current.append(ch)
-        elif ch in '{[(':
-            depth += 1
-            current.append(ch)
-        elif ch in '}])':
-            depth -= 1
-            current.append(ch)
-        elif ch == ',' and depth == 0:
-            args.append(''.join(current).strip())
-            current = []
-        else:
-            current.append(ch)
-    if current:
-        args.append(''.join(current).strip())
-    return {p: int(v) for p, v in zip(params, args) if v.isdigit()}
-
-
-def _est_decode_js_str(raw: str) -> str:
-    """JS 文字列リテラル本体のエスケープ（\\uXXXX・\\n 等）をデコードする。
-
-    estar の __NUXT__ は body・title・chapterTitle を JS 文字列リテラルとして
-    埋め込むため、`\\u003E` のような Unicode エスケープを実際の文字（＞）へ復元する。
-    JSON として解釈できない場合は最低限のエスケープのみ処理してフォールバックする。
-    """
-    try:
-        s = json.loads(f'"{raw}"')
-    except Exception:
-        s = (raw.replace("\\n", "\n").replace("\\r", "")
-                .replace('\\"', '"').replace("\\\\", "\\"))
-    return s.replace("\r", "")
-
-
-def est_parse_viewer_page(nuxt_src: str, batch_page: int = 1) -> dict:
-    """
-    ビューアページの __NUXT__ から各ページの pageNo・body を抽出する。
-    戻り値: {pageNo: body_str}
-    """
-    var_map = _est_parse_nuxt_vars(nuxt_src)
-    result = {}
-    for m in re.finditer(
-        r'novelPageId:"\d+",body:"((?:[^"\\]|\\.)*?)",bodyParsed', nuxt_src
-    ):
-        body = _est_decode_js_str(m.group(1))
-        rest = nuxt_src[m.end():m.end() + 500]
-        pageno_m = re.search(r',pageNo:(\d+|[a-z])', rest)
-        if not pageno_m:
-            continue
-        raw = pageno_m.group(1)
-        page_no = int(raw) if raw.isdigit() else var_map.get(raw, batch_page)
-        result[page_no] = body
-    return result
-
-
-def est_parse_episode_titles(nuxt_src: str, batch_page: int = 1) -> dict:
-    """
-    ビューアページの __NUXT__ からエピソード開始ページのタイトルを抽出する。
-    戻り値: {pageNo: episodeTitle}（タイトルのあるページのみ）
-    """
-    var_map = _est_parse_nuxt_vars(nuxt_src)
-    result = {}
-    for m in re.finditer(
-        r'novelPageId:"\d+",body:"(?:[^"\\]|\\.)*?",bodyParsed', nuxt_src
-    ):
-        rest = nuxt_src[m.end():m.end() + 500]
-        pageno_m = re.search(r',pageNo:(\d+|[a-z])', rest)
-        title_m  = re.search(r',title:"([^"]+)"', rest)
-        if not pageno_m or not title_m:
-            continue
-        raw = pageno_m.group(1)
-        page_no = int(raw) if raw.isdigit() else var_map.get(raw, batch_page)
-        result[page_no] = _est_decode_js_str(title_m.group(1))
-    return result
-
-
-def est_parse_chapter_titles(nuxt_src: str, batch_page: int = 1) -> dict:
-    """
-    ビューアページの __NUXT__ から各ページの chapterTitle を抽出する。
-    chapterTitle はエピソードオブジェクトの最終フィールドなので、
-    直前 1500 文字以内の pageNo を参照して対応付ける。
-    戻り値: {pageNo: chapterTitle}
-    """
-    var_map = _est_parse_nuxt_vars(nuxt_src)
-    result = {}
-    for m in re.finditer(r',chapterTitle:"([^"]+)"', nuxt_src):
-        chapter = _est_decode_js_str(m.group(1)).strip()
-        if not chapter:
-            continue
-        # chapterTitle より手前 1500 文字以内の pageNo を取得
-        ctx = nuxt_src[max(0, m.start() - 1500):m.start()]
-        pageno_m = re.search(r',pageNo:(\d+|[a-z])[,}]', ctx)
-        if not pageno_m:
-            continue
-        raw = pageno_m.group(1)
-        page_no = int(raw) if raw.isdigit() else var_map.get(raw, batch_page)
-        result[page_no] = chapter
-    return result
+    nodes, page = [], 1
+    while True:
+        d = est_api(session, f"/novels/{work_id}/episodes",
+                    "pages/novels/workId/episodes",
+                    {"workId": work_id, "first": 500, "page": page})
+        ep = (d.get("novel") or {}).get("episodes") or {}
+        batch = ep.get("nodes") or []
+        nodes.extend(batch)
+        if not batch or not (ep.get("pageInfo") or {}).get("hasNextPage"):
+            break
+        page += 1
+        _sleep(delay)
+    return nodes
 
 
 def run_estar(args):
@@ -3858,7 +3836,7 @@ def run_estar(args):
 
     print(f"\n[1/3] 作品情報を取得中: {work_url}")
     top_soup, top_html = est_fetch(session, work_url)
-    info = est_get_work_info(top_soup, top_html)
+    info = est_get_work_info(top_soup, top_html, work_id)
     if info["title"]:
         print(f"      タイトル  : {info['title']}")
     if info["author"]:
@@ -3874,42 +3852,49 @@ def run_estar(args):
     start_page   = max(1, args.start or 1)
     end_page     = min(total_pages, args.end or total_pages)
     target_pages = list(range(start_page, end_page + 1))
-    print(f"[2/3] エピソードを取得中（{len(target_pages)} ページ / 全 {total_pages} ページ）...")
 
-    all_bodies         = {}   # {pageNo: body_str}
+    # エピソード一覧（話タイトル・章タイトル）を API で取得
     all_titles         = {}   # {pageNo: episodeTitle}（エピソード開始ページのみ）
     all_chapter_titles = {}   # {pageNo: chapterTitle}
+    for node in est_get_episode_list(session, work_id, args.delay):
+        page_no = node.get("pageNo")
+        if not isinstance(page_no, int):
+            continue
+        if node.get("title"):
+            all_titles[page_no] = str(node["title"])
+        if node.get("chapterTitle"):
+            all_chapter_titles[page_no] = str(node["chapterTitle"])
 
-    batch_list = list(range(start_page, end_page + 1, 15))
+    if args.list_only:
+        _show_episode_list(info["title"], info["author"],
+                           [all_titles[p] for p in sorted(all_titles)
+                            if start_page <= p <= end_page])
+
+    print(f"[2/3] エピソードを取得中（{len(target_pages)} ページ / 全 {total_pages} ページ）...")
+
+    all_bodies = {}   # {pageNo: body_str}
+    batch_size = 15   # ブラウザ実装（nextNovelPages）と同じ 1 リクエストあたりのページ数
+    batch_list = list(range(start_page, end_page + 1, batch_size))
     for batch_i, batch_page in enumerate(batch_list, 1):
-        viewer_url = f"{_EST_BASE}/novels/{work_id}/viewer?page={batch_page}"
         print(f"  [{batch_i:3d}/{len(batch_list)}] page={batch_page}")
         _progress(batch_i, len(batch_list), f"page={batch_page}")
         try:
-            _, viewer_html = est_fetch(session, viewer_url)
-            nuxt_src = est_extract_nuxt(viewer_html)
-            all_bodies.update(est_parse_viewer_page(nuxt_src, batch_page))
-            all_titles.update(est_parse_episode_titles(nuxt_src, batch_page))
-            all_chapter_titles.update(est_parse_chapter_titles(nuxt_src, batch_page))
+            d = est_api(session, f"/novels/{work_id}/viewer?page={batch_page}",
+                        "pages/novels/workId/viewer/nextNovelPages",
+                        {"workId": work_id,
+                         "first": min(batch_size, end_page - batch_page + 1),
+                         # pageNoAfter は指定ページ番号を含む「以降」
+                         "pageNoAfter": batch_page,
+                         "path": f"/novels/{work_id}/viewer"},
+                        fragments=["novelPageInViewer"])
+            for node in ((d.get("novel") or {}).get("pages") or {}).get("nodes") or []:
+                page_no = node.get("pageNo")
+                if isinstance(page_no, int) and node.get("body"):
+                    all_bodies[page_no] = node["body"].replace("\r", "")
         except RuntimeError as e:
             print(f"    [エラー] バッチ取得失敗: {e}")
         if batch_i < len(batch_list):
             _sleep(args.delay)
-
-    if args.list_only:
-        # ページ単位取得のためタイトルをここで組み立て
-        _ep_list_estar = []
-        _cur_title = ""
-        _page_in_ep = 0
-        for _p in target_pages:
-            _t = all_titles.get(_p, "")
-            if _t:
-                _cur_title = _t
-                _page_in_ep = 1
-                _ep_list_estar.append(_cur_title)
-            else:
-                _page_in_ep += 1
-        _show_episode_list(info["title"], info["author"], _ep_list_estar)
 
     # 青空文庫テキスト組み立て
     print("[3/3] テキスト・ePub を生成中...")
