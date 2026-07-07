@@ -8618,14 +8618,14 @@ def normalize_url(url: str, site: str) -> str:
             return top_url
 
     elif site == "estar":
-        # viewer?page=N の形式はトップページへ正規化
+        # viewer?page=N・episodes 等のサブページはトップページへ正規化
         m = re.match(
-            r"(https?://estar\.jp/novels/[0-9]+)/viewer",
+            r"(https?://estar\.jp/novels/[0-9]+)/[^?#]",
             url, re.I
         )
         if m:
             top_url = m.group(1)
-            print(f"[情報] ビューアURLを作品トップページに正規化しました。")
+            print(f"[情報] 作品ページのURLを作品トップページに正規化しました。")
             print(f"       指定URL : {url}")
             print(f"       正規化後: {top_url}")
             return top_url
