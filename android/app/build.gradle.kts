@@ -12,8 +12,8 @@ android {
         applicationId = "com.ayati.noveldownloader"
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.4.1"
 
         ndk {
             // 配布対象は実機スマホのみなので arm64 に絞って APK を小さくする
