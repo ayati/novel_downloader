@@ -11,12 +11,15 @@ object DownloadState {
 
     enum class Phase { IDLE, PREPARING, DOWNLOADING, SAVING, DONE, CANCELLED, ERROR }
 
+    /** 保存済みファイル。uri は ACTION_VIEW / ACTION_SEND にそのまま渡せる content:// 形式。 */
+    data class SavedFile(val name: String, val uri: String, val mime: String)
+
     data class Ui(
         val phase: Phase = Phase.IDLE,
         val n: Int = 0,
         val total: Int = 0,
         val statusLine: String = "",
-        val savedFiles: List<String> = emptyList(),
+        val savedFiles: List<SavedFile> = emptyList(),
     ) {
         val isRunning: Boolean
             get() = phase == Phase.PREPARING || phase == Phase.DOWNLOADING || phase == Phase.SAVING

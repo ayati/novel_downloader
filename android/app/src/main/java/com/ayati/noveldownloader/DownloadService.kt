@@ -2,6 +2,7 @@ package com.ayati.noveldownloader
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.ContentValues
 import android.content.Intent
@@ -12,6 +13,7 @@ import android.os.Environment
 import android.os.IBinder
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
+import androidx.core.content.FileProvider
 import org.json.JSONObject
 import java.io.File
 import kotlin.concurrent.thread
@@ -97,7 +99,7 @@ class DownloadService : Service() {
                 } else {
                     DownloadState.ui.value = DownloadState.ui.value.copy(savedFiles = saved)
                     finish(DownloadState.Phase.DONE,
-                        "✅ 完了: ${saved.joinToString()}（ダウンロードフォルダ）")
+                        "✅ 完了: ${saved.joinToString { it.name }}（ダウンロードフォルダ）")
                 }
             }
             130 -> finish(DownloadState.Phase.CANCELLED, "中止しました")
@@ -116,10 +118,17 @@ class DownloadService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(message)
+            .setContentIntent(openAppIntent())
             .setAutoCancel(true)
             .build()
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID_RESULT, notif)
     }
+
+    /** 通知タップでメイン画面を開く PendingIntent。 */
+    private fun openAppIntent(): PendingIntent =
+        PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
     // ── Python からのコールバック受け口 ──────────────────────────
 
@@ -161,13 +170,14 @@ class DownloadService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
+            .setContentIntent(openAppIntent())
             .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setProgress(if (total > 0) total else 0, n, total <= 0)
             .build()
 
-    /** staging のファイルを公開 Downloads へコピーし、保存名を返す。 */
-    private fun saveToDownloads(file: File): String? {
+    /** staging のファイルを公開 Downloads へコピーし、開く/共有に使える SavedFile を返す。 */
+    private fun saveToDownloads(file: File): DownloadState.SavedFile? {
         val mime = when {
             file.name.endsWith(".epub") -> "application/epub+zip"
             file.name.endsWith(".txt") -> "text/plain"
@@ -186,7 +196,7 @@ class DownloadService : Service() {
                 contentResolver.openOutputStream(uri)?.use { out ->
                     file.inputStream().use { it.copyTo(out) }
                 } ?: return null
-                file.name
+                DownloadState.SavedFile(file.name, uri.toString(), mime)
             } else {
                 val dir = File(Environment.getExternalStoragePublicDirectory(
                     Environment.DIRECTORY_DOWNLOADS), SUBDIR)
@@ -199,7 +209,9 @@ class DownloadService : Service() {
                 }
                 file.copyTo(dst)
                 MediaScannerConnection.scanFile(this, arrayOf(dst.path), null, null)
-                dst.name
+                val uri = FileProvider.getUriForFile(
+                    this, "$packageName.fileprovider", dst)
+                DownloadState.SavedFile(dst.name, uri.toString(), mime)
             }
         } catch (e: Exception) {
             DownloadState.appendLog("[アプリ内エラー] 保存失敗: ${file.name}: $e")

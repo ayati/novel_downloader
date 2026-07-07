@@ -33,6 +33,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var progressText: TextView
     private lateinit var statusLine: TextView
+    private lateinit var doneCard: View
+    private lateinit var doneFile: TextView
+    private lateinit var btnOpen: Button
+    private lateinit var btnShare: Button
     private lateinit var logToggle: TextView
     private lateinit var logScroll: ScrollView
     private lateinit var logView: TextView
@@ -73,6 +77,10 @@ class MainActivity : AppCompatActivity() {
         progressBar = findViewById(R.id.progress_bar)
         progressText = findViewById(R.id.progress_text)
         statusLine = findViewById(R.id.status_line)
+        doneCard = findViewById(R.id.done_card)
+        doneFile = findViewById(R.id.done_file)
+        btnOpen = findViewById(R.id.btn_open)
+        btnShare = findViewById(R.id.btn_share)
         logToggle = findViewById(R.id.log_toggle)
         logScroll = findViewById(R.id.log_scroll)
         logView = findViewById(R.id.log_view)
@@ -119,6 +127,9 @@ class MainActivity : AppCompatActivity() {
             logToggle.text = if (open) "▸ 詳細ログ" else "▾ 詳細ログ"
         }
 
+        btnOpen.setOnClickListener { firstSavedFile()?.let { openFile(it) } }
+        btnShare.setOnClickListener { firstSavedFile()?.let { shareFile(it) } }
+
         lifecycleScope.launch {
             DownloadState.ui.collect { render(it) }
         }
@@ -146,6 +157,31 @@ class MainActivity : AppCompatActivity() {
         // ページタイトル等が混ざるため最初の URL だけを抽出する
         val url = Regex("""https?://\S+""").find(text)?.value ?: return
         urlInput.setText(url)
+    }
+
+    // ── 完了カード（開く／共有） ─────────────────────────────────
+
+    private fun firstSavedFile(): DownloadState.SavedFile? =
+        DownloadState.ui.value.savedFiles.firstOrNull()
+
+    private fun openFile(file: DownloadState.SavedFile) {
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(android.net.Uri.parse(file.uri), file.mime)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            Toast.makeText(this, "ePubリーダーアプリをインストールしてください",
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun shareFile(file: DownloadState.SavedFile) {
+        val intent = Intent(Intent.ACTION_SEND)
+            .setType(file.mime)
+            .putExtra(Intent.EXTRA_STREAM, android.net.Uri.parse(file.uri))
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivity(Intent.createChooser(intent, file.name))
     }
 
     // ── サイト判定バッジ ─────────────────────────────────────────
@@ -234,6 +270,12 @@ class MainActivity : AppCompatActivity() {
     private fun render(ui: DownloadState.Ui) {
         updateMainButton()
         btnMain.text = if (ui.isRunning) "⏸ 中止" else "⬇ ダウンロード"
+
+        val done = ui.phase == DownloadState.Phase.DONE && ui.savedFiles.isNotEmpty()
+        doneCard.visibility = if (done) View.VISIBLE else View.GONE
+        if (done) {
+            doneFile.text = ui.savedFiles.joinToString("\n") { it.name }
+        }
 
         when (ui.phase) {
             DownloadState.Phase.IDLE -> {
