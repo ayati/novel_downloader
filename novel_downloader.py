@@ -97,6 +97,7 @@ import io
 import json
 import contextlib
 import tempfile
+import threading
 import uuid
 import zipfile
 import argparse
@@ -162,6 +163,47 @@ PAGE_BREAK = "\n\n［＃改ページ］\n\n"
 
 # write_file() が書き込んだ最後の .txt パス（main() での通知に使用）
 _last_txt_written: str = ""
+
+
+# ══════════════════════════════════════════
+#  GUI 連携 API（中止・進捗フック）
+# ══════════════════════════════════════════
+# GUI やスクリプトから本モジュールをインプロセスで使うための公開フック。
+# CLI 単体利用時はいずれも不活性（ABORT_EVENT 未設定・PROGRESS_CALLBACK=None）。
+#
+#   中止:  novel_downloader.ABORT_EVENT.set() → 実行中の main(argv) が
+#          AbortRequested で巻き戻り、終了コード 130 で終了する。
+#   進捗:  novel_downloader.PROGRESS_CALLBACK = fn(n, total, title) を登録すると
+#          話数進捗の print と同じタイミングで呼ばれる（print 出力は従来どおり）。
+
+ABORT_EVENT = threading.Event()   # 中止要求フラグ（GUI から set する）
+PROGRESS_CALLBACK = None          # 話数進捗フック: fn(n: int, total: int, title: str)
+
+
+class AbortRequested(Exception):
+    """ABORT_EVENT による中止要求で送出される。"""
+
+
+def _check_abort() -> None:
+    """中止要求が来ていれば AbortRequested を送出する。"""
+    if ABORT_EVENT.is_set():
+        raise AbortRequested()
+
+
+def _sleep(seconds: float) -> None:
+    """time.sleep 互換の待機。待機中でも ABORT_EVENT が立てば即座に中止する。"""
+    _check_abort()
+    if ABORT_EVENT.wait(seconds):
+        raise AbortRequested()
+
+
+def _progress(n: int, total: int, title: str) -> None:
+    """PROGRESS_CALLBACK が登録されていれば話数進捗を通知する。"""
+    if PROGRESS_CALLBACK is not None:
+        try:
+            PROGRESS_CALLBACK(n, total, title)
+        except Exception:
+            pass  # フック側の例外でダウンロードを止めない
 
 
 # ══════════════════════════════════════════
@@ -1680,6 +1722,7 @@ def _find_cjk_fonts() -> tuple:
     見つからなければ (None, 0, None, 0)。
 
     探索順:
+      0. 環境変数 NOVEL_DL_COVER_FONT で明示指定されたフォント（GUI・Android 用）
       1. fc-list コマンドで日本語対応フォントを列挙（Linux/macOS）
       2. OS別既知ディレクトリをグロブで再帰検索
       3. matplotlib の FontManager を利用（インストール済みの場合）
@@ -1687,6 +1730,13 @@ def _find_cjk_fonts() -> tuple:
     import os
     import glob
     import subprocess
+
+    # ── 環境変数による明示指定（GUI・Android 用、最優先） ──────────
+    # NOVEL_DL_COVER_FONT にフォントファイルのパスを設定すると、
+    # 以降の探索をスキップして bold / medium ともそのフォントを使う。
+    env_font = os.environ.get("NOVEL_DL_COVER_FONT", "")
+    if env_font and os.path.isfile(env_font):
+        return (env_font, 0, env_font, 0)
 
     # ── 探索ディレクトリ（再帰検索） ──────────────────────────────
     search_dirs = [
@@ -2259,6 +2309,7 @@ def build_epub(
 
 def narou_fetch(url: str) -> str:
     """リトライ付きHTTP GET。HTML文字列を返す。"""
+    _check_abort()
     for attempt in range(1, RETRY_MAX + 2):
         try:
             req = Request(url, headers={
@@ -2276,7 +2327,7 @@ def narou_fetch(url: str) -> str:
         except Exception as e:
             print(f"    Error: {e} (attempt {attempt})")
         if attempt <= RETRY_MAX:
-            time.sleep(RETRY_WAIT)
+            _sleep(RETRY_WAIT)
     raise URLError(f"Failed after {RETRY_MAX} retries: {url}")
 
 
@@ -2461,7 +2512,7 @@ class NarouEpisodeListParser(HTMLParser):
 def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -> tuple:
     """作品情報 + 目次全ページを取得して (title, author, synopsis, episodes) を返す。"""
     title, author, synopsis = narou_get_novel_info(ncode)
-    time.sleep(index_wait)
+    _sleep(index_wait)
 
     all_eps      = []
     page         = 1
@@ -2489,7 +2540,7 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
             break
 
         page += 1
-        time.sleep(index_wait)
+        _sleep(index_wait)
 
     return title, author, synopsis, all_eps
 
@@ -2770,6 +2821,7 @@ def run_narou(args):
 
         ep_url = f"https://ncode.syosetu.com{path}"
         print(f"  [{idx:5d}/{len(episodes)}] {ep_title[:50]}")
+        _progress(idx, len(episodes), f"{ep_title[:50]}")
 
         try:
             html = narou_fetch(ep_url)
@@ -2778,7 +2830,7 @@ def run_narou(args):
             sections.append(aozora_chapter_title(ep_title) + "\n\n（取得失敗）\n")
             epub_episodes.append({"title": ep_title, "body": "（取得失敗）",
                                   "group": ep_group or None})
-            time.sleep(args.delay)
+            _sleep(args.delay)
             continue
 
         ep       = NarouEpisodeParser()
@@ -2806,7 +2858,7 @@ def run_narou(args):
             print(f"    → 中間保存 ({idx}/{len(episodes)}話)")
 
         if idx < len(episodes):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
@@ -2848,6 +2900,7 @@ _KKY_HEADERS = {
 
 def kky_fetch(session, url: str, retries: int = 3):
     """URLを取得してBeautifulSoupオブジェクトを返す。"""
+    _check_abort()
     for attempt in range(1, retries + 1):
         try:
             resp = session.get(url, headers=_KKY_HEADERS, timeout=20)
@@ -2858,7 +2911,7 @@ def kky_fetch(session, url: str, retries: int = 3):
         except Exception as e:
             print(f"  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}")
             if attempt < retries:
-                time.sleep(3)
+                _sleep(3)
     raise RuntimeError(f"URLの取得に失敗しました: {url}")
 
 
@@ -3218,6 +3271,7 @@ def run_kakuyomu(args):
 
     for i, ep in enumerate(episode_list, 1):
         print(f"  [{i:4d}/{len(episode_list)}] {ep['title'][:50]}")
+        _progress(i, len(episode_list), f"{ep['title'][:50]}")
         try:
             ep_soup   = kky_fetch(session, ep["url"])
             ep_next   = kky_extract_next_data(ep_soup)
@@ -3232,7 +3286,7 @@ def run_kakuyomu(args):
             episodes_data.append({"title": ep["title"], "chapter": ep.get("chapter", ""),
                                   "body": "（取得失敗）"})
         if i < len(episode_list):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     # 青空文庫テキスト組み立て
     sections     = list(_old_sections)
@@ -3283,6 +3337,7 @@ _ALP_HEADERS = {
 
 def alp_fetch(session, url: str, retries: int = 3):
     """URLを取得してBeautifulSoupオブジェクトを返す。"""
+    _check_abort()
     for attempt in range(1, retries + 1):
         try:
             resp = session.get(url, headers=_ALP_HEADERS, timeout=20)
@@ -3294,7 +3349,7 @@ def alp_fetch(session, url: str, retries: int = 3):
         except Exception as e:
             print(f"  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}")
             if attempt < retries:
-                time.sleep(3)
+                _sleep(3)
     raise RuntimeError(f"URLの取得に失敗しました: {url}")
 
 
@@ -3556,6 +3611,7 @@ def run_alphapolis(args):
 
     for i, ep in enumerate(episode_list, 1):
         print(f"  [{i:4d}/{len(episode_list)}] {ep['title'][:50]}")
+        _progress(i, len(episode_list), f"{ep['title'][:50]}")
         try:
             ep_title, body = alp_extract_episode(session, ep["url"])
             episodes_data.append({"title": ep_title or ep["title"], "body": body,
@@ -3565,7 +3621,7 @@ def run_alphapolis(args):
             episodes_data.append({"title": ep["title"], "body": "（取得失敗）",
                                   "chapter": ep.get("chapter", "")})
         if i < len(episode_list):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     for ep in episodes_data:
         sec_title = aozora_chapter_title(ep["title"])
@@ -3611,6 +3667,7 @@ _EST_HEADERS = {
 
 def est_fetch(session, url: str, retries: int = 3):
     """URLを取得して (BeautifulSoup, html_text) を返す。"""
+    _check_abort()
     for attempt in range(1, retries + 1):
         try:
             resp = session.get(url, headers=_EST_HEADERS, timeout=20)
@@ -3622,7 +3679,7 @@ def est_fetch(session, url: str, retries: int = 3):
         except Exception as e:
             print(f"  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}")
             if attempt < retries:
-                time.sleep(3)
+                _sleep(3)
     raise RuntimeError(f"URLの取得に失敗しました: {url}")
 
 
@@ -3827,6 +3884,7 @@ def run_estar(args):
     for batch_i, batch_page in enumerate(batch_list, 1):
         viewer_url = f"{_EST_BASE}/novels/{work_id}/viewer?page={batch_page}"
         print(f"  [{batch_i:3d}/{len(batch_list)}] page={batch_page}")
+        _progress(batch_i, len(batch_list), f"page={batch_page}")
         try:
             _, viewer_html = est_fetch(session, viewer_url)
             nuxt_src = est_extract_nuxt(viewer_html)
@@ -3836,7 +3894,7 @@ def run_estar(args):
         except RuntimeError as e:
             print(f"    [エラー] バッチ取得失敗: {e}")
         if batch_i < len(batch_list):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     if args.list_only:
         # ページ単位取得のためタイトルをここで組み立て
@@ -4103,6 +4161,7 @@ def run_hameln(args):
             ep_file = ep_href.lstrip("./")   # "./N.html" → "N.html"
             ep_url  = f"{_HAM_BASE}/novel/{work_id}/{ep_file}"
             print(f"  [{ep_i:3d}/{len(target)}] {ep_title_list}")
+            _progress(ep_i, len(target), f"{ep_title_list}")
 
             ep_title = ep_title_list
             ctx = None
@@ -4110,7 +4169,7 @@ def run_hameln(args):
                 ctx = browser.new_context(user_agent=_HAM_UA, locale="ja-JP")
                 pg  = ctx.new_page()
                 pg.goto(ep_url, wait_until="domcontentloaded", timeout=30000)
-                time.sleep(_HAM_CF_WAIT)
+                _sleep(_HAM_CF_WAIT)
                 ep_html = pg.content()
                 ctx.close()
                 ctx = None
@@ -4161,7 +4220,7 @@ def run_hameln(args):
                         pass
 
             if ep_i < len(target):
-                time.sleep(args.delay)
+                _sleep(args.delay)
 
         browser.close()
 
@@ -4207,6 +4266,7 @@ _NEOPAGE_HEADERS = {
 
 def _neopage_fetch(url: str, retries: int = 3) -> str:
     """requests でページ HTML を取得する。失敗時は RuntimeError。"""
+    _check_abort()
     sess = requests.Session()
     sess.headers.update(_NEOPAGE_HEADERS)
     for attempt in range(1, retries + 1):
@@ -4220,7 +4280,7 @@ def _neopage_fetch(url: str, retries: int = 3) -> str:
         except Exception as e:
             if attempt >= retries:
                 raise RuntimeError(f"取得失敗: {url} ({e})")
-            time.sleep(5)
+            _sleep(5)
     return ""
 
 
@@ -4317,6 +4377,7 @@ def neopage_fetch_chapter(chapter_id: str, retries: int = 3) -> dict:
     keys: name / content / next_chapter_id / is_last / volume_name
     content が null（有料章等）の場合は空文字。
     """
+    _check_abort()
     url  = f"{_NEOPAGE_BASE}/v1/book/content/{chapter_id}"
     sess = requests.Session()
     sess.headers.update({**_NEOPAGE_HEADERS, "Accept": "application/json"})
@@ -4342,7 +4403,7 @@ def neopage_fetch_chapter(chapter_id: str, retries: int = 3) -> dict:
         except Exception as e:
             if attempt >= retries:
                 raise RuntimeError(f"章取得失敗: {chapter_id} ({e})")
-            time.sleep(5)
+            _sleep(5)
     return {"name": "", "content": "", "next_chapter_id": "", "is_last": True,
             "volume_name": ""}
 
@@ -4443,7 +4504,7 @@ def run_neopage(args):
         if ch_data["is_last"] or not ch_data["next_chapter_id"] or ch_data["next_chapter_id"] == cur_id:
             break
         cur_id = ch_data["next_chapter_id"]
-        time.sleep(0.3)  # チェーン探索は軽量なので短め
+        _sleep(0.3)  # チェーン探索は軽量なので短め
 
     if not chapters:
         print("エラー: 章リストを構築できませんでした。")
@@ -4532,6 +4593,7 @@ _SOLISPIA_HEADERS = {
 
 def _solispia_fetch(url: str, retries: int = 3):
     """requests でページを取得して BeautifulSoup を返す。失敗時は RuntimeError。"""
+    _check_abort()
     sess = requests.Session()
     sess.headers.update(_SOLISPIA_HEADERS)
     for attempt in range(1, retries + 1):
@@ -4543,7 +4605,7 @@ def _solispia_fetch(url: str, retries: int = 3):
         except Exception as e:
             if attempt >= retries:
                 raise RuntimeError(f"取得失敗: {url} ({e})")
-            time.sleep(5)
+            _sleep(5)
 
 
 def solispia_get_work_info(soup) -> dict:
@@ -4755,6 +4817,7 @@ def run_solispia(args):
 
     for ep_i, (ep_url, ep_title, ep_chapter) in enumerate(target, 1):
         print(f"  [{ep_i:3d}/{len(target)}] {ep_title[:40]}")
+        _progress(ep_i, len(target), f"{ep_title[:40]}")
         try:
             ep_soup = _solispia_fetch(ep_url)
             body    = solispia_html_to_aozora(ep_soup)
@@ -4769,7 +4832,7 @@ def run_solispia(args):
         if body != "（取得失敗）":
             got += 1
         if ep_i < len(target):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     print(f"[3/3] テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon,
@@ -4811,6 +4874,7 @@ _NIC_HEADERS = {
 
 def noichigo_fetch(session, url, retries=3):
     """野いちごのページを取得して (BeautifulSoup, html) を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = session.get(url, timeout=30)
@@ -4820,7 +4884,7 @@ def noichigo_fetch(session, url, retries=3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(2)
+            _sleep(2)
 
 
 def noichigo_get_work_info(soup) -> dict:
@@ -4964,7 +5028,7 @@ def run_noichigo(args):
     print(f"      チャプター数: {total_chapters}")
 
     # 1ページ目から総ページ数を取得
-    time.sleep(args.delay)
+    _sleep(args.delay)
     first_soup, _ = noichigo_fetch(session, f"{_NIC_BASE}/book/{work_id}/1")
     total_pages = 0
     aside_el = first_soup.find("article", class_="bookText")
@@ -5014,6 +5078,7 @@ def run_noichigo(args):
 
     for ch_i, (page_start, page_end, ch_title, ch_group) in enumerate(target_chapters, 1):
         print(f"  [{ch_i:3d}/{len(target_chapters)}] {ch_title}（p.{page_start}–{page_end}）")
+        _progress(ch_i, len(target_chapters), f"{ch_title}（p.{page_start}–{page_end}）")
         page_bodies = []
         for page_no in range(page_start, page_end + 1):
             try:
@@ -5035,7 +5100,7 @@ def run_noichigo(args):
                 print(f"    [エラー] {e}")
                 page_bodies.append("（取得失敗）")
             if page_no < page_end:
-                time.sleep(args.delay)
+                _sleep(args.delay)
 
         body = "\n\n".join(b for b in page_bodies if b)
         body = normalize_tate(body)
@@ -5044,7 +5109,7 @@ def run_noichigo(args):
         epub_episodes.append({"title": ch_title, "body": body, "group": ch_group or None})
         got_chapters += 1
         if ch_i < len(target_chapters):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -5085,6 +5150,7 @@ _BERRYS_HEADERS = {
 
 def berrys_fetch(session, url, retries=3):
     """berry's cafe のページを取得して BeautifulSoup を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = session.get(url, timeout=30)
@@ -5094,7 +5160,7 @@ def berrys_fetch(session, url, retries=3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(2)
+            _sleep(2)
 
 
 def berrys_get_work_info(soup) -> dict:
@@ -5174,7 +5240,7 @@ def run_berrys(args):
         print(f"      総ページ数  : {total_pages}")
     else:
         # フォールバック: 1ページ目の og:title "(1/N)" から取得
-        time.sleep(args.delay)
+        _sleep(args.delay)
         first_soup = berrys_fetch(session, f"{_BERRYS_BASE}/book/{work_id}/1")
         og_title = first_soup.find("meta", property="og:title")
         if og_title:
@@ -5219,6 +5285,7 @@ def run_berrys(args):
 
     for ch_i, (page_start, page_end, ch_title, ch_group) in enumerate(target_chapters, 1):
         print(f"  [{ch_i:3d}/{len(target_chapters)}] {ch_title}（p.{page_start}–{page_end}）")
+        _progress(ch_i, len(target_chapters), f"{ch_title}（p.{page_start}–{page_end}）")
         page_bodies = []
         for page_no in range(page_start, page_end + 1):
             try:
@@ -5233,7 +5300,7 @@ def run_berrys(args):
                 print(f"    [エラー] {e}")
                 page_bodies.append("（取得失敗）")
             if page_no < page_end:
-                time.sleep(args.delay)
+                _sleep(args.delay)
 
         body = "\n\n".join(b for b in page_bodies if b)
         body = normalize_tate(body)
@@ -5242,7 +5309,7 @@ def run_berrys(args):
         epub_episodes.append({"title": ch_title, "body": body, "group": ch_group or None})
         got_chapters += 1
         if ch_i < len(target_chapters):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -5282,6 +5349,7 @@ _MONOGATARY_HEADERS = {
 
 def _monogatary_fetch_json(session, url, retries=3):
     """monogatary.com の JSON API を取得して dict を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = session.get(url, timeout=30)
@@ -5290,11 +5358,12 @@ def _monogatary_fetch_json(session, url, retries=3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(2)
+            _sleep(2)
 
 
 def _monogatary_fetch_html(session, url, retries=3):
     """monogatary.com の HTML を取得して文字列を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = session.get(url, timeout=30)
@@ -5304,7 +5373,7 @@ def _monogatary_fetch_html(session, url, retries=3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(2)
+            _sleep(2)
 
 
 def monogatary_text_to_aozora(text: str) -> str:
@@ -5436,6 +5505,7 @@ def run_monogatary(args):
         ep_id    = str(ep_info["episodeId"])
         ep_title = ep_info.get("episodeTitle", f"第{ep_i + start_ep - 1}話")
         print(f"  [{ep_i:3d}/{len(target)}] {ep_title}")
+        _progress(ep_i, len(target), f"{ep_title}")
         try:
             ep_data  = _monogatary_fetch_json(
                 session, f"{_MONOGATARY_BASE}/api/episode/{ep_id}")
@@ -5450,7 +5520,7 @@ def run_monogatary(args):
         epub_episodes.append({"title": ep_title, "body": body})
         got += 1
         if ep_i < len(target):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -5491,6 +5561,7 @@ _NOVEMA_HEADERS = {
 
 def novema_fetch(session, url, retries=3):
     """ノベマ！のページを取得して (BeautifulSoup, html) を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = session.get(url, timeout=30)
@@ -5500,7 +5571,7 @@ def novema_fetch(session, url, retries=3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(2)
+            _sleep(2)
 
 
 def novema_get_work_info(soup) -> dict:
@@ -5629,6 +5700,7 @@ def run_novema(args):
 
     for ep_i, (page_num, ep_title, ep_chapter) in enumerate(target_eps, 1):
         print(f"  [{ep_i:3d}/{len(target_eps)}] {ep_title}")
+        _progress(ep_i, len(target_eps), f"{ep_title}")
         try:
             ep_url  = f"{_NOVEMA_BASE}/book/{work_id}/{page_num}"
             ep_soup, _ = novema_fetch(session, ep_url)
@@ -5654,7 +5726,7 @@ def run_novema(args):
         epub_episodes.append({"title": ep_title, "body": body, "group": ep_chapter or None})
         got_eps += 1
         if ep_i < len(target_eps):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -5695,6 +5767,7 @@ _NOVELUP_HEADERS = {
 
 def novelup_fetch(session, url, retries=3):
     """ノベルアップ＋のページを取得して (BeautifulSoup, html) を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = session.get(url, timeout=30)
@@ -5704,7 +5777,7 @@ def novelup_fetch(session, url, retries=3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(2)
+            _sleep(2)
 
 
 def novelup_get_work_info(soup) -> dict:
@@ -5876,6 +5949,7 @@ def run_novelup(args):
 
     for ep_i, (ep_id, ep_title, ep_chapter) in enumerate(target_eps, 1):
         print(f"  [{ep_i:3d}/{len(target_eps)}] {ep_title}")
+        _progress(ep_i, len(target_eps), f"{ep_title}")
         try:
             ep_url  = f"{_NOVELUP_BASE}/story/{work_id}/{ep_id}"
             ep_soup, _ = novelup_fetch(session, ep_url)
@@ -5891,7 +5965,7 @@ def run_novelup(args):
                                "group": ep_chapter or None})
         got_eps += 1
         if ep_i < len(target_eps):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -5932,6 +6006,7 @@ _SUTEKI_HEADERS = {
 
 def suteki_fetch(session, url, retries=3):
     """ステキブンゲイのページを取得して (BeautifulSoup, html_text) を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = session.get(url, headers=_SUTEKI_HEADERS, timeout=30)
@@ -5941,7 +6016,7 @@ def suteki_fetch(session, url, retries=3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(2)
+            _sleep(2)
 
 
 def suteki_get_work_info(soup) -> dict:
@@ -6094,6 +6169,7 @@ def run_sutekibungei(args):
 
     for ep_i, ep in enumerate(target_eps, 1):
         print(f"  [{ep_i:3d}/{len(target_eps)}] {ep['title']}")
+        _progress(ep_i, len(target_eps), f"{ep['title']}")
         try:
             ep_soup, _ = suteki_fetch(session, ep["url"])
             body = suteki_get_episode_body(ep_soup)
@@ -6108,7 +6184,7 @@ def run_sutekibungei(args):
                                "group": ep.get("chapter") or None})
         got_eps += 1
         if ep_i < len(target_eps):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -6149,6 +6225,7 @@ _DAYS_HEADERS = {
 
 def days_fetch(session, url, retries=3):
     """NOVEL DAYS のページを取得して (BeautifulSoup, html_text) を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = session.get(url, headers=_DAYS_HEADERS, timeout=30)
@@ -6158,7 +6235,7 @@ def days_fetch(session, url, retries=3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(2)
+            _sleep(2)
 
 
 def days_get_work_info(soup) -> dict:
@@ -6341,6 +6418,7 @@ def run_days(args):
 
     for ep_i, ep in enumerate(target_eps, 1):
         print(f"  [{ep_i:3d}/{len(target_eps)}] {ep['title']}")
+        _progress(ep_i, len(target_eps), f"{ep['title']}")
         try:
             ep_soup, _ = days_fetch(session, ep["url"])
             body = days_get_episode_body(ep_soup)
@@ -6355,7 +6433,7 @@ def run_days(args):
                                "group": ep.get("chapter") or None})
         got_eps += 1
         if ep_i < len(target_eps):
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     print("[3/3] テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
@@ -6394,6 +6472,7 @@ _GENPAKU_HEADERS = {
 
 def genpaku_fetch(url: str, retries: int = 3):
     """genpaku.org のページを取得して BeautifulSoup を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = requests.get(url, headers=_GENPAKU_HEADERS, timeout=30)
@@ -6403,7 +6482,7 @@ def genpaku_fetch(url: str, retries: int = 3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(RETRY_WAIT)
+            _sleep(RETRY_WAIT)
 
 
 def genpaku_ruby_to_aozora(text: str) -> str:
@@ -6666,6 +6745,7 @@ _HYUKI_HEADERS = {
 
 def hyuki_fetch(url: str, retries: int = 3):
     """hyuki.com のページを取得して BeautifulSoup を返す。"""
+    _check_abort()
     for attempt in range(retries):
         try:
             resp = requests.get(url, headers=_HYUKI_HEADERS, timeout=30)
@@ -6675,7 +6755,7 @@ def hyuki_fetch(url: str, retries: int = 3):
         except Exception as e:
             if attempt == retries - 1:
                 raise RuntimeError(f"取得失敗: {url} — {e}") from e
-            time.sleep(RETRY_WAIT)
+            _sleep(RETRY_WAIT)
 
 
 def hyuki_get_work_info(soup) -> dict:
@@ -7000,6 +7080,7 @@ _AOZORA_HEADERS = {
 
 def aozora_fetch_html(url: str) -> str:
     """urllib で青空文庫カードページ HTML を取得する（stdlib のみ）。"""
+    _check_abort()
     for attempt in range(1, RETRY_MAX + 2):
         try:
             req = Request(url, headers=_AOZORA_HEADERS)
@@ -7013,7 +7094,7 @@ def aozora_fetch_html(url: str) -> str:
         except Exception as e:
             print(f"    Error: {e} (attempt {attempt})")
         if attempt <= RETRY_MAX:
-            time.sleep(RETRY_WAIT)
+            _sleep(RETRY_WAIT)
     raise URLError(f"Failed after {RETRY_MAX} retries: {url}")
 
 
@@ -8326,6 +8407,7 @@ def _follow_one_redirect(url: str) -> tuple[str, str | None]:
 def _fetch_ogp_cover(page_url: str) -> str:
     """作品ページの og:image をダウンロードして一時ファイルパスを返す。
     取得失敗時は "" を返す。呼び出し元が一時ファイルを削除すること。"""
+    _check_abort()
     # ── ページ HTML 取得 ──────────────────────────────────────────
     html = ""
     try:
@@ -9177,7 +9259,7 @@ def run_watch(args) -> int:
             notify_results.append(r)
             has_error = True
             if i < len(entries) - 1:
-                time.sleep(args.delay)
+                _sleep(args.delay)
             continue
 
         cached   = cache.get(norm_url, {})
@@ -9283,7 +9365,7 @@ def run_watch(args) -> int:
             _save_watch_cache(cache_file, cache)
 
         if i < len(entries) - 1:
-            time.sleep(args.delay)
+            _sleep(args.delay)
 
     # ── 通知 ─────────────────────────────────────────────────────────
     if notify_mode == "webhook" and webhook_url:
@@ -9294,7 +9376,7 @@ def run_watch(args) -> int:
     return 1 if has_error else 0
 
 
-def main():
+def _main(argv=None):
     parser = argparse.ArgumentParser(
         description=(
             "小説家になろう・カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン 共通ダウンローダー\n"
@@ -9433,7 +9515,7 @@ def main():
     parser.add_argument("--list-sites", dest="list_sites", action="store_true",
                         help="対応サイト一覧を JSON で出力して終了（GUI用・読み取り専用）")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # ── --list-sites: 対応サイト一覧（GUI用・読み取り専用・オフライン） ──
     if getattr(args, "list_sites", False):
@@ -9507,7 +9589,7 @@ def main():
             r = _check_update_one(str(tf), delay=args.delay)
             results.append(r)
             if i < len(targets) - 1:
-                time.sleep(args.delay)
+                _sleep(args.delay)
 
         # ── サマリー表示 ─────────────────────────────────────────
         updated  = [r for r in results if r["status"] == "updated"]
@@ -9596,7 +9678,7 @@ def main():
             else:
                 print(f"  → エラー: {r['error']}")
             if i < len(targets) - 1:
-                time.sleep(args.delay)
+                _sleep(args.delay)
 
         if not candidates:
             print(f"\n[情報] 新着のある作品がありません。")
@@ -9635,7 +9717,7 @@ def main():
             ar = _append_one(str(tf), args)
             append_results.append((tf, cu_r, ar))
             if i < len(candidates) - 1:
-                time.sleep(args.delay)
+                _sleep(args.delay)
 
         # ── Phase 3: サマリー ────────────────────────────────────
         ok_list       = [(tf, cu, ar) for tf, cu, ar in append_results if ar["status"] == "ok"]
@@ -9930,6 +10012,19 @@ def main():
             _CHECK_UPDATE_MODE = False
             if _use_site_cover_tmp and os.path.exists(_use_site_cover_tmp):
                 os.unlink(_use_site_cover_tmp)
+
+
+def main(argv=None):
+    """CLI エントリポイント。
+
+    argv を渡すと sys.argv の代わりに解析する（GUI からのインプロセス呼び出し用）。
+    中止（ABORT_EVENT / Ctrl+C）は「中止しました。」を表示して終了コード 130 に整える。
+    """
+    try:
+        _main(argv)
+    except (AbortRequested, KeyboardInterrupt):
+        print("\n中止しました。", file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

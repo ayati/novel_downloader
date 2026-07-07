@@ -235,6 +235,20 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 - **表紙背景色のデフォルト**：なろう `#18b7cd`、カクヨム `#4BAAE0`、アルファポリス `#e05c2c`、エブリスタ `#00A0E9`、野いちご `#FA8296`、ハーメルン `#6E654C`、ノベマ！ `#595757`、ノベルアップ＋ `#0CBF97`、ステキブンゲイ `#E4097D`、NOVEL DAYS `#CBA13F`、青空文庫 `#000066`、プロジェクト杉田玄白 `#1D3461`、結城浩翻訳の部屋 `#2D6A4F`、ネオページ `#E94F37`、ソリスピア `#7C3AED`、berry's cafe `#C8245A`、monogatary.com `#231815`、ローカル `#16234b`
 - **リクエスト間隔**：デフォルト 1.5 秒、リトライ最大 3 回（間隔 5 秒）
 
+## GUI 連携 API（インプロセス利用）
+
+GUI（Android アプリ・将来の組み込み利用）から本モジュールを import して使うための公開フック。**CLI 単体利用時はすべて不活性**。ソース冒頭の「GUI 連携 API」セクションに定義。
+
+| API | 説明 |
+|---|---|
+| `main(argv=None)` | CLI エントリポイント。`argv`（リスト）を渡すと `sys.argv` の代わりに解析する。実体は `_main(argv)` で、`main()` はそのラッパー |
+| `ABORT_EVENT` | `threading.Event`。GUI から `set()` すると実行中のダウンロードが中止される。内部ヘルパー `_sleep()`（全 `time.sleep` を置換済み）と各サイト `*_fetch()` 関数入口の `_check_abort()` がこのフラグを監視し、`AbortRequested` 例外を送出する |
+| `AbortRequested` | 中止要求例外。`main()` が `KeyboardInterrupt` と共に捕捉し「中止しました。」を stderr に表示して**終了コード 130** で終了する（CLI の Ctrl+C も同様） |
+| `PROGRESS_CALLBACK` | `fn(n: int, total: int, title: str)` を代入すると話数進捗の print と同じタイミングで呼ばれる（print 出力は従来どおり維持）。呼び出しは `_progress()` ヘルパー経由でフック側の例外は握りつぶす。なろうの `total` は `--end` 指定時も全話数を返す点に注意 |
+| 環境変数 `NOVEL_DL_COVER_FONT` | 表紙用フォントファイルのパスを明示指定。`_find_cjk_fonts()` が最優先で採用し、fc-list 等の探索をスキップする（Android では同梱 TTF を指定） |
+
+新しいスクレイパーを追加する際は、(1) `*_fetch()` 関数の入口に `_check_abort()` を置く、(2) リクエスト間隔の待機に `time.sleep` ではなく `_sleep` を使う、(3) 話数進捗 print の直後に `_progress(n, len(list), タイトル)` を呼ぶ。
+
 ## 動作確認
 
 テストスイートは存在しないため、手動で動作確認する：
