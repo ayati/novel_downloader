@@ -3357,15 +3357,19 @@ def alp_get_work_info(soup) -> dict:
     """作品トップページからタイトル・著者・あらすじを取得する。"""
     info = {"title": "", "author": "", "description": ""}
 
-    h1 = soup.find("h1", class_="title")
+    # 新レイアウト（2026 リニューアル）→ 旧レイアウトの順で探す
+    h1 = (soup.find("h1", class_="p-content-info__title")
+          or soup.find("h1", class_="title"))
     if h1:
         info["title"] = h1.get_text(strip=True)
 
-    author_div = soup.find("div", class_="author")
-    if author_div:
-        a = author_div.find("a")
-        if a:
-            info["author"] = a.get_text(strip=True)
+    author_a = soup.find("a", class_="p-content-info__author")
+    if not author_a:
+        author_div = soup.find("div", class_="author")
+        if author_div:
+            author_a = author_div.find("a")
+    if author_a:
+        info["author"] = author_a.get_text(strip=True)
 
     meta = soup.find("meta", attrs={"name": "description"})
     if meta and meta.get("content"):
@@ -3468,8 +3472,12 @@ def alp_html_to_aozora(html: str) -> str:
         return "\n\n".join(lines)
 
     # <p> がない場合は <br> を改行に変換
+    # 注意: html.parser は <br> 連続を入れ子タグ（後続本文を子に持つ）として
+    # パースすることがあるため、replace_with ではなく insert_before + unwrap で
+    # 子ノードを保持したまま改行に置き換える（replace_with だと本文が消える）
     for br in soup.find_all("br"):
-        br.replace_with("\n")
+        br.insert_before("\n")
+        br.unwrap()
     return soup.get_text().strip()
 
 
@@ -3478,29 +3486,33 @@ def alp_extract_episode(session, ep_url: str) -> tuple:
     エピソードページを取得し (エピソードタイトル, 本文テキスト) を返す。
 
     サーバーはセッション状態によって2通りのレスポンスを返す：
-      (A) 本文が div#novelBody に直接埋め込まれている（Cookie あり）
-      (B) novelBody が空で JS が /novel/episode_body へ AJAX POST する（Cookie なし）
-    まず (A) を試み、本文がなければ (B) にフォールバックする。
+      (A) 本文が div#novelBody に直接埋め込まれている
+      (B) JS が /novel/episode_body へ AJAX POST して本文を取得する
+    2026年リニューアル以降、novelBody には本文冒頭の1行だけ（または空）が
+    埋め込まれることがあるため、.load(episode_body) スクリプトが存在する
+    ページでは常に (B) を使い、(A) はスクリプトなしの場合のフォールバック。
     """
     soup = alp_fetch(session, ep_url)
 
-    title_tag = soup.find("h2", class_="episode-title")
+    title_tag = (soup.find("h2", class_="p-novel-episode__episode-title")
+                 or soup.find("h2", class_="episode-title"))
     ep_title  = title_tag.get_text(strip=True) if title_tag else ""
 
-    # ── (A) 本文が HTML に直接埋め込まれているか確認 ──────────────
-    novel_body = soup.find("div", id="novelBody")
-    if novel_body:
-        # ローディングインジケーター以外のテキストがあれば直接埋め込み
-        loading = novel_body.find("div", id="LoadingEpisode")
-        if loading:
-            loading.decompose()
-        if novel_body.get_text(strip=True):
-            return ep_title, alp_html_to_aozora(str(novel_body))
-
-    # ── (B) AJAX POST で本文を取得 ─────────────────────────────────
     page_js = "\n".join(
         s.string for s in soup.find_all("script") if s.string
     )
+
+    # ── (A) AJAX スクリプトがない場合のみ、埋め込み本文を採用 ──────
+    if "episode_body" not in page_js:
+        novel_body = soup.find("div", id="novelBody")
+        if novel_body:
+            loading = novel_body.find("div", id="LoadingEpisode")
+            if loading:
+                loading.decompose()
+            if novel_body.get_text(strip=True):
+                return ep_title, alp_html_to_aozora(str(novel_body))
+
+    # ── (B) AJAX POST で本文を取得 ─────────────────────────────────
 
     csrf_m = re.search(r"X-CSRF-TOKEN['\"]?\s*:\s*['\"]([^'\"]+)['\"]", page_js)
     if not csrf_m:
