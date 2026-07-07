@@ -1,0 +1,6 @@
+.gradle/
+build/
+local.properties
+# ビルド時に ../ からコピーされる同梱物（原本はリポジトリ直下）
+app/src/main/python/novel_downloader.py
+app/src/main/assets/fonts/
