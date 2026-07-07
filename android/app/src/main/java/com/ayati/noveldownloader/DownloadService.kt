@@ -79,10 +79,17 @@ class DownloadService : Service() {
         staging.deleteRecursively()
         staging.mkdirs()
 
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val saveTxt = prefs.getBoolean("save_txt", false)
+
         val listener = Listener()
         val code = try {
             PyBridge.ensureStarted(applicationContext)
-            val opts = JSONObject().put("output_dir", staging.path)
+            val opts = JSONObject()
+                .put("output_dir", staging.path)
+                .put("horizontal", prefs.getBoolean("horizontal", false))
+                .put("kobo", prefs.getBoolean("kobo", false))
+                .put("use_site_cover", prefs.getBoolean("use_site_cover", false))
             PyBridge.module.callAttr("run", url, opts.toString(), listener).toInt()
         } catch (e: Exception) {
             DownloadState.appendLog("[アプリ内エラー] $e")
@@ -91,8 +98,11 @@ class DownloadService : Service() {
 
         when (code) {
             0 -> {
-                val saved = staging.listFiles { f -> f.name.endsWith(".epub") }
-                    .orEmpty().mapNotNull { saveToDownloads(it) }
+                val saved = staging.listFiles { f ->
+                    f.name.endsWith(".epub") || (saveTxt && f.name.endsWith(".txt"))
+                }.orEmpty()
+                    .sortedBy { !it.name.endsWith(".epub") }  // 完了カードの先頭は epub
+                    .mapNotNull { saveToDownloads(it) }
                 if (saved.isEmpty()) {
                     DownloadState.appendLog("[アプリ内エラー] 保存対象の .epub がありません")
                     finish(DownloadState.Phase.ERROR, "❌ 失敗（詳細ログ参照）")

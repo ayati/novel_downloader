@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -157,6 +159,40 @@ class MainActivity : AppCompatActivity() {
         // ページタイトル等が混ざるため最初の URL だけを抽出する
         val url = Regex("""https?://\S+""").find(text)?.value ?: return
         urlInput.setText(url)
+    }
+
+    // ── 設定メニュー（⋮） ────────────────────────────────────────
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.main_menu, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean =
+        if (item.itemId == R.id.action_settings) {
+            showSettingsDialog()
+            true
+        } else {
+            super.onOptionsItemSelected(item)
+        }
+
+    private fun showSettingsDialog() {
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val keys = arrayOf("horizontal", "kobo", "use_site_cover", "save_txt")
+        val labels = arrayOf(
+            "横書きにする",
+            "Kobo用拡張子 (.kepub.epub)",
+            "サイトの表紙画像を使う",
+            "テキスト (.txt) も保存する",
+        )
+        val checked = BooleanArray(keys.size) { prefs.getBoolean(keys[it], false) }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("設定（次のダウンロードから適用）")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                prefs.edit().putBoolean(keys[which], isChecked).apply()
+            }
+            .setPositiveButton("閉じる", null)
+            .show()
     }
 
     // ── 完了カード（開く／共有） ─────────────────────────────────
