@@ -3,6 +3,8 @@ build/
 local.properties
 # 配布用にコピーしたバージョン付き APK
 *.apk
+# APK 鮮度スタンプ（scripts/release.sh がローカルに記録する novel_downloader.py の sha256）
+.apk_built_from
 # ビルド時に ../ からコピーされる同梱物（原本はリポジトリ直下）
 app/src/main/python/novel_downloader.py
 app/src/main/assets/fonts/

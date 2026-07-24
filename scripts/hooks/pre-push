@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+#
+# 陳腐化ガード（B）: vX.Y.Z タグを push する際に 2 点を確認して警告する。
+#   (1) 本体 novel_downloader.py の __version__ が push するタグと一致するか
+#   (2) Android APK が現在の novel_downloader.py でビルドされているか（作り直し忘れ検知）
+# いずれも警告のみ（push はブロックしない）。
+#
+# 導入: scripts/install-hooks.sh を一度実行する。
+#
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+SRC="$ROOT/novel_downloader.py"
+STAMP="$ROOT/android/.apk_built_from"
+
+tag_ver=""
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/tags/v[0-9]*) tag_ver="${remote_ref#refs/tags/v}" ;;
+  esac
+done
+
+[ -n "$tag_ver" ] || exit 0        # リリースタグの push でなければ何もしない
+[ -f "$SRC" ] || exit 0
+
+# (1) __version__ とタグの一致
+file_ver="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*["'"'"']\([^"'"'"']*\)["'"'"'].*/\1/p' "$SRC" | head -1)"
+if [ -n "$file_ver" ] && [ "$file_ver" != "$tag_ver" ]; then
+  echo "" >&2
+  echo "⚠️  タグ v$tag_ver と __version__ ($file_ver) が不一致です。" >&2
+  echo "   通常は scripts/release.sh $tag_ver で版数更新・タグ・APK を一括処理します。" >&2
+  echo "" >&2
+fi
+
+# (2) APK 鮮度（novel_downloader.py が前回のAPKビルドと不一致＝作り直し忘れ）
+cur="$(sha256sum "$SRC" | awk '{print $1}')"
+stamped=""; [ -f "$STAMP" ] && stamped="$(cat "$STAMP" 2>/dev/null || true)"
+if [ "$cur" != "$stamped" ]; then
+  echo "" >&2
+  echo "⚠️  APK が古い可能性があります（novel_downloader.py が前回のAPKビルドと不一致）。" >&2
+  echo "   リリースに最新APKを含める:  scripts/release.sh $tag_ver" >&2
+  echo "   既存Releaseに添付だけ:      scripts/release.sh $tag_ver --apk-only" >&2
+  echo "   ※ この警告は push をブロックしません。" >&2
+  echo "" >&2
+fi
+exit 0

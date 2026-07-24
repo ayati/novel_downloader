@@ -275,6 +275,25 @@ python -c "import zipfile; zipfile.ZipFile('<出力.epub>').extractall('/tmp/epu
 
 > **注意**: `.gitignore` に `*.txt` と `*.epub` が含まれるため、ダウンロード結果の出力ファイルは git 管理対象外。Windows 向けセットアップ手順は `WINDOWS_SETUP.md` を参照。
 
+## リリース手順（Python 本体 ＋ Android APK を一括）
+
+**原則**: リリースは `scripts/release.sh` 1本に集約する。**「Python をリリースしたのに APK を作り直し忘れる」「`__version__` を上げ忘れる」を構造的に防ぐ**ため、版数更新 → タグ push → APK ビルド → Release 作成/添付を1コマンドで行う。
+
+```bash
+# 通常のリリース（__version__更新→コミット→タグ→Release作成→APK添付まで全部）
+scripts/release.sh 2.3.0 --notes-file /path/to/notes.md
+# リリース済みだが APK を添付し忘れた時（既存Releaseにビルド＆添付するだけ）
+scripts/release.sh 2.3.0 --apk-only
+# ローカルで APK をビルドするだけ（push/Release しない）
+scripts/release.sh 2.3.0 --no-release
+```
+
+- **版数の単一ソースは `novel_downloader.py` の `__version__`**。実行時は `--version` で名乗れる（Android/Windows/コピー配布など git の無い環境でも有効）。`scripts/release.sh <X.Y.Z>` が `__version__` を書き換えて `release: vX.Y.Z` としてコミットし、その上にタグを打つ。**手で `__version__` を編集する必要はない**（それが唯一の書き手）。
+- **版数は一元管理**: Android の `versionName` は `__version__` と常に一致する。`app/build.gradle.kts` は `-PappVersion=X.Y.Z`（release スクリプトが渡す）→ 無ければ直下 `novel_downloader.py` の `__version__` を読む、の順で解決し、`versionCode = major*10000 + minor*100 + patch`（例 `2.3.0`→`20300`）。**build.gradle.kts の版数を手で書き換える必要はない**（minor/patch は各 <100 が前提）。
+- **APK 同梱スクリプト**: `app/build.gradle.kts` の `syncNovelDownloader` タスクがビルド時に直下の `novel_downloader.py` を `app/src/main/python/` へコピーするため、**本体の変更はリビルドだけで APK に反映**される（同梱コピーは `.gitignore` 済み）。署名は debug のまま（野良配布のみ）。
+- **陳腐化ガード（B）**: `scripts/release.sh` はビルド後に `android/.apk_built_from`（`novel_downloader.py` の sha256・`.gitignore` 済み）を記録する。`scripts/install-hooks.sh` を一度実行して `pre-push` フックを入れておくと、`vX.Y.Z` タグ push 時に **(1) `__version__` とタグの不一致**、**(2) APK が古い（本体を変えたのに作り直していない）** を検知して警告する（いずれもブロックはしない）。
+- 配布 APK（`android/noveldownloader_vX.Y.Z.apk`）は `.gitignore` 済み。GitHub Release のアセットとして配る。
+
 ## ウォッチモード（--watch）
 
 URLリストを定期チェックし、新着があれば通知・自動 DL する機能。cron と単発実行の両方に対応。

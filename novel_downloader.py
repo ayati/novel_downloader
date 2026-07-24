@@ -89,6 +89,10 @@ novel_downloader.py
     --kobo           Kobo専用端末向けに拡張子を.kepub.epubにする
 """
 
+# 版数の単一ソース。リリース時は scripts/release.sh が書き換えるため手動更新は不要。
+# Android(Chaquopy)・Windows(exe)・コピー配布など git の無い環境でも --version で名乗れる。
+__version__ = "2.2.0"
+
 import sys
 import time
 import re
@@ -9403,6 +9407,8 @@ def _main(argv=None):
             "  python novel_downloader.py --from-epub mynovel.epub -o output\n"
         )
     )
+    parser.add_argument("--version", action="version",
+                        version=f"novel_downloader {__version__}")
     parser.add_argument("url", nargs="?", default=None,
                         help="作品のURL（小説家になろう・カクヨム・アルファポリス・エブリスタ）"
                              "。--from-file 指定時は省略可")

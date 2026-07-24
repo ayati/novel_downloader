@@ -4,6 +4,24 @@ plugins {
     id("com.chaquo.python")
 }
 
+// APK バージョンは novel_downloader のリリース版数に一致させる（版数の二重管理を回避）。
+// 版数の単一ソースは本体 novel_downloader.py の __version__。
+//   優先1: -PappVersion=X.Y.Z（scripts/release.sh がリリース時に渡す）
+//   優先2: リポジトリ直下 novel_downloader.py の __version__（手動/開発ビルド時）
+// versionCode は semver から単調増加する整数を合成（minor/patch < 100 が前提）。
+val appVersion: String = run {
+    val prop = (project.findProperty("appVersion") as String?)?.removePrefix("v")?.trim()
+    if (!prop.isNullOrEmpty()) return@run prop
+    val pyFile = rootProject.projectDir.parentFile.resolve("novel_downloader.py")
+    if (pyFile.exists()) {
+        Regex("""__version__\s*=\s*["']([^"']+)["']""")
+            .find(pyFile.readText())?.groupValues?.get(1)?.let { return@run it }
+    }
+    "0.0.0"
+}
+val appVerParts: List<Int> =
+    (appVersion.split(".") + listOf("0", "0", "0")).take(3).map { it.toIntOrNull() ?: 0 }
+
 android {
     namespace = "com.ayati.noveldownloader"
     compileSdk = 35
@@ -12,8 +30,8 @@ android {
         applicationId = "com.ayati.noveldownloader"
         minSdk = 24
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.4.2"
+        versionCode = appVerParts[0] * 10000 + appVerParts[1] * 100 + appVerParts[2]
+        versionName = appVersion
 
         ndk {
             // 配布対象は実機スマホのみなので arm64 に絞って APK を小さくする

@@ -194,6 +194,7 @@ ePub3 ファイルから本文テキストを抽出し、青空文庫書式テ�
 | オプション | デフォルト | 説明 |
 |---|---|---|
 | `url` | — | 作品の URL（`--from-file` 指定時は省略可） |
+| `--version` | — | バージョンを表示して終了（`novel_downloader X.Y.Z`）。CLI・Android アプリ・Windows exe いずれも同じ版数を名乗る |
 | `-o FILE` | タイトルから自動生成 | 出力ファイルのベース名（例: `-o mynovel` → `mynovel.txt` / `mynovel.epub`） |
 | `--delay SEC` | `1.5` | リクエスト間隔（秒） |
 | `--resume [N]` | — | 続きからダウンロード。`N` 省略時は既存 `.txt` から話数を自動検出して再開。`N` 指定時は第 N 話から開始。全サイト対応 |
@@ -253,6 +254,9 @@ ePub3 ファイルから本文テキストを抽出し、青空文庫書式テ�
 ## 使用例
 
 ```bash
+# バージョン確認
+python novel_downloader.py --version
+
 # なろう作品をダウンロード（テキスト + ePub）
 python novel_downloader.py https://ncode.syosetu.com/n0022gd/
 
