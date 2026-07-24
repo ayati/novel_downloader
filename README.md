@@ -541,6 +541,7 @@ spine 読み順（デフォルト）: cover-image → cover → toc → ep0001�
 - ルビ（`<ruby>` タグ）対応
 - `epub:type` は `cover` / `cover-image`（cover-image.xhtml）と nav の `toc` / `landmarks` のみ付与（DPFJガイド準拠）
 - OPF に `rendition:layout` / `rendition:orientation` / `rendition:spread` メタデータを付与
+- OPF に **配信元サイト名を `<dc:publisher>`・底本 URL を `<dc:source>`** として付与（yomikake ビューアの書誌情報ブロックで「出版社」表示・「○○で読む」底本サイトリンクとして利用される）
 - なろう・カクヨムの章・部区切りを目次に反映。章ヘッダーは非リンクの太字区切り行として全エピソードと同一インデントレベルに配置（章内エピソードのネスト段差なし）
 - nav.xhtml の landmarks に `bodymatter`（本文開始位置）エントリを記載
 

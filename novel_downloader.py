@@ -1579,7 +1579,8 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
               toc_at_end: bool = False,
               inline_images: list = None,
               synopsis: str = "",
-              horizontal: bool = False) -> str:
+              horizontal: bool = False,
+              publisher: str = "", source_url: str = "") -> str:
     """
     OPF（package.opf）を生成する。
     cover_fmt: "png" | "svg" | "" (表紙画像なし)
@@ -1587,6 +1588,8 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     toc_at_end: True のとき目次を奥付の後に配置（デフォルト: 表紙の後・本文の前）
     inline_images: 本文中のインライン画像ファイル名リスト（青空文庫 ZIP 内の画像等）
     synopsis: あらすじ（dc:description に設定）
+    publisher: 配信元サイト表示名（dc:publisher に設定。yomikake の書誌ブロック「出版社」欄）
+    source_url: 底本 URL（dc:source に設定。yomikake が「○○で読む」リンクに使用）
     """
     today    = date.today().strftime("%Y-%m-%d")
     now_iso  = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1673,6 +1676,9 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     spine_str    = "\n    ".join(spine_items)
     cover_meta   = ('\n    <meta name="cover" content="cover-image"/>' if cover_fmt else "")
     desc_meta    = (f"\n    <dc:description>{_esc(synopsis)}</dc:description>" if synopsis else "")
+    # 配信元サイト名（dc:publisher）と底本 URL（dc:source）。yomikake が書誌ブロック／底本リンクに使う
+    publisher_meta = (f"\n    <dc:publisher>{_esc(publisher)}</dc:publisher>" if publisher else "")
+    source_meta    = (f"\n    <dc:source>{_esc(source_url)}</dc:source>" if source_url else "")
     # 縦書き: iPad/iOS Kindle 縦書き対応のため primary-writing-mode を明示。横書きは不要
     writing_mode_meta = (
         "" if horizontal
@@ -1691,9 +1697,9 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     <dc:identifier id="book-id">urn:uuid:{book_id}</dc:identifier>
     <dc:title>{_esc(title)}</dc:title>
     <dc:creator id="creator">{_esc(author)}</dc:creator>
-    <meta refines="#creator" property="role" scheme="marc:relators">aut</meta>
+    <meta refines="#creator" property="role" scheme="marc:relators">aut</meta>{publisher_meta}
     <dc:language>ja</dc:language>
-    <dc:date>{today}</dc:date>{desc_meta}
+    <dc:date>{today}</dc:date>{desc_meta}{source_meta}
     <meta property="dcterms:modified">{now_iso}</meta>{cover_meta}
     <meta property="rendition:layout">reflowable</meta>
     <meta property="rendition:orientation">auto</meta>
@@ -2254,7 +2260,8 @@ def build_epub(
                               toc_at_end=toc_at_end,
                               inline_images=list(images.keys()) if images else None,
                               synopsis=synopsis,
-                              horizontal=horizontal))
+                              horizontal=horizontal,
+                              publisher=site_name, source_url=source_url))
 
         # nav.xhtml（RS向け機械読み取り専用、spine には linear="no" で含める）
         zf.writestr("OEBPS/nav.xhtml",

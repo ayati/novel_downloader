@@ -140,7 +140,7 @@ python novel_downloader.py --from-file mynovel.txt
    - `make_cover_image` — JPEG 表紙を生成（Pillow、quality=90）、なければ SVG にフォールバック
    - `_make_toc_xhtml` — 読者向け縦組み目次ページ（toc.xhtml）を生成。`class="vrtl"`・`epub:type` なし
    - `_make_nav_xhtml` — RS向け機械読み取り専用ナビゲーションドキュメント（nav.xhtml）を生成。spine に含めない。`<li>` は必ず `<a>` を含む（`<span>` 単独は ePub3 nav 仕様違反・epubcheck RSC-005 エラー）
-   - `_make_opf` — `package.opf` を生成。`<dc:creator>` に marc:relators `aut` ロール付与。cover-page spine itemref に `page-spread-right` 付与（日本語 RTL 書籍の表紙は右ページ）
+   - `_make_opf` — `package.opf` を生成。`<dc:creator>` に marc:relators `aut` ロール付与。cover-page spine itemref に `page-spread-right` 付与（日本語 RTL 書籍の表紙は右ページ）。`publisher`（配信元サイト名 → `<dc:publisher>`）と `source_url`（底本 URL → `<dc:source>`）を任意で受け取り、yomikake の書誌ブロック「出版社」欄・「○○で読む」底本リンクに使わせる（空なら行ごと省略。既存 ePub は colophon/cover の本文リンクからフォールバック回収される）
    - `build_epub` — XHTML / CSS / OPF を ZIP にまとめて ePub を組み立てる。`images: dict` パラメータで青空文庫 ZIP 内画像を `OEBPS/images/` に埋め込み可能
 
 3. **スクレイパー群**（なろう・カクヨム・アルファポリス・エブリスタ・ハーメルン・ネオページ・ソリスピア・野いちご・berry's cafe・monogatary.com・ノベマ！・ノベルアップ＋・ステキブンゲイ・NOVEL DAYS・プロジェクト杉田玄白・結城浩翻訳の部屋・青空文庫）— 各サイトの `run_サイト名(args)` 関数がエントリポイント。**共通パターン**：`aozora_header()` でヘッダー組み立て → エピソードごとに `aozora_chapter_title()` + 本文取得 → `aozora_colophon()` で奥付 → `write_file()` でテキスト保存 → `build_epub()` で ePub 生成。`_apply_resume` / `_apply_output_dir` / `_dry_run_exit` / `_show_episode_list` を最初に呼ぶ（全スクレイパー共通）。各エピソードは `{"title": str, "body": str, "group": str}` 形式で `epub_episodes` リストに追加する。
@@ -340,9 +340,16 @@ python novel_health_check.py --timeout 120             # タイムアウト変�
 python novel_health_check.py --delay 5                 # サイト間待機変更（デフォルト: 3秒）
 python novel_health_check.py --log-dir /path/to/logs  # ログ出力先変更（デフォルト: health_check_logs/）
 python novel_health_check.py --no-color                # カラー出力を無効化
+
+# 失敗時のみ Discord/Slack へ通知（全サイト成功時は無音）
+python novel_health_check.py --notify webhook --webhook-url https://discord.com/api/webhooks/xxx
+python novel_health_check.py --notify webhook --webhook-url https://hooks.slack.com/services/xxx \
+    --webhook-format slack
 ```
 
 終了コード: `0`=全成功、`1`=1件以上失敗、`2`=設定エラー。
+
+`--notify webhook`（`notify_webhook()`）は 1 件以上失敗（`fail`/`error`）がある場合のみ Webhook へ 1 回 POST する。全サイト成功時は送信しない（cron 運用でのスパム防止）。ペイロード形式は `--webhook-format`（`discord`: `{"content":"..."}` / `slack`: `{"text":"..."}`）。メッセージには成功数・失敗サイト名・エラーメッセージ・ログパスを含む。デスクトップ通知（`notify_failure` / `notify-send`）とは独立して動作し、両方同時に有効化できる。
 
 `novel_health_check_urls.json` の形式（`url` が空文字列のサイトはスキップ）：
 ```json

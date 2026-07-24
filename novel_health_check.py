@@ -17,6 +17,8 @@ novel_downloader の対応サイトが正常にスクレイピングできるか
     python novel_health_check.py --delay 5          # サイト間待機秒数を変更（デフォルト: 3）
     python novel_health_check.py --log-dir /path    # ログ出力先を変更
     python novel_health_check.py --no-color         # カラー出力を無効化
+    python novel_health_check.py --notify webhook --webhook-url https://discord.com/api/webhooks/xxx
+                                                    # 失敗時のみDiscordへ通知
 
 終了コード:
     0 ... 全サイト成功（またはスキップ）
@@ -34,6 +36,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 # ── パス設定 ────────────────────────────────────────────────────────────────
 _HERE          = Path(__file__).parent
@@ -429,6 +432,50 @@ def notify_failure(fail_names: list[str]):
         pass
 
 
+# ── Webhook 通知 ──────────────────────────────────────────────────────────────
+
+def notify_webhook(results: dict, config: dict, webhook_url: str, fmt: str = "discord",
+                    log_path: Path | None = None) -> None:
+    """失敗サイトがある場合のみ Webhook に通知する（全サイト成功時は無音）。
+
+    fmt="discord" → {"content": "..."}  （Discord Webhook 互換）
+    fmt="slack"   → {"text": "..."}     （Slack Incoming Webhook 互換）
+    """
+    fail_sites = [sid for sid, r in results.items() if r["status"] in ("fail", "error")]
+    if not fail_sites:
+        return
+
+    ok_count = len([s for s, r in results.items() if r["status"] == "ok"])
+    total    = ok_count + len(fail_sites)
+
+    lines = [f"novel_downloader 動作確認: 異常あり（{ok_count}/{total} 成功）"]
+    for sid in fail_sites:
+        name = config.get(sid, {}).get("name", sid)
+        msg  = results[sid]["message"]
+        lines.append(f"【{name}】{msg}")
+    if log_path:
+        lines.append(f"ログ: {log_path}")
+
+    text = "\n".join(lines)
+    payload = {"text": text} if fmt == "slack" else {"content": text}
+    body = json.dumps(payload).encode("utf-8")
+    req = Request(
+        webhook_url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "novel-downloader-health-check/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=15) as resp:
+            if resp.status >= 400:
+                print(f"[警告] Webhook 送信失敗: HTTP {resp.status}")
+    except Exception as e:
+        print(f"[警告] Webhook 送信失敗: {e}")
+
+
 # ── メイン ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -483,11 +530,27 @@ def main():
         "--no-notify", action="store_true",
         help="デスクトップ通知を無効化",
     )
+    parser.add_argument(
+        "--notify", choices=["stdout", "webhook"], default="stdout",
+        help="失敗時の追加通知方法（デフォルト: stdout＝追加通知なし。"
+             "webhook: --webhook-url 宛に POST）",
+    )
+    parser.add_argument(
+        "--webhook-url", dest="webhook_url", default=None, metavar="URL",
+        help="Webhook 送信先（--notify webhook 時に必須）。Discord / Slack の Incoming Webhook URL",
+    )
+    parser.add_argument(
+        "--webhook-format", dest="webhook_format", choices=["discord", "slack"], default="discord",
+        help="Webhook ペイロード形式（デフォルト: discord）",
+    )
 
     args = parser.parse_args()
 
     if args.no_color:
         _color_enabled(False)
+
+    if args.notify == "webhook" and not args.webhook_url:
+        parser.error("--notify webhook には --webhook-url が必要です")
 
     # novel_downloader.py の存在確認
     if not _DOWNLOADER.exists():
@@ -570,6 +633,9 @@ def main():
     if fail_sites and not args.no_notify:
         fail_names = [site_config[s]["name"] for s in fail_sites if s in site_config]
         notify_failure(fail_names)
+
+    if args.notify == "webhook" and args.webhook_url:
+        notify_webhook(results, site_config, args.webhook_url, args.webhook_format, log_path)
 
     sys.exit(1 if fail_sites else 0)
 
