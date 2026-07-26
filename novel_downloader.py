@@ -410,6 +410,8 @@ def _warn_unknown_genre(site: str, raw: str) -> None:
 def _iso_date(value) -> str:
     """ISO8601 文字列や日付表記から YYYY-MM-DD を取り出す（取れなければ空）。"""
     s = str(value or "").strip()
+    # 青空文庫の「1988（昭和63）年10月25日」のような元号併記を落とす
+    s = re.sub(r"[（(][^）)]*[）)]", "", s)
     m = re.search(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})", s)
     if m:
         return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
@@ -3498,6 +3500,258 @@ def _mono_meta_from_story(story: dict, episode_count: int = 0) -> dict:
     return meta
 
 
+def _labeled_value(text: str, label: str) -> str:
+    """「ラベル（改行）値」形式のテキストからラベル直後の値を返す。
+
+    サイトの作品情報が <dl>/<table> で「見出し／値」の対になっている場合に使う。
+    **必ず作品本体のコンテナに限定したテキストを渡すこと**（ページ全体を渡すと
+    推薦カードなど別作品の値を拾う）。
+    """
+    m = re.search(rf"{re.escape(label)}\s*[\n：:]\s*([^\n]+)", text)
+    return m.group(1).strip() if m else ""
+
+
+def _set_status(meta: dict, raw: str) -> None:
+    """「完結」「完結済」「連載中」等の表記を meta["serial_status"] に正規化する。"""
+    s = (raw or "").strip()
+    if not s:
+        return
+    if "完結" in s or s == "完":
+        meta["serial_status"] = "完結"
+    elif "連載" in s:
+        meta["serial_status"] = "連載中"
+
+
+def _set_genre(meta: dict, site: str, raw: str) -> None:
+    """ジャンル原文を共通ジャンルへ正規化して meta に格納する。"""
+    if not raw:
+        return
+    gid, glabel = _normalize_genre(site, raw)
+    if gid:
+        meta["genre"] = gid
+    if glabel:
+        meta["genre_raw"] = glabel
+
+
+def _set_int(meta: dict, key: str, raw: str) -> None:
+    """「11,985文字」「220ページ」等から数値だけを取り出して格納する。"""
+    digits = re.sub(r"\D", "", str(raw or ""))
+    if digits:
+        meta[key] = int(digits)
+
+
+def _starts_meta_from_page(soup, site_name: str, site_id: str) -> dict:
+    """野いちご／ノベマ！／berry's cafe（同一プラットフォーム）のメタデータ。
+
+    ジャンルは `div.subDetails-01` 内の `.genre_name`、その他は `div.bookInfo`
+    に限定する。**ページ全体を検索しないこと** — berry's の作品ページには
+    推薦スワイパーがあり `.genre_name` がページ内に60件以上出現する。
+    """
+    meta: dict = {"site": site_name}
+
+    sub = soup.find(class_="subDetails-01")
+    if sub:
+        g = sub.find(class_="genre_name")
+        if g:
+            _set_genre(meta, site_id, g.get_text(strip=True))
+
+    info = soup.find(class_="bookInfo")
+    if info:
+        t = info.get_text("\n")
+        _set_status(meta, _labeled_value(t, "ステータス"))
+        _set_int(meta, "char_count", _labeled_value(t, "総文字数"))
+        upd = _iso_date(_labeled_value(t, "最終更新").replace("/", "-"))
+        if upd:
+            meta["updated"] = upd
+    return meta
+
+
+def _est_meta_from_page(soup) -> dict:
+    """エブリスタのメタデータ。
+
+    ジャンル・完結ラベルは `div.novelDataWrap` に限定する。`-finished` は
+    推薦リスト（`novelListItem`）にも付くのでページ全体では拾えない。
+    """
+    meta: dict = {"site": "エブリスタ"}
+
+    wrap = soup.find(class_="novelDataWrap")
+    if wrap:
+        # ジャンルは <meta itemprop="genre" content="..."> で埋め込まれている
+        g = wrap.find("meta", attrs={"itemprop": "genre"})
+        if g and g.get("content"):
+            _set_genre(meta, "estar", g["content"].strip())
+        if wrap.find(class_=re.compile(r"-finished")):
+            meta["serial_status"] = "完結"
+        m = re.search(r"([\d,]+)\s*文字", wrap.get_text(" "))
+        if m:
+            _set_int(meta, "char_count", m.group(1))
+
+    tags = soup.find(class_="tags")
+    if tags:
+        vals = [a.get_text(strip=True) for a in tags.find_all("a")]
+        vals = [v for v in vals if v]
+        if vals:
+            meta["tags"] = vals[:10]
+
+    og = soup.find("meta", property="og:description")
+    if og and og.get("content", "").strip():
+        meta["catchphrase"] = og["content"].strip()
+    return meta
+
+
+def _days_meta_from_page(soup) -> dict:
+    """NOVEL DAYS のメタデータ（作品詳細の dl.dl03 が「見出し／値」の対）。"""
+    meta: dict = {"site": "NOVEL DAYS"}
+    text = "\n".join(dl.get_text("\n") for dl in soup.find_all("dl", class_="dl03"))
+
+    _set_genre(meta, "days", _labeled_value(text, "ジャンル"))
+    _set_status(meta, _labeled_value(text, "執筆状況"))
+    _set_int(meta, "char_count", _labeled_value(text, "総文字数"))
+    _set_int(meta, "episode_count", _labeled_value(text, "エピソード"))
+
+    tags = [t.strip() for t in _labeled_value(text, "タグ").split(",") if t.strip()]
+    if tags:
+        meta["tags"] = tags[:10]
+    for key, label in (("published", "公開日"), ("updated", "最終更新日")):
+        v = _iso_date(_labeled_value(text, label))
+        if v:
+            meta[key] = v
+    return meta
+
+
+def _novelup_meta_from_page(soup) -> dict:
+    """ノベルアップ＋のメタデータ（table.storyMeta に作品情報が集約されている）。"""
+    meta: dict = {"site": "ノベルアップ＋"}
+    table = soup.find("table", class_="storyMeta")
+    if not table:
+        return meta
+    text = table.get_text("\n")
+
+    _set_int(meta, "char_count", _labeled_value(text, "文字数"))
+    _set_int(meta, "episode_count", _labeled_value(text, "総エピソード数"))
+    for key, label in (("published", "初掲載日"), ("updated", "最終更新日")):
+        v = _iso_date(_labeled_value(text, label))
+        if v:
+            meta[key] = v
+    # 完結日の欄は完結していないと「-」になる
+    fin = _labeled_value(text, "完結日")
+    if _iso_date(fin):
+        meta["serial_status"] = "完結"
+    elif fin:
+        meta["serial_status"] = "連載中"
+
+    # タグ行は「タグ」見出しの直後にリンクが並ぶ
+    tag_cell = None
+    for th in table.find_all(["th", "td"]):
+        if th.get_text(strip=True) == "タグ":
+            tag_cell = th.find_next_sibling(["td", "th"])
+            break
+    if tag_cell:
+        vals = [a.get_text(strip=True) for a in tag_cell.find_all("a")]
+        vals = [v for v in vals if v]
+        if vals:
+            meta["tags"] = vals[:10]
+
+    warns = [w for w in ("残酷描写あり", "暴力描写あり", "性的表現あり") if w in text]
+    if warns:
+        meta["content_warnings"] = [w.replace("あり", "") for w in warns]
+        meta["age_rating"] = "R15"
+    return meta
+
+
+def _epoch_ms_date(value) -> str:
+    """エポックミリ秒を YYYY-MM-DD に変換する（不正なら空）。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(n / 1000, timezone.utc).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _neopage_meta_from_book(book: dict) -> dict:
+    """ネオページのメタデータ。ページ埋め込みの作品オブジェクトから取る。
+
+    パンくずより確実で、分類・完結フラグ・文字数・話数・日時がすべて揃う。
+    """
+    meta: dict = {"site": "ネオページ"}
+    if not isinstance(book, dict):
+        return meta
+
+    # sub_category（小分類「現代恋愛」等）を優先し、無ければ category（大分類）
+    for key in ("sub_category", "category"):
+        cat = book.get(key)
+        if isinstance(cat, dict) and cat.get("category_name"):
+            _set_genre(meta, "neopage", str(cat["category_name"]).strip())
+            break
+
+    if book.get("finished"):
+        meta["serial_status"] = "完結"
+    elif book.get("finished") is not None:
+        meta["serial_status"] = "連載中"
+
+    for key, src in (("char_count", "words"), ("episode_count", "total_chapter")):
+        try:
+            n = int(book.get(src) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n:
+            meta[key] = n
+
+    for key, src in (("published", "create_time"), ("updated", "last_update")):
+        v = _epoch_ms_date(book.get(src))
+        if v:
+            meta[key] = v
+
+    tags = []
+    for lb in (book.get("labels") or []):
+        if isinstance(lb, dict):
+            t = str(lb.get("label_name") or lb.get("name") or "").strip()
+            if t and t not in tags:
+                tags.append(t)
+    if tags:
+        meta["tags"] = tags[:10]
+    return meta
+
+
+def _solispia_meta_from_page(soup) -> dict:
+    """ソリスピアのメタデータ。完結・R15 バッジは JS で後付けされるため取れない。"""
+    # `.genre` の値は「ライトノベル」等の媒体区分で内容ジャンルではないため
+    # 共通ジャンルには使わない（誤分類を避ける）。内容はタグ側が表す。
+    meta: dict = {"site": "ソリスピア"}
+    tags = []
+    for e in soup.find_all(class_="tag"):
+        t = e.get_text(strip=True)
+        if t and t not in tags:
+            tags.append(t)
+    if tags:
+        meta["tags"] = tags[:10]
+    return meta
+
+
+def _suteki_meta_from_page(soup) -> dict:
+    """ステキブンゲイのメタデータ（Nuxt SSR。完結表示はチップ）。"""
+    meta: dict = {"site": "ステキブンゲイ"}
+    for chip in soup.find_all(class_="v-chip__content"):
+        _set_status(meta, chip.get_text(strip=True))
+    return meta
+
+
+def _hameln_meta_from_page(soup) -> dict:
+    """ハーメルンのメタデータ。作品はほぼすべて二次創作なのでジャンルを固定する。"""
+    meta: dict = {"site": "ハーメルン", "genre": "fanfic", "genre_raw": "二次創作"}
+    text = soup.get_text("\n")
+    for key, label in (("published", "掲載日"), ("updated", "最終更新日")):
+        v = _iso_date(_labeled_value(text, label))
+        if v:
+            meta[key] = v
+    return meta
+
+
 def _kky_meta_from_work(work: dict) -> dict:
     """カクヨムの Work オブジェクトから配信元メタデータを取り出す。
 
@@ -4484,6 +4738,7 @@ def est_get_work_info(soup, html: str, work_id: str = "") -> dict:
         if meta_desc and meta_desc.get("content"):
             info["description"] = meta_desc["content"].strip()
 
+    info.update(_est_meta_from_page(soup))
     return info
 
 
@@ -4622,7 +4877,7 @@ def run_estar(args):
     # 青空文庫テキスト組み立て
     print("[3/3] テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "エブリスタ")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "estar_novel"))
     txt_path  = base + ".txt"
@@ -4678,7 +4933,7 @@ def run_estar(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "エブリスタ", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -4717,7 +4972,9 @@ def hameln_get_work_info(soup) -> dict:
             for br in syp.find_all("br"):
                 br.replace_with("\n")
             synopsis = syp.get_text().strip()
-    return {"title": title, "author": author, "description": synopsis}
+    info = {"title": title, "author": author, "description": synopsis}
+    info.update(_hameln_meta_from_page(soup))
+    return info
 
 
 def hameln_get_episode_list(soup) -> list:
@@ -4845,7 +5102,7 @@ def run_hameln(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "ハーメルン")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "hameln_novel"))
     txt_path  = base + ".txt"
@@ -4948,7 +5205,7 @@ def run_hameln(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ハーメルン", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -5070,13 +5327,17 @@ def neopage_get_work_info(html: str, book_id: str) -> dict:
     author_obj = book_obj.get("author") or {}
     author = (author_obj.get("author_name") or "") if isinstance(author_obj, dict) else ""
 
-    return {
+    info = {
         "title":            title,
         "author":           author,
         "synopsis":         synopsis,
+        # 他サイトと同じキーでも引けるようにしておく（info の共通スキーマ）
+        "description":      synopsis,
         "first_chapter_id": first_chapter_id,
         "total_chapter":    total_chapter,
     }
+    info.update(_neopage_meta_from_book(book_obj))
+    return info
 
 
 def neopage_fetch_chapter(chapter_id: str, retries: int = 3) -> dict:
@@ -5230,7 +5491,7 @@ def run_neopage(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"],
-                             info["synopsis"], source_url=work_url)
+                             info["synopsis"], source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "ネオページ")
     base      = _apply_output_dir(
         args, args.output or safe_filename(info["title"], "neopage_novel"))
@@ -5275,7 +5536,7 @@ def run_neopage(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["synopsis"],
                    work_url, "ネオページ", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -5325,7 +5586,9 @@ def solispia_get_work_info(soup) -> dict:
     author    = author_el.get_text(strip=True) if author_el else ""
     syn_el    = soup.find("div", class_="summary")
     synopsis  = syn_el.get_text().strip() if syn_el else ""
-    return {"title": title, "author": author, "description": synopsis}
+    info = {"title": title, "author": author, "description": synopsis}
+    info.update(_solispia_meta_from_page(soup))
+    return info
 
 
 def solispia_get_episode_list(soup) -> list:
@@ -5509,7 +5772,7 @@ def run_solispia(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"],
-                             info["description"], source_url=work_url)
+                             info["description"], source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "ソリスピア")
     base     = _apply_output_dir(
         args, args.output or safe_filename(info["title"], "solispia_novel"))
@@ -5559,7 +5822,7 @@ def run_solispia(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ソリスピア", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -5613,7 +5876,9 @@ def noichigo_get_work_info(soup) -> dict:
     synopsis_div = soup.find("div", class_="bookSummary-01")
     synopsis = synopsis_div.get_text(strip=True) if synopsis_div else ""
 
-    return {"title": title, "author": author, "description": synopsis}
+    info = {"title": title, "author": author, "description": synopsis}
+    info.update(_starts_meta_from_page(soup, "野いちご", "noichigo"))
+    return info
 
 
 def noichigo_get_chapter_list(soup) -> list:
@@ -5770,7 +6035,7 @@ def run_noichigo(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "野いちご")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "noichigo_novel"))
     txt_path  = base + ".txt"
@@ -5835,7 +6100,7 @@ def run_noichigo(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "野いちご", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -5904,8 +6169,10 @@ def berrys_get_work_info(soup) -> dict:
             total_pages = int(m.group(1))
             break
 
-    return {"title": title, "author": author, "description": synopsis,
+    info = {"title": title, "author": author, "description": synopsis,
             "total_pages": total_pages}
+    info.update(_starts_meta_from_page(soup, "berry's cafe", "berrys"))
+    return info
 
 
 def run_berrys(args):
@@ -5977,7 +6244,7 @@ def run_berrys(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "berry's cafe")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "berrys_novel"))
     txt_path  = base + ".txt"
@@ -6035,7 +6302,7 @@ def run_berrys(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "berry's cafe", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -6312,7 +6579,9 @@ def novema_get_work_info(soup) -> dict:
     synopsis_div = soup.find("div", class_="bookSummary-01")
     synopsis = synopsis_div.get_text(strip=True) if synopsis_div else ""
 
-    return {"title": title, "author": author, "description": synopsis}
+    info = {"title": title, "author": author, "description": synopsis}
+    info.update(_starts_meta_from_page(soup, "ノベマ！", "novema"))
+    return info
 
 
 def novema_get_episode_list(soup) -> list:
@@ -6397,7 +6666,7 @@ def run_novema(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "ノベマ！")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novema_novel"))
     txt_path  = base + ".txt"
@@ -6457,7 +6726,7 @@ def run_novema(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ノベマ！", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -6514,7 +6783,9 @@ def novelup_get_work_info(soup) -> dict:
     synopsis_div = soup.find("div", class_="novel_synopsis")
     synopsis = synopsis_div.get_text(strip=True) if synopsis_div else ""
 
-    return {"title": title, "author": author, "description": synopsis}
+    info = {"title": title, "author": author, "description": synopsis}
+    info.update(_novelup_meta_from_page(soup))
+    return info
 
 
 def novelup_get_episode_list(soup) -> list:
@@ -6646,7 +6917,7 @@ def run_novelup(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "ノベルアップ＋")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novelup_novel"))
     txt_path  = base + ".txt"
@@ -6696,7 +6967,7 @@ def run_novelup(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ノベルアップ＋", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -6757,7 +7028,9 @@ def suteki_get_work_info(soup) -> dict:
             if m:
                 author = m.group(1)
 
-    return {"title": title, "author": author, "description": description}
+    info = {"title": title, "author": author, "description": description}
+    info.update(_suteki_meta_from_page(soup))
+    return info
 
 
 def suteki_get_episode_list(soup) -> list:
@@ -6866,7 +7139,7 @@ def run_sutekibungei(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "ステキブンゲイ")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "suteki_novel"))
     txt_path  = base + ".txt"
@@ -6915,7 +7188,7 @@ def run_sutekibungei(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ステキブンゲイ", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -6977,7 +7250,9 @@ def days_get_work_info(soup) -> dict:
             br.replace_with("\n")
         description = synopsis_p.get_text().strip()
 
-    return {"title": title, "author": author, "description": description}
+    info = {"title": title, "author": author, "description": description}
+    info.update(_days_meta_from_page(soup))
+    return info
 
 
 def days_get_episode_list(soup) -> list:
@@ -7115,7 +7390,7 @@ def run_days(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "NOVEL DAYS")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "days_novel"))
     txt_path  = base + ".txt"
@@ -7164,7 +7439,7 @@ def run_days(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "NOVEL DAYS", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -7249,12 +7524,15 @@ def genpaku_get_work_info(soup) -> dict:
                         break
                 break
 
-    if author and translator:
-        full_author = f"{author}（{translator} 訳）"
-    elif translator:
-        full_author = f"{translator} 訳"
-    elif author:
+    # 原著者を dc:creator、訳者は dc:contributor(trl) に分ける。
+    # これまでは「原著者（訳者 訳）」を dc:creator に入れていたため、
+    # ビューアのしおりキー（書名＋dc:creator）が変わる点に注意。
+    contributors = [{"name": translator, "role": "trl"}] if translator else []
+    if author:
         full_author = author
+    elif translator:
+        full_author = translator
+        contributors = []          # 訳者しか分からない場合は creator に置く
     else:
         full_author = "山形浩生"
 
@@ -7263,7 +7541,13 @@ def genpaku_get_work_info(soup) -> dict:
     # （原題を dc:title の subtitle として正しく扱うのは書誌拡張フェーズで行う）
     description = f"原題：{original_title}" if original_title else ""
 
-    return {"title": title, "author": full_author, "description": description}
+    # ジャンルは決め打ちしない。このサイトには思想・経済の論考も文学作品の
+    # 翻訳も含まれ、固定すると『鏡の国のアリス』が「評論」になってしまう。
+    info = {"title": title, "author": full_author, "description": description,
+            "site": "プロジェクト杉田玄白"}
+    if contributors:
+        info["contributors"] = contributors
+    return info
 
 
 def genpaku_extract_chapters(soup, work_title: str) -> list:
@@ -7415,7 +7699,7 @@ def run_genpaku(args):
 
     print("[3/3] テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "プロジェクト杉田玄白")
 
     sections = []
@@ -7442,7 +7726,7 @@ def run_genpaku(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "プロジェクト杉田玄白", episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -7544,16 +7828,21 @@ def hyuki_get_work_info(soup) -> dict:
             elif len(lines) == 1:
                 trans = re.sub(r"訳$", "", lines[0]).strip()
 
-    if orig and trans:
-        full_author = f"{orig}（{trans} 訳）"
-    elif trans:
-        full_author = f"{trans} 訳"
-    elif orig:
+    # 杉田玄白と同じく原著者と訳者を分ける（しおりキーが変わる）
+    contributors = [{"name": trans, "role": "trl"}] if trans else []
+    if orig:
         full_author = orig
+    elif trans:
+        full_author = trans
+        contributors = []
     else:
-        full_author = "結城浩 訳"
+        full_author = "結城浩"
 
-    return {"title": title, "author": full_author, "description": description}
+    info = {"title": title, "author": full_author, "description": description,
+            "site": "結城浩翻訳の部屋"}
+    if contributors:
+        info["contributors"] = contributors
+    return info
 
 
 def _hyuki_p_is_meta(p_elem) -> bool:
@@ -7750,7 +8039,7 @@ def run_hyuki(args):
 
     print("[3/3] テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "結城浩翻訳の部屋")
 
     sections = []
@@ -7777,7 +8066,7 @@ def run_hyuki(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "結城浩翻訳の部屋", episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -7865,6 +8154,39 @@ def aozora_get_work_info(html: str) -> dict:
         if m:
             author = m.group(1).strip()
 
+    # ── 図書カードの書誌 ────────────────────────────────────
+    # 読み（file-as 用）・NDC 分類・文字遣い・底本・入力者/校正者・登録日。
+    # 「入力」「校正」は MARC relator の trc（transcriber）/ pfr（proofreader）。
+    meta: dict = {"site": "青空文庫"}
+    for key, label in (("title_kana", "作品名読み"), ("author_kana", "作家名読み"),
+                       ("orthography", "文字遣い種別")):
+        v = _cell(label)
+        if v:
+            meta[key] = v
+
+    m_ndc = re.search(r"NDC\s*([0-9K]+)", _cell("分類"))
+    if m_ndc:
+        code = m_ndc.group(1)
+        meta["genre_raw"] = f"NDC {code}"
+        # NDC の百の位 9 が文学。それ以外は文学作品ではないので評論等に寄せる
+        meta["genre"] = "literature" if code.startswith("9") else "nonfiction"
+
+    # 底本の書名は全集名（「太宰治全集3」等）ならシリーズとして意味があるが、
+    # 単行本で作品名と同じ場合は情報量がないので出さない
+    base_book = _cell("底本")
+    if base_book and base_book != title:
+        meta["series"] = base_book
+    for key, label in (("published", "初版発行日"), ("updated", "最終更新日")):
+        v = _iso_date(_cell(label))
+        if v:
+            meta[key] = v
+
+    contributors = [{"name": _cell(label), "role": role}
+                    for label, role in (("入力", "trc"), ("校正", "pfr"))
+                    if _cell(label)]
+    if contributors:
+        meta["contributors"] = contributors
+
     # 図書カードにあらすじ欄は存在しない。「作品について：」欄には Wikipedia への
     # リンクが入るが、初出などの注記がリンクと併記されていることがあるため、
     # リンク・画像を除いた地の文だけを説明として拾う（無ければ空のまま）。
@@ -7880,7 +8202,9 @@ def aozora_get_work_info(html: str) -> dict:
         if len(cell) >= 4:      # 記号だけ残った場合は採用しない
             description = cell
 
-    return {"title": title, "author": author, "description": description}
+    info = {"title": title, "author": author, "description": description}
+    info.update(meta)
+    return info
 
 
 def aozora_find_zip_url(html: str, card_url: str) -> str | None:
@@ -8318,7 +8642,7 @@ def run_aozora(args):
 
     text, enc = aozora_decode(txt_bytes)
     text = aozora_resolve_gaiji(text)
-    text = _aozora_insert_source_url(text, work_url)
+    text = _aozora_insert_source_url(text, work_url, info)
     img_msg = f"  画像 {len(images)} 件" if images else ""
     print(f"      ファイル名: {txt_filename}  エンコーディング: {enc}{img_msg}")
 
@@ -8348,7 +8672,7 @@ def run_aozora(args):
         epub_path = _epub_base + _epub_ext(args)
         build_epub(epub_path, title, author, info.get("description", ""),
                    work_url, "青空文庫", episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),

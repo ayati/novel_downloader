@@ -169,7 +169,26 @@ python novel_downloader.py --from-file mynovel.txt
    - 日本語ジャンル名しか持たないサイト: `_GENRE_KEYWORD_RULES` のキーワード判定。**順序が意味を持つ**（「異世界恋愛」は恋愛、「現代ファンタジー」はファンタジーに寄せるため 恋愛 → ファンタジー → … の順）
    - 判定できないときは共通IDを付けない（`"other"` で埋めない）。未知の値は1度だけ stderr に警告する
 
-6d. **サイト別メタデータ抽出** — `_narou_meta`（`narou_get_novel_info_api`）/ `_kky_meta_from_work` / `_mono_meta_from_story` / `_alp_meta_from_page`。カクヨム・monogatary は**既に取得済みの JSON から拾うだけで追加リクエストなし**。なろうは公式 API（`api.syosetu.com`）を優先し、失敗時は従来の作品情報ページ解析へフォールバックする（R18 作品は別ドメインのため 0 件になる）。
+6d. **サイト別メタデータ抽出** — 全17サイト対応。共通ヘルパーは `_labeled_value`（「見出し／値」の対を取る）/ `_set_genre` / `_set_status` / `_set_int` / `_iso_date` / `_epoch_ms_date`。
+
+   | サイト | 取得元 |
+   |---|---|
+   | なろう | 公式 API（失敗時は作品情報ページ解析へフォールバック） |
+   | カクヨム / monogatary | 取得済み JSON（追加リクエストなし） |
+   | ネオページ | ページ埋め込みの作品オブジェクト（`sub_category` / `finished` / `words` / `total_chapter` / `labels`） |
+   | アルファポリス | JSON-LD の `Article.genre` ＋ `div.p-content-info`（タグ）＋ `div.p-sidebar-content-info__detail`（日付・文字数・完結） |
+   | 野いちご / ノベマ！ / berry's cafe | 同一プラットフォーム。`div.subDetails-01`（ジャンル）＋ `div.bookInfo`（状態・文字数・更新日） |
+   | エブリスタ | `div.novelDataWrap` 内の `<meta itemprop="genre">`・`-finished`・文字数、`.tags` |
+   | NOVEL DAYS | `dl.dl03` の見出し／値 |
+   | ノベルアップ＋ | `table.storyMeta` |
+   | 青空文庫 | 図書カードの表（読み・NDC・文字遣い・底本・入力者/校正者） |
+   | ソリスピア / ステキブンゲイ / ハーメルン | タグ・完結表示のみ（バッジが JS 後付けのため限定的） |
+
+   - **必ず作品本体のコンテナに限定すること。** 推薦カードが並ぶサイトでページ全体を検索すると別作品の値を拾う（実測: アルファポリスは `文字数` がページ内9回・`c-attribute-tag` が57回、berry's は `.genre_name` が60件以上、エブリスタは `-finished` が11回）
+   - **ジャンルを決め打ちしない。** 杉田玄白・結城浩は文学の翻訳も論考も含むため固定すると誤分類になる（『鏡の国のアリス』が「評論」になる）。ソリスピアの `.genre`（「ライトノベル」）は媒体区分なので内容ジャンルに使わない
+   - 青空文庫の入力者・校正者は MARC relator の `trc` / `pfr`、翻訳2サイトの訳者は `trl` として `dc:contributor` に入れる
+
+6e. **サイト別メタデータ抽出の実装メモ** — `_narou_meta`（`narou_get_novel_info_api`）/ `_kky_meta_from_work` / `_mono_meta_from_story` / `_alp_meta_from_page`。カクヨム・monogatary は**既に取得済みの JSON から拾うだけで追加リクエストなし**。なろうは公式 API（`api.syosetu.com`）を優先し、失敗時は従来の作品情報ページ解析へフォールバックする（R18 作品は別ドメインのため 0 件になる）。
    - **アルファポリスは必ず作品本体のコンテナ内だけを見る**。作品ページには推薦カードが数十件並んでおり、ページ全体を検索すると別作品の値を拾う（実測: `文字数` はページ内に9回出現し、最初の1件は推薦カードのもの）。タグは `div.p-content-info` 内、公開日・更新日・文字数・完結判定は `div.p-sidebar-content-info__detail` 内に限定する
 
 7. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・表紙色設定・ディスパッチで参照。`_check_update_one()` でも使用。
