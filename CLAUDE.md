@@ -163,6 +163,15 @@ python novel_downloader.py --from-file mynovel.txt
    - **底本URL・メタ行は `【あらすじ】` より前**に置く。あらすじブロックは区切り線まで続くものとして読まれるため、後ろに置くとラベル行があらすじに取り込まれる
    - `_aozora_insert_source_url()` は**記号説明ブロック（区切り線2本）がある作品にだけ**メタ行を入れる。区切り線が無い作品では挿入行が本文に混ざるため（底本URL 行は `--append` が依存しているので従来どおり常に入れる）
 
+6c. **サイト別ジャンルの正規化** — `_normalize_genre(site, raw) -> (共通ジャンルID, 表示名)`。一次情報だけを使い、**表示名から意味を推測しない**：
+   - なろう: `_NAROU_GENRE`（小ジャンル21件）＋ `_NAROU_BIGGENRE`（大ジャンル）。公式APIドキュメント（`https://dev.syosetu.com/man/api/`）のコード表が出典。小ジャンル優先・未知なら大ジャンルへフォールバック（`_narou_genre_meta`）
+   - カクヨム: `_KAKUYOMU_GENRE`（enum 14件）。サイトの JS バンドルが持つ enum → 表示名の対応が出典。**`ACTION` は「アクション」ではなく「現代ファンタジー」、`ROMANCE` は「恋愛」ではなく「ラブコメ」**（`LOVE_STORY` が「恋愛」）
+   - 日本語ジャンル名しか持たないサイト: `_GENRE_KEYWORD_RULES` のキーワード判定。**順序が意味を持つ**（「異世界恋愛」は恋愛、「現代ファンタジー」はファンタジーに寄せるため 恋愛 → ファンタジー → … の順）
+   - 判定できないときは共通IDを付けない（`"other"` で埋めない）。未知の値は1度だけ stderr に警告する
+
+6d. **サイト別メタデータ抽出** — `_narou_meta`（`narou_get_novel_info_api`）/ `_kky_meta_from_work` / `_mono_meta_from_story` / `_alp_meta_from_page`。カクヨム・monogatary は**既に取得済みの JSON から拾うだけで追加リクエストなし**。なろうは公式 API（`api.syosetu.com`）を優先し、失敗時は従来の作品情報ページ解析へフォールバックする（R18 作品は別ドメインのため 0 件になる）。
+   - **アルファポリスは必ず作品本体のコンテナ内だけを見る**。作品ページには推薦カードが数十件並んでおり、ページ全体を検索すると別作品の値を拾う（実測: `文字数` はページ内に9回出現し、最初の1件は推薦カードのもの）。タグは `div.p-content-info` 内、公開日・更新日・文字数・完結判定は `div.p-sidebar-content-info__detail` 内に限定する
+
 7. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・表紙色設定・ディスパッチで参照。`_check_update_one()` でも使用。
 
 8. **`_check_update_one(txt_path, delay)`** — 1ファイルの更新チェックを実行し結果辞書を返す。`--check-update-dir` / `--append-dir` の Phase 1 で使用。`_extract_url_from_txt` → `expand_short_url` → `detect_site` → `normalize_url` → `_SITE_DISPATCH` 参照でディスパッチ。`_CHECK_UPDATE_MODE = True` で `_CheckUpdateDone` 例外をキャッチして新着話数を算出。

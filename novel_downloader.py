@@ -288,6 +288,152 @@ _GENRE_IDS = {v: k for k, v in _GENRE_LABELS.items()}
 # EPUB 3 の標準語彙に無い項目を載せる独自プレフィックスの URI
 _ND_PREFIX_URI = "https://github.com/ayati/novel_downloader/ns#"
 
+# ── サイト別ジャンル → 共通ジャンルの対応表 ───────────────────────
+#
+# なろうは公式 API ドキュメント（https://dev.syosetu.com/man/api/）の
+# コード表、カクヨムはサイトの JS バンドルが持つ enum → 表示名の対応を
+# 一次情報として採用している。**表示名から意味を推測しないこと**：
+# カクヨムの ACTION は「アクション」ではなく「現代ファンタジー」、
+# ROMANCE は「恋愛」ではなく「ラブコメ」である。
+
+# なろう大ジャンル（biggenre）。小ジャンル不明時のフォールバックに使う
+_NAROU_BIGGENRE = {
+    "1": "romance", "2": "fantasy", "3": "literature", "4": "sf",
+    "99": "other", "98": None, "0": None,
+}
+
+# なろう小ジャンル（genre）→ (共通ジャンル, 表示名)
+_NAROU_GENRE = {
+    "101": ("romance",    "異世界〔恋愛〕"),
+    "102": ("romance",    "現実世界〔恋愛〕"),
+    "201": ("fantasy",    "ハイファンタジー〔ファンタジー〕"),
+    "202": ("fantasy",    "ローファンタジー〔ファンタジー〕"),
+    "301": ("literature", "純文学〔文芸〕"),
+    "302": ("drama",      "ヒューマンドラマ〔文芸〕"),
+    "303": ("history",    "歴史〔文芸〕"),
+    "304": ("mystery",    "推理〔文芸〕"),
+    "305": ("mystery",    "ホラー〔文芸〕"),
+    "306": ("literature", "アクション〔文芸〕"),
+    "307": ("drama",      "コメディー〔文芸〕"),
+    "401": ("sf",         "VRゲーム〔SF〕"),
+    "402": ("sf",         "宇宙〔SF〕"),
+    "403": ("sf",         "空想科学〔SF〕"),
+    "404": ("sf",         "パニック〔SF〕"),
+    "9901": ("literature", "童話〔その他〕"),
+    "9902": ("literature", "詩〔その他〕"),
+    "9903": ("nonfiction", "エッセイ〔その他〕"),
+    "9904": ("other",      "リプレイ〔その他〕"),
+    "9999": ("other",      "その他〔その他〕"),
+    "9801": (None,         "ノンジャンル"),
+}
+
+# カクヨム genre enum → (共通ジャンル, 表示名)
+_KAKUYOMU_GENRE = {
+    "FANTASY":     ("fantasy",    "異世界ファンタジー"),
+    "ACTION":      ("fantasy",    "現代ファンタジー"),
+    "SF":          ("sf",         "SF"),
+    "LOVE_STORY":  ("romance",    "恋愛"),
+    "ROMANCE":     ("romance",    "ラブコメ"),
+    "DRAMA":       ("drama",      "現代ドラマ"),
+    "HORROR":      ("mystery",    "ホラー"),
+    "MYSTERY":     ("mystery",    "ミステリー"),
+    "NONFICTION":  ("nonfiction", "エッセイ・ノンフィクション"),
+    "HISTORY":     ("history",    "歴史・時代・伝奇"),
+    "CRITICISM":   ("nonfiction", "創作論・評論"),
+    "OTHERS":      ("other",      "詩・童話・その他"),
+    "MAHO":        ("other",      "魔法のiらんど"),
+    "FAN_FICTION": ("fanfic",     "二次創作"),
+}
+
+# 日本語のジャンル名しか持たないサイト（アルファポリス・NOVEL DAYS・
+# monogatary 等）向けのキーワード判定。**順序が意味を持つ**：
+# 「異世界恋愛」は恋愛、「現代ファンタジー」はファンタジーに寄せたいので、
+# 恋愛 → ファンタジー → …の順に見る。
+_GENRE_KEYWORD_RULES = [
+    (("二次創作", "ファンフィク"),                          "fanfic"),
+    (("恋愛", "ラブコメ", "ロマンス", "純愛", "女性向"),      "romance"),
+    (("ファンタジー", "異世界", "ファンタジ"),               "fantasy"),
+    (("SF", "ＳＦ", "空想科学", "宇宙", "VRゲーム"),         "sf"),
+    (("ミステリ", "推理", "ホラー", "サスペンス", "怪談",
+      "パニック", "オカルト"),                              "mystery"),
+    (("歴史", "時代", "伝奇", "戦記"),                       "history"),
+    (("エッセイ", "ノンフィクション", "評論", "創作論",
+      "実用", "ビジネス"),                                  "nonfiction"),
+    (("現代ドラマ", "ヒューマンドラマ", "青春", "日常",
+      "お笑い", "コメディ", "お仕事", "現代"),               "drama"),
+    (("純文学", "文芸", "詩", "童話", "短編"),               "literature"),
+    (("その他",),                                            "other"),
+]
+
+_genre_unknown_reported: set = set()
+
+
+def _normalize_genre(site: str, raw) -> tuple:
+    """サイト固有のジャンル表現を (共通ジャンルID, 表示名) に正規化する。
+
+    判定できない場合は (None, 表示名) を返す。**共通IDを "other" で
+    埋めない**（「その他」と分類された作品と、判定できなかった作品を
+    区別するため）。未知の値は1度だけ stderr に警告して辞書の陳腐化に
+    気づけるようにする。
+    """
+    if raw is None or raw == "":
+        return None, ""
+    key = str(raw).strip()
+
+    if site == "narou":
+        if key in _NAROU_GENRE:
+            return _NAROU_GENRE[key]
+        return None, ""
+    if site == "kakuyomu":
+        if key in _KAKUYOMU_GENRE:
+            return _KAKUYOMU_GENRE[key]
+        _warn_unknown_genre(site, key)
+        return None, key
+
+    # 日本語ジャンル名のサイト
+    for words, gid in _GENRE_KEYWORD_RULES:
+        if any(w in key for w in words):
+            return gid, key
+    _warn_unknown_genre(site, key)
+    return None, key
+
+
+def _warn_unknown_genre(site: str, raw: str) -> None:
+    tag = f"{site}:{raw}"
+    if tag in _genre_unknown_reported:
+        return
+    _genre_unknown_reported.add(tag)
+    print(f"[情報] 未知のジャンル値のため共通ジャンルを付与しません: {site} 「{raw}」",
+          file=sys.stderr)
+
+
+def _iso_date(value) -> str:
+    """ISO8601 文字列や日付表記から YYYY-MM-DD を取り出す（取れなければ空）。"""
+    s = str(value or "").strip()
+    m = re.search(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})", s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m = re.search(r"(\d{4})[-/年](\d{1,2})", s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}"
+    return ""
+
+
+def _narou_genre_meta(biggenre, genre) -> tuple:
+    """なろうの (biggenre, genre) から (共通ジャンルID, 表示名) を返す。
+
+    小ジャンルを優先し、未知なら大ジャンルへフォールバックする。
+    """
+    gid, label = _normalize_genre("narou", genre)
+    if gid or label:
+        return gid, label
+    big = str(biggenre or "").strip()
+    if big in _NAROU_BIGGENRE:
+        return _NAROU_BIGGENRE[big], ""
+    if big:
+        _warn_unknown_genre("narou", f"biggenre={big}")
+    return None, ""
+
 # タグ区切り。タグ自体に空白を含むサイトがあるため全角スラッシュを使う。
 _TAG_SEP = "／"
 
@@ -362,19 +508,26 @@ def _format_meta_lines(meta: dict) -> list[str]:
     return lines
 
 
+# ヘッダー（題名〜記号説明ブロック）とみなす最大行数。あらすじが数十行に
+# 及ぶ作品があるため、狭くしすぎると区切り線を見つけられずヘッダー全体を
+# 本文として扱ってしまう。逆に広すぎると本文中の区切り線を拾うので上限は残す。
+_HEADER_MAX_LINES = 400
+
+
 def _header_slice(content: str) -> str:
     """本文を除いたヘッダー部分だけを返す（メタ行の誤検出を防ぐ）。
 
     記号説明ブロックの2本目の区切り線までを採用し、区切り線が無い形式では
-    先頭60行までを見る。
+    先頭 _HEADER_MAX_LINES 行までを見る。
     """
+    head = "\n".join(content.split("\n")[:_HEADER_MAX_LINES])
     SEP_RE = re.compile(r"^-{10,}\s*$", re.M)
-    hits = list(SEP_RE.finditer(content))
+    hits = list(SEP_RE.finditer(head))
     if len(hits) >= 2:
-        return content[:hits[1].end()]
+        return head[:hits[1].end()]
     if hits:
-        return content[:hits[0].end()]
-    return "\n".join(content.split("\n")[:60])
+        return head[:hits[0].end()]
+    return head
 
 
 def _parse_meta_lines(header: str) -> dict:
@@ -2642,6 +2795,74 @@ class NarouInfoParser(HTMLParser):
             self.synopsis += s
 
 
+def narou_get_novel_info_api(ncode: str) -> tuple:
+    """なろう公式 API から (title, author, synopsis, meta) を取得する。
+
+    https://api.syosetu.com/novelapi/api/ は1リクエストで作品情報一式を返す。
+    HTML 解析より軽く壊れにくいので既定の経路にするが、R18 作品は別ドメイン
+    （novel18api）で 0 件になるため、取れなければ呼び出し元が HTML 解析へ
+    フォールバックする。取得できなければ (None, None, None, None) を返す。
+    """
+    fields = "t-w-s-bg-g-k-nt-e-ga-l-gf-nu-ir"
+    api_url = (f"https://api.syosetu.com/novelapi/api/"
+               f"?out=json&of={fields}&lim=1&ncode={ncode}")
+    try:
+        raw = narou_fetch(api_url)
+        data = json.loads(raw)
+    except Exception as e:
+        print(f"  [情報] API 取得に失敗したため作品情報ページを使います: {e}")
+        return None, None, None, None
+
+    if not isinstance(data, list) or len(data) < 2 or not isinstance(data[1], dict):
+        return None, None, None, None
+    rec = data[1]
+
+    title    = str(rec.get("title") or "").strip()
+    author   = str(rec.get("writer") or "").strip()
+    synopsis = str(rec.get("story") or "").strip()
+    if not title:
+        return None, None, None, None
+
+    meta: dict = {"site": "小説家になろう"}
+
+    gid, glabel = _narou_genre_meta(rec.get("biggenre"), rec.get("genre"))
+    if gid:
+        meta["genre"] = gid
+    if glabel:
+        meta["genre_raw"] = glabel
+
+    tags = [t for t in str(rec.get("keyword") or "").split() if t]
+    if tags:
+        meta["tags"] = tags[:10]
+
+    # end: 1=連載中 / 0=完結。noveltype: 2=短編（短編は常に完結扱い）
+    if str(rec.get("noveltype")) == "2":
+        meta["serial_status"] = "完結"
+    elif rec.get("end") is not None:
+        meta["serial_status"] = "連載中" if str(rec.get("end")) == "1" else "完結"
+
+    pub = _iso_date(rec.get("general_firstup"))
+    if pub:
+        meta["published"] = pub
+    upd = _iso_date(rec.get("novelupdated_at"))
+    if upd:
+        meta["updated"] = upd
+
+    for key, src in (("episode_count", "general_all_no"), ("char_count", "length")):
+        try:
+            n = int(rec.get(src) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n:
+            meta[key] = n
+
+    if str(rec.get("isr15")) == "1":
+        meta["age_rating"] = "R15"
+
+    meta["site_id"] = f"narou:{ncode}"
+    return title, author, synopsis, meta
+
+
 def narou_get_novel_info(ncode: str) -> tuple:
     """作品情報ページからタイトル・著者・あらすじを取得する。"""
     info_url = f"https://ncode.syosetu.com/novelview/infotop/ncode/{ncode}/"
@@ -2718,8 +2939,15 @@ class NarouEpisodeListParser(HTMLParser):
 
 
 def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -> tuple:
-    """作品情報 + 目次全ページを取得して (title, author, synopsis, episodes) を返す。"""
-    title, author, synopsis = narou_get_novel_info(ncode)
+    """作品情報 + 目次全ページを取得して (title, author, synopsis, episodes, meta) を返す。
+
+    作品情報は公式 API を優先し、取得できなければ従来の作品情報ページ
+    （HTML 解析）へフォールバックする。フォールバック時 meta は空になる。
+    """
+    title, author, synopsis, meta = narou_get_novel_info_api(ncode)
+    if title is None:
+        title, author, synopsis = narou_get_novel_info(ncode)
+        meta = {"site": "小説家になろう", "site_id": f"narou:{ncode}"}
     _sleep(index_wait)
 
     all_eps      = []
@@ -2750,7 +2978,7 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
         page += 1
         _sleep(index_wait)
 
-    return title, author, synopsis, all_eps
+    return title, author, synopsis, all_eps, meta
 
 
 # ══════════════════════════════════════════
@@ -2945,7 +3173,7 @@ def run_narou(args):
     base_url = f"https://ncode.syosetu.com/{ncode}/"
 
     print(f"\n[Step 1] 作品情報・目次取得開始")
-    title, author, synopsis, episodes = narou_get_all_episodes(
+    title, author, synopsis, episodes, meta = narou_get_all_episodes(
         base_url, ncode, index_wait=args.delay
     )
 
@@ -2960,7 +3188,7 @@ def run_narou(args):
     base     = _apply_output_dir(args, args.output or safe_filename(title, "narou_novel"))
     txt_path = base + ".txt"
     epub_path= base + _epub_ext(args)
-    header   = aozora_header(title, author, synopsis, source_url=base_url)
+    header   = aozora_header(title, author, synopsis, source_url=base_url, meta=meta)
     colophon = aozora_colophon(title, base_url, "小説家になろう")
 
     # 範囲絞り込み
@@ -3082,7 +3310,7 @@ def run_narou(args):
         print(f"📖 ePub生成中...")
         build_epub(epub_path, title, author, synopsis,
                    base_url, "小説家になろう", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=meta,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -3142,6 +3370,107 @@ def kky_to_aozora_ruby(match) -> str:
     return f"|{match.group(1)}《{match.group(2)}》"
 
 
+def _mono_meta_from_story(story: dict, episode_count: int = 0) -> dict:
+    """monogatary.com のストーリー API JSON から配信元メタデータを取り出す。
+
+    既に取得済みの JSON だけを使うので追加リクエストは発生しない。
+    """
+    meta: dict = {"site": "monogatary.com"}
+    if not isinstance(story, dict):
+        return meta
+
+    gid, glabel = _normalize_genre("monogatary", story.get("genre"))
+    if gid:
+        meta["genre"] = gid
+    if glabel:
+        meta["genre_raw"] = glabel
+
+    meta["serial_status"] = "完結" if story.get("isFinished") else "連載中"
+
+    pub = _iso_date(story.get("publishAt"))
+    if pub:
+        meta["published"] = pub
+    upd = _iso_date(story.get("storyUpdatedAt"))
+    if upd:
+        meta["updated"] = upd
+
+    if episode_count:
+        meta["episode_count"] = episode_count
+
+    if story.get("overFifteen"):
+        meta["age_rating"] = "R15"
+
+    # theme は「お題」。作品が属する企画名なのでシリーズ扱いにする
+    theme = (story.get("theme") or "").strip()
+    if theme:
+        meta["series"] = theme
+
+    return meta
+
+
+def _kky_meta_from_work(work: dict) -> dict:
+    """カクヨムの Work オブジェクトから配信元メタデータを取り出す。
+
+    作品ページの __NEXT_DATA__ に既に含まれている値だけを使うので、
+    追加のリクエストは発生しない。
+    """
+    meta: dict = {"site": "カクヨム"}
+
+    gid, glabel = _normalize_genre("kakuyomu", work.get("genre"))
+    if gid:
+        meta["genre"] = gid
+    if glabel:
+        meta["genre_raw"] = glabel
+
+    catch = (work.get("catchphrase") or "").strip()
+    if catch:
+        meta["catchphrase"] = catch
+
+    tags = [str(t).strip() for t in (work.get("tagLabels") or []) if str(t).strip()]
+    if tags:
+        meta["tags"] = tags[:10]      # 表示が煩雑にならない程度で打ち切る
+
+    status = work.get("serialStatus")
+    if status == "COMPLETED":
+        meta["serial_status"] = "完結"
+    elif status == "RUNNING":
+        meta["serial_status"] = "連載中"
+
+    pub = _iso_date(work.get("publishedAt"))
+    if pub:
+        meta["published"] = pub
+    upd = _iso_date(work.get("lastEpisodePublishedAt"))
+    if upd:
+        meta["updated"] = upd
+
+    for key, src in (("episode_count", "publicEpisodeCount"),
+                     ("char_count", "totalCharacterCount")):
+        try:
+            n = int(work.get(src) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n:
+            meta[key] = n
+
+    warns = [label for flag, label in (("isCruel", "残酷描写"),
+                                       ("isViolent", "暴力描写"),
+                                       ("isSexual", "性的描写"))
+             if work.get(flag)]
+    if warns:
+        meta["content_warnings"] = warns
+        meta["age_rating"] = "R15"    # カクヨムは自己申告フラグのみで年齢区分は持たない
+
+    label = (work.get("publicationLabelName") or "").strip()
+    if label:
+        meta["series"] = label
+
+    color = (work.get("baseColor") or "").strip()
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+        meta["theme_color"] = color
+
+    return meta
+
+
 def kky_get_work_info(soup, next_data: dict, work_url: str) -> dict:
     """作品トップページから基本情報を取得する。"""
     info = {"title": "", "author": "", "description": "", "url": work_url}
@@ -3165,6 +3494,7 @@ def kky_get_work_info(soup, next_data: dict, work_url: str) -> dict:
                 alt_title = work_obj.get("alternateTitle", "")
                 info["title"] = alt_title if alt_title else work_obj.get("title", "")
                 info["description"] = work_obj.get("introduction", "")
+                info.update(_kky_meta_from_work(work_obj))
                 author_ref = work_obj.get("author", {})
                 if isinstance(author_ref, dict):
                     akey = author_ref.get("__ref", "")
@@ -3464,7 +3794,7 @@ def run_kakuyomu(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info.get("description", ""),
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "カクヨム")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "kakuyomu_novel"))
     txt_path  = base + ".txt"
@@ -3523,7 +3853,7 @@ def run_kakuyomu(args):
         build_epub(epub_path, info["title"], info["author"],
                    info.get("description", ""),
                    work_url, "カクヨム", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -3594,7 +3924,79 @@ def alp_get_work_info(soup) -> dict:
         if meta and meta.get("content"):
             info["description"] = meta["content"].strip()
 
+    info.update(_alp_meta_from_page(soup))
     return info
+
+
+def _alp_meta_from_page(soup) -> dict:
+    """アルファポリスの作品ページから配信元メタデータを取り出す。
+
+    ジャンルは JSON-LD の Article.genre（サイトの正規表現）、その他は
+    属性タグ・文字数表記・更新日時から拾う。
+    """
+    import json as _json
+
+    meta: dict = {"site": "アルファポリス"}
+    text = soup.get_text("\n")
+
+    # ── ジャンル: JSON-LD Article.genre ────────────────────────
+    raw_genre = ""
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            data = _json.loads(script.string or "")
+        except Exception:
+            continue
+        for obj in (data if isinstance(data, list) else [data]):
+            if isinstance(obj, dict) and obj.get("@type") == "Article" and obj.get("genre"):
+                raw_genre = str(obj["genre"]).strip()
+                break
+        if raw_genre:
+            break
+    if raw_genre:
+        gid, glabel = _normalize_genre("alphapolis", raw_genre)
+        if gid:
+            meta["genre"] = gid
+        if glabel:
+            meta["genre_raw"] = glabel
+
+    # ── ユーザータグ ────────────────────────────────────────
+    # **必ず作品本体のコンテナ内だけを見る**。ページには推薦カードが数十件
+    # 並んでおり、ページ全体を検索すると別作品のタグ・文字数を拾ってしまう
+    # （実測: 文字数はページ内に9回出現し、最初の1件は推薦カードのもの）。
+    content = soup.find(class_="p-content-info")
+    if content:
+        tags = []
+        for a in content.find_all("a", href=re.compile(r"tag_ids=\d+")):
+            t = a.get_text(strip=True)
+            if t and t not in tags:
+                tags.append(t)
+        if tags:
+            meta["tags"] = tags[:10]
+
+    # ── サイドバーの作品詳細（この作品の値だけが入る唯一の場所）─────
+    detail = soup.find(class_="p-sidebar-content-info__detail")
+    if detail:
+        d_text = detail.get_text("\n")
+
+        def _detail_value(label: str) -> str:
+            m = re.search(rf"{label}\s*\n\s*([^\n]+)", d_text)
+            return m.group(1).strip() if m else ""
+
+        pub = _iso_date(_detail_value("初回公開日時").replace(".", "-"))
+        if pub:
+            meta["published"] = pub
+        upd = _iso_date(_detail_value("更新日時").replace(".", "-"))
+        if upd:
+            meta["updated"] = upd
+        # 「初回完結日時」の欄があること自体が完結の印。タグの「完結」は
+        # 付いていない完結作品があるので当てにしない
+        if _detail_value("初回完結日時"):
+            meta["serial_status"] = "完結"
+        chars = _detail_value("文字数").replace(",", "")
+        if chars.isdigit():
+            meta["char_count"] = int(chars)
+
+    return meta
 
 
 def alp_get_episode_list(soup) -> list:
@@ -3827,7 +4229,7 @@ def run_alphapolis(args):
     _dry_run_exit(args)
 
     header   = aozora_header(info["title"], info["author"], info.get("description", ""),
-                             source_url=work_url)
+                             source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "アルファポリス")
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "alphapolis_novel"))
     txt_path  = base + ".txt"
@@ -3876,7 +4278,7 @@ def run_alphapolis(args):
         build_epub(epub_path, info["title"], info["author"],
                    info.get("description", ""),
                    work_url, "アルファポリス", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -5693,6 +6095,8 @@ def run_monogatary(args):
     total_episodes = len(episodes_list)
     print(f"      エピソード数: {total_episodes}")
 
+    meta = _mono_meta_from_story(story_data, total_episodes)
+
     start_ep = max(1, args.start or 1)
     end_ep   = min(total_episodes, args.end or total_episodes)
     target   = episodes_list[start_ep - 1:end_ep]
@@ -5703,7 +6107,8 @@ def run_monogatary(args):
                             for i, ep in enumerate(target, start_ep)])
     _dry_run_exit(args)
 
-    header   = aozora_header(story_title, author, synopsis, source_url=story_url)
+    header   = aozora_header(story_title, author, synopsis,
+                             source_url=story_url, meta=meta)
     colophon = aozora_colophon(story_title, story_url, "monogatary.com")
     base      = _apply_output_dir(args, args.output or safe_filename(story_title, "monogatary_novel"))
     txt_path  = base + ".txt"
@@ -5754,7 +6159,7 @@ def run_monogatary(args):
         build_epub(epub_path, story_title, author,
                    synopsis,
                    story_url, "monogatary.com", epub_episodes,
-                   cover_bg=args.cover_bg,
+                   cover_bg=args.cover_bg, meta=meta,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
@@ -7888,7 +8293,7 @@ def parse_aozora_text(content: str) -> tuple:
     body_start_ln = 3          # ヘッダーが検出できなかった場合のデフォルト
     sep_count     = 0
     in_synopsis   = False
-    for i in range(2, min(len(lines), 60)):
+    for i in range(2, min(len(lines), _HEADER_MAX_LINES)):
         ln = lines[i]
         if ln.startswith("----------"):   # 10文字以上のダッシュ列
             sep_count += 1
