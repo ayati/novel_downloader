@@ -92,6 +92,33 @@ run_*() → 作品情報を再取得 → header = aozora_header(...)   ← 毎�
 （現行の `底本URL：` 行も同じリスクを負っている）。メタ行を増やすと影響が拡大するため、
 **区切り線を検出できたときだけメタブロックを挿入する**ガードを入れる。
 
+### 1.6b `argparse.Namespace` が4箇所で引数を明示列挙している（Phase 3 の地雷）
+
+`--check-update` / `--append` / `--watch` の内部ランナー呼び出しは、`args` を手で組み立てている。
+
+| 行 | 用途 |
+|---|---|
+| `:8918` | `_check_update_one()` |
+| `:9007` | `_append_one()` |
+| `:9185` | `_check_update_url()`（watch 用） |
+| `:9421` | `run_watch()` の新規ダウンロード |
+
+いずれも `url=` `output=` `delay=` … と**全フィールドを列挙**しており、`--dry-run` 追加時にも
+4箇所すべてに `dry_run=False` が足されている。**CLI オプションを1つ足すたびに4箇所の修正が必要**で、
+足し忘れると `getattr(args, "xxx", default)` の既定値に化けて静かに壊れる。
+
+→ **Phase 2 で `_make_runner_args(**overrides)` を導入する**。パーサの既定値
+（`parser.parse_args([])` 相当の Namespace）を土台にして上書きだけを受け取る形にすれば、
+以後オプションを足しても4箇所は無修正で済む。Phase 3 でジャンル関連のオプションを足す前に必要。
+
+### 1.6c `_SITE_DISPATCH` は3要素タプルで5箇所からアンパックされている
+
+`label, default_color, runner = entry` が `:8915` `:9004` `:9183` `:9984` の4箇所、
+`entry[1]` が `:9955` の1箇所。**要素数を変えると5箇所すべてが壊れる**。
+
+→ サイト固有のメタ設定（ジャンル辞書の参照先など）は `_SITE_DISPATCH` を拡張せず、
+**別テーブル `_SITE_META: dict[str, dict]` を新設**して site ID で引く。既存構造には触らない。
+
 ### 1.7 `info` 辞書のキーが不統一
 
 15サイトが `description`、**ネオページだけ `synopsis`**（`neopage_get_work_info()` `:4348`、
@@ -448,4 +475,100 @@ schema:accessibilitySummary = 本文はテキストのみで構成されてい�
 | **6** | 残りサイトのメタ取得＋青空文庫の図書カード書誌＋訳者の contributor 分離 | |
 | **7** | yomikake 本棚のジャンル絞り込み・状態バッジ・著者ソート（§7.2） | **最終的な成果はここ** |
 
-Phase 1 と 2 は連続で行う（同じ関数を触るため）。Phase 3 以降はサイト単位で分割リリースできる。
+Phase 3 以降はサイト単位で分割リリースできる。
+
+---
+
+## 10. Phase 2〜4 実装設計（現行コード確認済み）
+
+### 10.1 Phase 2: 配管（先に通す）
+
+**触る関数と変更内容**
+
+| 関数（現在地） | 変更 |
+|---|---|
+| `aozora_header()` `:262` | 第5引数 `meta: dict = None` を追加。メタ行は **`【あらすじ】` の前**に組み立てる（§1.2） |
+| 新設 `_format_meta_lines(meta)` | `meta` → `["配信元：…", "ジャンル：…", …]`。**値が空のキーは行ごと出さない** |
+| 新設 `_parse_meta_lines(text)` | ヘッダー文字列 → `meta` dict。`_extract_url_from_txt()` `:410` と同じく**全文正規表現で順序非依存** |
+| `parse_aozora_text()` `:7680` | 戻り値を **5要素** `(title, author, synopsis, episodes, meta)` へ。**呼び出しは `:7809` の1箇所だけ**なので低リスク |
+| `build_epub()` `:2178` | キーワード引数 `meta: dict = None` を追加（位置引数は増やさない・§1.8） |
+| `_make_opf()` `:1581` | 同上。metadata ブロックの生成を `meta` から組み立てる（Phase 4 で中身を足す） |
+| `_make_cover_xhtml()` `:1310` | キャッチコピーを表紙に出すなら `subtitle` を追加。**Phase 4 と同時でよい** |
+| `run_from_file()` `:7772` | `parse_aozora_text()` の `meta` を `build_epub(meta=…)` へ渡す |
+| `run_from_epub()` `:8350` | `parse_epub()` の `meta` を `aozora_header(meta=…)` へ渡す |
+| `parse_epub()` `:8138` | OPF から `dc:description` / `dc:subject` / `dc:publisher` / `dc:source` / `nd:*` を直読み。現行の XHTML 復元（`_epub_cover_to_synopsis` / `_epub_colophon_to_source`）は**フォールバックに降格**（§1.4） |
+| `_aozora_insert_source_url()` `:7497` | メタブロックも挿入。**区切り線を検出できたときだけ**（§1.6） |
+| 新設 `_make_runner_args(**overrides)` | §1.6b。4箇所の `argparse.Namespace` を置き換える |
+| 新設 `_SITE_META` | §1.6c。`_SITE_DISPATCH` は触らない |
+
+**回帰確認（Phase 2 の必須項目）**
+
+1. メタ行が**無い**既存 `.txt` → `--from-file` が従来どおり動く（前方互換）
+2. メタ行が**ある** `.txt` → `--from-file` → ePub → `--from-epub` → `.txt` でメタが保存される
+3. `--append` で既存 `.txt` のヘッダーが最新のメタ付きに置き換わる（§1.3）
+4. 区切り線の無い青空文庫作品でメタ行が本文に混入しない
+5. `novel_health_check.py` 17/17
+
+### 10.2 Phase 3: ジャンル取得
+
+**作業順**（低コスト順。1サイトずつ動作確認して進める）
+
+1. `_GENRE_MAP` と正規化関数 `_normalize_genre(site, raw) -> str | None`（§3.3）
+2. **カクヨム** — `kky_get_work_info()` `:2948` が既に持っている `Work` dict から
+   `catchphrase` / `genre` / `tagLabels` / `serialStatus` / `publishedAt` /
+   `lastEpisodePublishedAt` / `publicEpisodeCount` / `totalCharacterCount` /
+   `isCruel` / `isViolent` / `isSexual` / `baseColor` を拾う。**追加リクエストなし**
+3. **monogatary** — 既に読んでいる API JSON から `genre` / `theme` / `isFinished` /
+   `publishAt` / `storyUpdatedAt` / `readingTime` / `overFifteen`
+4. **アルファポリス** — JSON-LD `Article.genre` ＋ 本文のタグリンク・`文字数`・`更新日時`
+5. **なろう** — `api.syosetu.com` へ切り替え。`narou_get_novel_info()` `:2448` を
+   API 版に置き換え、**失敗時は現行の `NarouInfoParser` にフォールバック**（挙動を変えない）。
+   `narou_get_all_episodes()` `:2541` の戻り値は4要素タプル → `meta` を足して5要素にする
+
+**dry-run 出力への追記**（§6.3）。`novel_health_check.py` の
+`re.search(r"タイトル\s*[：:]\s*(.+)")` に食われるため、**新ラベルに「タイトル」を含めない**。
+
+### 10.3 Phase 4: OPF 出力
+
+`_make_opf()` `:1581` の metadata ブロックを組み立て直す。**`prefix` 宣言を `<package>` に追加**:
+
+```xml
+<package … prefix="nd: https://github.com/ayati/novel_downloader/ns#">
+```
+
+出力順は現行を保ち、末尾に追加していく（差分を読みやすくするため）。
+
+**検証手段が無い（要準備）**: この環境に **epubcheck は未インストール**。`java` はある
+（`/usr/bin/java`）ので、`epubcheck.jar` を落とすか `pip install epubcheck`（jar 同梱の
+ラッパ）で用意する。**Phase 4 は epubcheck を通すまで完了としない**。特に事故りやすいのは:
+
+- `refines="#id"` の参照先 id が manifest/metadata に実在するか（RSC-005）
+- `dc:title` を複数出すときの `title-type` 指定漏れ
+- 未宣言プレフィックスの `property`（OPF-027 系）
+
+**しおり互換（確認済み・条件付きで安全）**
+
+yomikake は `makeBookKey('epub_pos_' + title + '__' + creator)` でしおりキーを作る（`:7696`）。
+`title` の取得は次のとおりで、**PC版 `:2768` と iOS版 `:3086` の両方が同じ実装**:
+
+```js
+const titleEl = opfDoc.querySelector('metadata > *|title, metadata > title');
+```
+
+`querySelector` は **文書順で最初の1件**を返すだけで、`title-type` は一切見ていない。したがって:
+
+- **本題の `<dc:title>` を必ず先頭に出力する限り、subtitle を足しても bookKey は変わらない＝しおりは割れない。**
+- 逆に **subtitle を先に出力すると全書籍のしおりが割れる**。`_make_opf()` の出力順は
+  「main → subtitle」で固定し、**この順序を変えないことをコメントで明示**する。
+
+また yomikake は subtitle の存在を知らないため、キャッチコピーは**表示されない**（無害に無視される）。
+書誌ブロックに出すには `title-type="subtitle"` を読む改修が要る → Phase 5 の作業とする。
+
+`dc:creator` は `metadata > *|creator` を**全件** join するので、`dc:contributor` を足すのは安全
+（§8 のとおり、`dc:creator` 自体を変えなければよい）。
+
+### 10.4 版数
+
+現在 `__version__ = "2.3.1"`（`:94`）。Phase 2 は内部構造の変更で外から見た挙動が
+ほぼ変わらないため `2.4.0`、Phase 3・4 で機能が見えるので `2.5.0` を想定。
+リリースは `scripts/release.sh <X.Y.Z> --notes-file …` に一本化（手で `__version__` を触らない）。
