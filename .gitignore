@@ -7,6 +7,9 @@ __pycache__/
 *.txt
 *.epub
 
+# ヘルスチェックのログ（novel_health_check.py の --log-dir 既定値）
+health_check_logs/
+
 # OS
 .DS_Store
 Thumbs.db
