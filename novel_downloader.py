@@ -243,11 +243,28 @@ def normalize_tate(text: str) -> str:
     return text
 
 
+def _normalize_synopsis(synopsis: str) -> str:
+    """あらすじの空白・空行を正規化する（全サイト共通の後処理）。
+
+    サイトによっては段落間に <br> を2〜4個並べており、そのまま取り込むと
+    空行だらけのあらすじになる（例: NOVEL DAYS は23行中15行が空行）。
+    ビューアの行数クランプ表示で空行だけが見える状態を避けるため、
+    3行以上の連続改行を1つの空行にまとめ、各行の行末空白を除去する。
+    """
+    if not synopsis:
+        return ""
+    s = synopsis.replace("\r\n", "\n").replace("\r", "\n")
+    s = "\n".join(ln.rstrip() for ln in s.split("\n"))
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
 def aozora_header(title: str, author: str, synopsis: str = "",
                   source_url: str = "") -> str:
     """青空文庫書式のファイル先頭ヘッダーを生成する。
     1行目：題名、2行目：作者名、3行目：空行
     """
+    synopsis  = _normalize_synopsis(synopsis)
     syn_block = f"\n【あらすじ】\n{synopsis}\n" if synopsis else ""
     url_block = f"底本URL：{source_url}\n" if source_url else ""
     return (
@@ -2207,6 +2224,7 @@ def build_epub(
     """
     book_id   = str(uuid.uuid4())
     ep_titles = [ep["title"] for ep in episodes]
+    synopsis  = _normalize_synopsis(synopsis)   # 表紙ページ・dc:description 共通
 
     # 表紙画像：外部ファイル指定があればそちらを使用、なければ自動生成
     if cover_image_path:
@@ -3382,9 +3400,20 @@ def alp_get_work_info(soup) -> dict:
     if author_a:
         info["author"] = author_a.get_text(strip=True)
 
-    meta = soup.find("meta", attrs={"name": "description"})
-    if meta and meta.get("content"):
-        info["description"] = meta["content"].strip()
+    # あらすじ: 本文の abstract ブロックを優先する。
+    # <meta name="description"> と本文は同じ内容だが、meta 側は <br> が空白に
+    # 潰されて段落が失われるため、改行を保持できる本文側から取る。
+    # （<br> は BeautifulSoup が入れ子として誤解釈することがあるので
+    #   replace_with は使わず、テキストノードに含まれる改行をそのまま拾う）
+    abstract = (soup.find("div", class_="p-content-info__abstract")
+                or soup.find("div", class_="abstract"))
+    if abstract:
+        info["description"] = abstract.get_text().strip()
+
+    if not info["description"]:
+        meta = soup.find("meta", attrs={"name": "description"})
+        if meta and meta.get("content"):
+            info["description"] = meta["content"].strip()
 
     return info
 
@@ -6553,7 +6582,12 @@ def genpaku_get_work_info(soup) -> dict:
     else:
         full_author = "山形浩生"
 
-    return {"title": title, "author": full_author, "description": original_title}
+    # このサイトにあらすじ欄は無い。原題だけが得られるので、あらすじとして
+    # そのまま出すのではなく「原題：」とラベルを付けて何の情報か分かるようにする。
+    # （原題を dc:title の subtitle として正しく扱うのは書誌拡張フェーズで行う）
+    description = f"原題：{original_title}" if original_title else ""
+
+    return {"title": title, "author": full_author, "description": description}
 
 
 def genpaku_extract_chapters(soup, work_title: str) -> list:
@@ -7093,8 +7127,20 @@ def aozora_fetch_html(url: str) -> str:
         try:
             req = Request(url, headers=_AOZORA_HEADERS)
             with urlopen(req, timeout=30) as r:
-                charset = r.headers.get_content_charset() or "shift_jis"
-                return r.read().decode(charset, errors="replace")
+                raw     = r.read()
+                charset = r.headers.get_content_charset()
+                if not charset:
+                    # 本家はレスポンスヘッダーに charset を付けず、ページ側の
+                    # <meta charset> だけが正となる（UTF-8 化済み）。旧来の
+                    # Shift_JIS ページも残っているため決め打ちにはしない。
+                    mm = re.search(
+                        rb'<meta[^>]+charset=["\']?\s*([A-Za-z0-9_\-]+)',
+                        raw[:4096], re.I)
+                    charset = mm.group(1).decode("ascii", "replace") if mm else "shift_jis"
+                try:
+                    return raw.decode(charset, errors="replace")
+                except LookupError:
+                    return raw.decode("shift_jis", errors="replace")
         except HTTPError as e:
             if e.code == 404:
                 raise
@@ -7113,6 +7159,15 @@ def aozora_get_work_info(html: str) -> dict:
     新サイト: h1 は「図書カード：No.XXXXX」のため「作品名：タイトル」テキストを使用。
     著者は /index_pages/person リンクテキストで共通。
     """
+    def _cell(label: str) -> str:
+        """タイトルデータ表の «label：» 行の値セルをプレーンテキストで返す。"""
+        mm = re.search(label + r"[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", html, re.S)
+        if not mm:
+            return ""
+        import html as _html      # 引数名 html と衝突するためローカル import
+        s = _html.unescape(re.sub(r"<[^>]+>", "", mm.group(1)))
+        return re.sub(r"[\s　]+", " ", s).strip()
+
     title = ""
     m = re.search(r"<h1[^>]*>図書カード[：:]\s*([^<]+)</h1>", html)
     if m:
@@ -7120,18 +7175,36 @@ def aozora_get_work_info(html: str) -> dict:
         if not re.match(r"No\.\d+", candidate):
             title = candidate
     if not title:
-        m = re.search(r"作品名[：:]\s*([^\n<]+)", html)
+        # 新サイトは <td>作品名：</td><td>タイトル</td> の表形式
+        title = _cell("作品名")
+
+    # 著者はタイトルデータ表の「著者名：」行から取る。ページ冒頭のナビゲーションにも
+    # index_pages/person へのリンク（「作家別作品リスト」）があり、単純な最初のマッチ
+    # ではそちらを拾ってしまうため、表の行を優先する。
+    author = _cell("著者名")
+    if not author:
+        m = re.search(
+            r'<a[^>]+href="[^"]*index_pages/person[^"]*"[^>]*>([^<]+)</a>', html
+        )
         if m:
-            title = m.group(1).strip()
+            author = m.group(1).strip()
 
-    author = ""
-    m = re.search(
-        r'<a[^>]+href="[^"]*index_pages/person[^"]*"[^>]*>([^<]+)</a>', html
-    )
+    # 図書カードにあらすじ欄は存在しない。「作品について：」欄には Wikipedia への
+    # リンクが入るが、初出などの注記がリンクと併記されていることがあるため、
+    # リンク・画像を除いた地の文だけを説明として拾う（無ければ空のまま）。
+    description = ""
+    m = re.search(r"作品について[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", html, re.S)
     if m:
-        author = m.group(1).strip()
+        import html as _html      # 引数名 html と衝突するためローカル import
+        cell = re.sub(r"<a\b.*?</a>", "", m.group(1), flags=re.S)   # リンクテキストを除去
+        cell = re.sub(r"<[^>]+>", "", cell)
+        cell = _html.unescape(cell)
+        cell = re.sub(r"[\s　]+", " ", cell).strip()
+        cell = cell.strip("「」 ")
+        if len(cell) >= 4:      # 記号だけ残った場合は採用しない
+            description = cell
 
-    return {"title": title, "author": author}
+    return {"title": title, "author": author, "description": description}
 
 
 def aozora_find_zip_url(html: str, card_url: str) -> str | None:
@@ -7589,7 +7662,7 @@ def run_aozora(args):
         # ePub は作品タイトルをファイル名に使用（-o 指定時はその名前を優先）
         _epub_base = _apply_output_dir(args, args.output or safe_filename(title, fallback=Path(txt_filename).stem))
         epub_path = _epub_base + _epub_ext(args)
-        build_epub(epub_path, title, author, "",
+        build_epub(epub_path, title, author, info.get("description", ""),
                    work_url, "青空文庫", episodes,
                    cover_bg=args.cover_bg,
                    cover_image_path=getattr(args, "cover_image", None) or "",
@@ -7637,9 +7710,14 @@ def parse_aozora_text(content: str) -> tuple:
         elif "【あらすじ】" in ln:
             in_synopsis = True
         elif in_synopsis:
+            # 「底本URL：https://...」のようなラベル行はあらすじではないので打ち切る。
+            # （aozora_header はあらすじブロックの後ろに底本URL行を出力する）
+            if re.match(r"^[^\s：]{1,12}：", ln):
+                in_synopsis = False
+                continue
             synopsis += ln + "\n"
 
-    synopsis     = synopsis.strip()
+    synopsis     = _normalize_synopsis(synopsis)
     body_content = "\n".join(lines[body_start_ln:])
 
     # 奥付（"底本："で始まるブロック）を末尾から除去
