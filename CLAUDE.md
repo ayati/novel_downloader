@@ -140,7 +140,7 @@ python novel_downloader.py --from-file mynovel.txt
    - `make_cover_image` — JPEG 表紙を生成（Pillow、quality=90）、なければ SVG にフォールバック
    - `_make_toc_xhtml` — 読者向け縦組み目次ページ（toc.xhtml）を生成。`class="vrtl"`・`epub:type` なし
    - `_make_nav_xhtml` — RS向け機械読み取り専用ナビゲーションドキュメント（nav.xhtml）を生成。spine に含めない。`<li>` は必ず `<a>` を含む（`<span>` 単独は ePub3 nav 仕様違反・epubcheck RSC-005 エラー）
-   - `_make_opf` — `package.opf` を生成。`<dc:creator>` に marc:relators `aut` ロール付与。cover-page spine itemref に `page-spread-right` 付与（日本語 RTL 書籍の表紙は右ページ）。`publisher`（配信元サイト名 → `<dc:publisher>`）と `source_url`（底本 URL → `<dc:source>`）を任意で受け取り、yomikake の書誌ブロック「出版社」欄・「○○で読む」底本リンクに使わせる（空なら行ごと省略。既存 ePub は colophon/cover の本文リンクからフォールバック回収される）
+   - `_make_opf` — `package.opf` を生成。`meta` から標準語彙も出力する：`<dc:title>` の副題（キャッチコピー・`title-type=subtitle`）、`<dc:subject>`（ジャンル原文＋タグ）、`<dc:contributor>`＋`role`、`<meta property="dcterms:audience">`（年齢制限）、アクセシビリティ metadata（`schema:accessMode` 等・テキストのみなので全書籍共通の固定値）、独自メタ `nd:*`。`<dc:date>` は**作品の初回公開日**（`meta["published"]`）を入れ、無ければ生成日にフォールバックする（生成日を入れると yomikake が「刊行日ではなく生成日」と判定して表示を抑止するため）。**本題の `<dc:title>` は必ず副題より先に出すこと** — yomikake のしおりキーは `querySelector` で拾った文書順で最初の `dc:title` から作られ `title-type` を見ていないので、順序を入れ替えると既存のしおりが全部無効になる。`<dc:creator>` に marc:relators `aut` ロール付与。cover-page spine itemref に `page-spread-right` 付与（日本語 RTL 書籍の表紙は右ページ）。`publisher`（配信元サイト名 → `<dc:publisher>`）と `source_url`（底本 URL → `<dc:source>`）を任意で受け取り、yomikake の書誌ブロック「出版社」欄・「○○で読む」底本リンクに使わせる（空なら行ごと省略。既存 ePub は colophon/cover の本文リンクからフォールバック回収される）
    - `build_epub` — XHTML / CSS / OPF を ZIP にまとめて ePub を組み立てる。`images: dict` パラメータで青空文庫 ZIP 内画像を `OEBPS/images/` に埋め込み可能
 
 3. **スクレイパー群**（なろう・カクヨム・アルファポリス・エブリスタ・ハーメルン・ネオページ・ソリスピア・野いちご・berry's cafe・monogatary.com・ノベマ！・ノベルアップ＋・ステキブンゲイ・NOVEL DAYS・プロジェクト杉田玄白・結城浩翻訳の部屋・青空文庫）— 各サイトの `run_サイト名(args)` 関数がエントリポイント。**共通パターン**：`aozora_header()` でヘッダー組み立て → エピソードごとに `aozora_chapter_title()` + 本文取得 → `aozora_colophon()` で奥付 → `write_file()` でテキスト保存 → `build_epub()` で ePub 生成。`_apply_resume` / `_apply_output_dir` / `_dry_run_exit` / `_show_episode_list` を最初に呼ぶ（全スクレイパー共通）。各エピソードは `{"title": str, "body": str, "group": str}` 形式で `epub_episodes` リストに追加する。
@@ -271,6 +271,19 @@ GUI（Android アプリ・将来の組み込み利用）から本モジュール
 新しいスクレイパーを追加する際は、(1) `*_fetch()` 関数の入口に `_check_abort()` を置く、(2) リクエスト間隔の待機に `time.sleep` ではなく `_sleep` を使う、(3) 話数進捗 print の直後に `_progress(n, len(list), タイトル)` を呼ぶ。
 
 ## 動作確認
+
+ePub の仕様適合は **epubcheck** で確認する（`java` と `/home/ayati/epubcheck-5.3.0/epubcheck.jar`）。
+OPF の metadata を変更したときは必ず通すこと。`refines` の参照先 id・複数 `dc:title` の `title-type`・
+未宣言プレフィックスの `property` は epubcheck でしか気づけない。
+
+```bash
+java -jar /home/ayati/epubcheck-5.3.0/epubcheck.jar <出力.epub>
+```
+
+**話タイトルが空だと ePub が不正になる**（nav のアンカーが空・`<title>` が空で RSC-005）。
+monogatary は `episodeTitle` が空文字の作品があるため、`build_epub` の入口で空タイトルを
+「第N話」に一律で埋めている。新しいスクレイパーでも空タイトルを素通ししないこと。
+
 
 テストスイートは存在しないため、手動で動作確認する：
 

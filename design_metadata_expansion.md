@@ -470,7 +470,7 @@ schema:accessibilitySummary = 本文はテキストのみで構成されてい�
 | **1** | §1.1 A〜F＋§1.2 のバグ修正。`_normalize_synopsis()` 新設。青空文庫のあらすじ対応 | **v2.3.1 でリリース済み** |
 | **2** | 共通スキーマ、`meta` 引数の配管、`.txt` ヘッダー拡張、`parse_aozora_text` 5要素化、`_extract_meta_from_txt`、`--from-epub` の OPF 直読み、`_make_runner_args()` | **実装済み**（`nd:` の OPF 出力も込み・下記） |
 | **3** | 共通ジャンル辞書（§3）＋カクヨム・monogatary・アルファポリス・なろうのメタ取得 | **実装済み**（§10.2b） |
-| **4** | OPF 出力（subtitle / dc:subject / dc:date 是正 / contributor / audience / a11y / `nd:`）＋ epubcheck | |
+| **4** | OPF 出力（subtitle / dc:subject / dc:date 是正 / contributor / audience / a11y）＋ epubcheck | **実装済み**（§10.3b） |
 | **5** | yomikake 書誌ブロック拡張（§7.1） | |
 | **6** | 残りサイトのメタ取得＋青空文庫の図書カード書誌＋訳者の contributor 分離 | |
 | **7** | yomikake 本棚のジャンル絞り込み・状態バッジ・著者ソート（§7.2） | **最終的な成果はここ** |
@@ -614,6 +614,27 @@ const titleEl = opfDoc.querySelector('metadata > *|title, metadata > title');
 
 `dc:creator` は `metadata > *|creator` を**全件** join するので、`dc:contributor` を足すのは安全
 （§8 のとおり、`dc:creator` 自体を変えなければよい）。
+
+### 10.3b Phase 4 実装結果（2026-07-26）
+
+**epubcheck 5.3.0 で全出力が 0 エラー / 0 警告。** 検証した組み合わせ:
+なろう（メタ11項目）・カクヨム（副題あり）・monogatary・青空文庫（挿絵つき）・
+`--from-file` / `--from-epub` の往復出力・contributor 付きの合成ケース。
+
+**しおり互換を実測で確認した。** 副題を持つカクヨムの出力を DOM で解析し、
+`metadata` 直下の `dc:title` は2件、**文書順で最初は本題**であることを確認
+（`makeBookKey` が使う値は従来と同一）。
+
+**Phase 4 で見つかった既存バグ: 話タイトルが空だと ePub が不正になる。**
+monogatary には `episodeTitle` が空文字の作品があり、nav のアンカーが空・`<title>` が空になって
+epubcheck が **RSC-005 を2件**報告した（この状態では Send to Kindle が通らない）。
+`build_epub` の入口で空タイトルを「第N話」に一律で埋めるようにした
+（1サイトの問題に見えるが、どのサイトでも起こりうるので ePub 生成側の choke point で対処する）。
+`.get("episodeTitle", 既定値)` はキーが存在して空文字のときに既定値が効かない点も合わせて修正。
+
+**表紙ページにも副題を出す**ようにした（`_make_cover_xhtml(subtitle=...)`・`.cover-subtitle`）。
+yomikake は `title-type=subtitle` を読まないので、現状キャッチコピーが見えるのは表紙ページと
+`.txt` ヘッダーのみ。書誌ブロックに出すのは Phase 5。
 
 ### 10.4 版数
 

@@ -922,6 +922,14 @@ body {{
   text-align: center;
 }}
 
+.cover-subtitle {{
+  font-size: 1em;
+  text-align: center;
+  margin-top: -0.6em;
+  margin-bottom: 1.2em;
+  opacity: 0.75;
+}}
+
 .cover-author {{
   font-size: 1.1em;
   text-align: center;
@@ -1646,8 +1654,13 @@ def _body_lines_to_xhtml(text: str, horizontal: bool = False) -> str:
 
 def _make_cover_xhtml(title: str, author: str, synopsis: str,
                       source_url: str = "", site_name: str = "",
-                      horizontal: bool = False) -> str:
-    """テキスト表紙XHTMLを生成する。底本URLをハイパーリンク付きで掲載する。"""
+                      horizontal: bool = False, subtitle: str = "") -> str:
+    """テキスト表紙XHTMLを生成する。底本URLをハイパーリンク付きで掲載する。
+
+    subtitle はサイト側のキャッチコピー（あれば題名の下に小さく出す）。
+    """
+    sub_html = (f'<div class="cover-subtitle">{_esc(subtitle)}</div>\n'
+                if subtitle else "")
     syn_html = ""
     if synopsis:
         syn_lines = "\n".join(
@@ -1673,6 +1686,7 @@ def _make_cover_xhtml(title: str, author: str, synopsis: str,
 
     body = (
         f'<div class="cover-title">{_esc(title)}</div>\n'
+        f'{sub_html}'
         f'<div class="cover-author">{_esc(author)}</div>\n'
         f'{source_html}\n'
         f'{syn_html}'
@@ -2030,6 +2044,74 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     )
     # prefix 宣言は nd: を実際に出すときだけ付ける（未使用の宣言を残さない）
     nd_prefix = f'\n         prefix="nd: {_ND_PREFIX_URI}"' if _nd_pairs else ""
+
+    _m = meta or {}
+
+    # ── 副題（キャッチコピー）───────────────────────────────
+    # **本題の <dc:title> を必ず先に出すこと**。yomikake のしおりキーは
+    # querySelector('metadata > title') で拾った「文書順で最初の」タイトルから
+    # 作られており title-type を見ていないため、順序を入れ替えると既存の
+    # しおりが全部無効になる。
+    subtitle = str(_m.get("catchphrase") or "").strip()
+    if subtitle:
+        subtitle_meta = (
+            f'\n    <dc:title id="subtitle">{_esc(subtitle)}</dc:title>'
+            f'\n    <meta refines="#subtitle" property="title-type">subtitle</meta>'
+            f'\n    <meta refines="#subtitle" property="display-seq">2</meta>'
+        )
+        title_type_meta = ('\n    <meta refines="#title" property="title-type">main</meta>'
+                           '\n    <meta refines="#title" property="display-seq">1</meta>')
+    else:
+        # 単一タイトルのときは title-type を付けない（付ける必要がない）
+        subtitle_meta = ""
+        title_type_meta = ""
+
+    # ── 訳者・入力者・校正者など（role は marc:relators）─────────
+    contrib_meta = ""
+    for i, c in enumerate(_m.get("contributors") or [], 1):
+        name = str((c or {}).get("name") or "").strip()
+        if not name:
+            continue
+        role = str((c or {}).get("role") or "").strip()
+        cid  = f"contrib{i}"
+        contrib_meta += f'\n    <dc:contributor id="{cid}">{_esc(name)}</dc:contributor>'
+        if role:
+            contrib_meta += (f'\n    <meta refines="#{cid}" property="role"'
+                             f' scheme="marc:relators">{_esc(role)}</meta>')
+
+    # ── ジャンル原文・タグ（dc:subject）────────────────────────
+    subjects = []
+    if _m.get("genre_raw"):
+        subjects.append(str(_m["genre_raw"]).strip())
+    for t in (_m.get("tags") or []):
+        t = str(t).strip()
+        if t and t not in subjects:
+            subjects.append(t)
+    subject_meta = "".join(f'\n    <dc:subject>{_esc(s)}</dc:subject>'
+                           for s in subjects[:11])
+
+    # ── 年齢制限（dcterms は EPUB 3 の予約プレフィックス）─────────
+    audience = str(_m.get("age_rating") or "").strip()
+    audience_meta = (f'\n    <meta property="dcterms:audience">{_esc(audience)}</meta>'
+                     if audience else "")
+
+    # ── 刊行日 ────────────────────────────────────────────
+    # 作品の初回公開日が分かればそれを dc:date にする。ePub の生成日は
+    # dcterms:modified が持っているので入れない（生成日を dc:date に入れると
+    # ビューア側が「刊行日ではなく生成日」と判定して表示を抑止する）。
+    pub_date = str(_m.get("published") or "").strip() or today
+
+    # ── アクセシビリティ metadata（本文はテキストのみ）──────────
+    a11y_meta = (
+        '\n    <meta property="schema:accessMode">textual</meta>'
+        '\n    <meta property="schema:accessModeSufficient">textual</meta>'
+        '\n    <meta property="schema:accessibilityFeature">readingOrder</meta>'
+        '\n    <meta property="schema:accessibilityFeature">tableOfContents</meta>'
+        '\n    <meta property="schema:accessibilityFeature">structuralNavigation</meta>'
+        '\n    <meta property="schema:accessibilityHazard">none</meta>'
+        '\n    <meta property="schema:accessibilitySummary">'
+        '本文はテキストのみで構成されています。</meta>'
+    )
     # 縦書き: iPad/iOS Kindle 縦書き対応のため primary-writing-mode を明示。横書きは不要
     writing_mode_meta = (
         "" if horizontal
@@ -2046,15 +2128,15 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
 
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">urn:uuid:{book_id}</dc:identifier>
-    <dc:title>{_esc(title)}</dc:title>
+    <dc:title id="title">{_esc(title)}</dc:title>{title_type_meta}{subtitle_meta}
     <dc:creator id="creator">{_esc(author)}</dc:creator>
-    <meta refines="#creator" property="role" scheme="marc:relators">aut</meta>{publisher_meta}
+    <meta refines="#creator" property="role" scheme="marc:relators">aut</meta>{contrib_meta}{publisher_meta}
     <dc:language>ja</dc:language>
-    <dc:date>{today}</dc:date>{desc_meta}{source_meta}
+    <dc:date>{pub_date}</dc:date>{desc_meta}{source_meta}{subject_meta}{audience_meta}
     <meta property="dcterms:modified">{now_iso}</meta>{cover_meta}
     <meta property="rendition:layout">reflowable</meta>
     <meta property="rendition:orientation">auto</meta>
-    <meta property="rendition:spread">none</meta>{writing_mode_meta}{nd_meta}
+    <meta property="rendition:spread">none</meta>{writing_mode_meta}{a11y_meta}{nd_meta}
   </metadata>
 
   <manifest>
@@ -2554,6 +2636,13 @@ def build_epub(
       OEBPS/colophon.xhtml
     """
     book_id   = str(uuid.uuid4())
+    # 話タイトルが空の作品がある（monogatary は episodeTitle が空文字のことが
+    # ある）。空のままだと nav のアンカーと <title> が空になり epubcheck の
+    # RSC-005 で ePub が不正になる（Send to Kindle が通らなくなる）ため、
+    # ここで一律に番号で埋める。
+    for i, ep in enumerate(episodes, 1):
+        if not str(ep.get("title") or "").strip():
+            ep["title"] = f"第{i}話"
     ep_titles = [ep["title"] for ep in episodes]
     synopsis  = _normalize_synopsis(synopsis)   # 表紙ページ・dc:description 共通
 
@@ -2645,7 +2734,8 @@ def build_epub(
         zf.writestr("OEBPS/cover.xhtml",
                     _make_cover_xhtml(title, author, synopsis,
                                       source_url=source_url, site_name=site_name,
-                                      horizontal=horizontal))
+                                      horizontal=horizontal,
+                                      subtitle=str((meta or {}).get("catchphrase") or "")))
 
         # 各話
         for i, ep in enumerate(episodes):
@@ -6124,7 +6214,9 @@ def run_monogatary(args):
 
     for ep_i, ep_info in enumerate(target, 1):
         ep_id    = str(ep_info["episodeId"])
-        ep_title = ep_info.get("episodeTitle", f"第{ep_i + start_ep - 1}話")
+        # episodeTitle はキー自体はあるが空文字の作品がある（.get の既定値では
+        # 埋まらない）ので or で拾う
+        ep_title = ep_info.get("episodeTitle") or f"第{ep_i + start_ep - 1}話"
         print(f"  [{ep_i:3d}/{len(target)}] {ep_title}")
         _progress(ep_i, len(target), f"{ep_title}")
         try:
