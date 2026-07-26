@@ -259,20 +259,187 @@ def _normalize_synopsis(synopsis: str) -> str:
     return s.strip()
 
 
+# ══════════════════════════════════════════
+#  配信元メタデータ（ジャンル・タグ・連載状態など）
+# ══════════════════════════════════════════
+#
+# サイトから取得した書誌情報を .txt ヘッダーの「ラベル：値」行として保存し、
+# --from-file / --append の再生成でも失われないようにする。
+# 値が取れなかった項目は行ごと出力しない（行の有無で有無を判定するため、
+# 空値の行は作らない）。
+
+# 共通ジャンル軸。サイト側の細分類（なろう小ジャンル約30種・カクヨム enum・
+# 各サイト独自語彙）をそのまま持ち込むと1冊しかない分類が並ぶだけになるため、
+# ビューアでの絞り込みに使える粒度まで粗くまとめる。
+_GENRE_LABELS = {
+    "fantasy":    "ファンタジー",
+    "romance":    "恋愛",
+    "sf":         "SF",
+    "mystery":    "ミステリー・ホラー",
+    "drama":      "現代ドラマ",
+    "history":    "歴史・時代",
+    "literature": "文芸",
+    "nonfiction": "評論・エッセイ",
+    "fanfic":     "二次創作",
+    "other":      "その他",
+}
+_GENRE_IDS = {v: k for k, v in _GENRE_LABELS.items()}
+
+# EPUB 3 の標準語彙に無い項目を載せる独自プレフィックスの URI
+_ND_PREFIX_URI = "https://github.com/ayati/novel_downloader/ns#"
+
+# タグ区切り。タグ自体に空白を含むサイトがあるため全角スラッシュを使う。
+_TAG_SEP = "／"
+
+# (meta キー, ヘッダーのラベル, 種別)
+#   str   … そのまま文字列
+#   int   … 数値（表示は3桁区切りせず素の数字。読み込み時は数字以外を除去）
+#   list  … _TAG_SEP 区切り
+#   genre … 共通ジャンル名（サイト原文があれば「共通名（原文）」）
+_META_FIELDS = [
+    ("site",          "配信元",         "str"),
+    ("catchphrase",   "キャッチコピー", "str"),
+    ("genre",         "ジャンル",       "genre"),
+    ("tags",          "タグ",           "list"),
+    ("serial_status", "状態",           "str"),
+    ("published",     "公開日",         "str"),
+    ("updated",       "更新日",         "str"),
+    ("episode_count", "話数",           "int"),
+    ("char_count",    "文字数",         "int"),
+    ("age_rating",    "年齢制限",       "str"),
+    ("series",        "シリーズ",       "str"),
+]
+
+
+def _nd_meta_pairs(meta: dict) -> list[tuple[str, str]]:
+    """meta dict を OPF の nd: 独自メタ用 [(property名, 値文字列)] に変換する。
+
+    property 名はキーをそのままキャメルケース化した形（例: serial_status →
+    serialStatus）。リストはカンマ区切り。空の値は出さない。
+    """
+    if not meta:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for key, _label, kind in _META_FIELDS + [("genre_raw", "", "str"),
+                                             ("site_id", "", "str")]:
+        val = meta.get(key)
+        if val is None or val == "" or val == [] or val == 0:
+            continue
+        text = ",".join(str(v).strip() for v in val) if kind == "list" else str(val).strip()
+        if not text:
+            continue
+        head, *rest = key.split("_")
+        prop = head + "".join(w.capitalize() for w in rest)
+        pairs.append((prop, text))
+    return pairs
+
+
+def _format_meta_lines(meta: dict) -> list[str]:
+    """meta dict を .txt ヘッダーの「ラベル：値」行リストに変換する。"""
+    if not meta:
+        return []
+    lines: list[str] = []
+    for key, label, kind in _META_FIELDS:
+        val = meta.get(key)
+        if val is None or val == "" or val == [] or val == 0:
+            continue
+        if kind == "list":
+            text = _TAG_SEP.join(
+                str(v).strip() for v in val if str(v).strip())
+        elif kind == "int":
+            text = str(val)
+        elif kind == "genre":
+            text = _GENRE_LABELS.get(str(val), "")
+            raw  = str(meta.get("genre_raw") or "").strip()
+            if not text:            # 未知の共通IDなら原文だけを出す
+                text, raw = raw, ""
+            if raw and raw != text:
+                text = f"{text}（{raw}）"
+        else:
+            text = str(val).strip()
+        if text:
+            lines.append(f"{label}：{text}")
+    return lines
+
+
+def _header_slice(content: str) -> str:
+    """本文を除いたヘッダー部分だけを返す（メタ行の誤検出を防ぐ）。
+
+    記号説明ブロックの2本目の区切り線までを採用し、区切り線が無い形式では
+    先頭60行までを見る。
+    """
+    SEP_RE = re.compile(r"^-{10,}\s*$", re.M)
+    hits = list(SEP_RE.finditer(content))
+    if len(hits) >= 2:
+        return content[:hits[1].end()]
+    if hits:
+        return content[:hits[0].end()]
+    return "\n".join(content.split("\n")[:60])
+
+
+def _parse_meta_lines(header: str) -> dict:
+    """ヘッダー文字列から meta dict を復元する（行の順序には依存しない）。"""
+    meta: dict = {}
+    for key, label, kind in _META_FIELDS:
+        m = re.search(rf"^{re.escape(label)}：(.+)$", header, re.M)
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        if not raw:
+            continue
+        if kind == "list":
+            vals = [t.strip() for t in raw.split(_TAG_SEP) if t.strip()]
+            if vals:
+                meta[key] = vals
+        elif kind == "int":
+            digits = re.sub(r"\D", "", raw)
+            if digits:
+                meta[key] = int(digits)
+        elif kind == "genre":
+            mm = re.match(r"^(.+?)（(.+)）$", raw)
+            disp, sub = (mm.group(1), mm.group(2)) if mm else (raw, "")
+            gid = _GENRE_IDS.get(disp)
+            if gid:
+                meta[key] = gid
+                if sub:
+                    meta["genre_raw"] = sub
+            else:
+                meta["genre_raw"] = raw
+        else:
+            meta[key] = raw
+    return meta
+
+
+def _extract_meta_from_txt(txt_path: str) -> dict:
+    """青空文庫書式 .txt のヘッダーから meta dict を取り出す。"""
+    try:
+        with open(txt_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError:
+        return {}
+    return _parse_meta_lines(_header_slice(content))
+
+
 def aozora_header(title: str, author: str, synopsis: str = "",
-                  source_url: str = "") -> str:
+                  source_url: str = "", meta: dict = None) -> str:
     """青空文庫書式のファイル先頭ヘッダーを生成する。
     1行目：題名、2行目：作者名、3行目：空行
+
+    底本URL・メタデータ行は【あらすじ】より前に置く。あらすじブロックは
+    区切り線まで続くものとして読まれるため、後ろに置くとラベル行が
+    あらすじへ取り込まれてしまう。
     """
     synopsis  = _normalize_synopsis(synopsis)
     syn_block = f"\n【あらすじ】\n{synopsis}\n" if synopsis else ""
     url_block = f"底本URL：{source_url}\n" if source_url else ""
+    meta_block = "".join(f"{ln}\n" for ln in _format_meta_lines(meta))
     return (
         f"{title}\n"
         f"{author}\n"
         f"\n"
-        f"{syn_block}"
         f"{url_block}"
+        f"{meta_block}"
+        f"{syn_block}"
         "-------------------------------------------------------\n"
         "【テキスト中に現れる記号について】\n\n"
         "《》：ルビ\n"
@@ -1601,7 +1768,8 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
               inline_images: list = None,
               synopsis: str = "",
               horizontal: bool = False,
-              publisher: str = "", source_url: str = "") -> str:
+              publisher: str = "", source_url: str = "",
+              meta: dict = None) -> str:
     """
     OPF（package.opf）を生成する。
     cover_fmt: "png" | "svg" | "" (表紙画像なし)
@@ -1700,6 +1868,15 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     # 配信元サイト名（dc:publisher）と底本 URL（dc:source）。yomikake が書誌ブロック／底本リンクに使う
     publisher_meta = (f"\n    <dc:publisher>{_esc(publisher)}</dc:publisher>" if publisher else "")
     source_meta    = (f"\n    <dc:source>{_esc(source_url)}</dc:source>" if source_url else "")
+    # 配信元メタデータ。EPUB 3 の標準語彙に無い項目は独自プレフィックス nd: に集約する
+    # （プレフィックス宣言は <package prefix="..."> 側で行う）。
+    _nd_pairs = _nd_meta_pairs(meta)
+    nd_meta = "".join(
+        f'\n    <meta property="nd:{k}">{_esc(v)}</meta>'
+        for k, v in _nd_pairs
+    )
+    # prefix 宣言は nd: を実際に出すときだけ付ける（未使用の宣言を残さない）
+    nd_prefix = f'\n         prefix="nd: {_ND_PREFIX_URI}"' if _nd_pairs else ""
     # 縦書き: iPad/iOS Kindle 縦書き対応のため primary-writing-mode を明示。横書きは不要
     writing_mode_meta = (
         "" if horizontal
@@ -1712,7 +1889,7 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
 <package xmlns="http://www.idpf.org/2007/opf"
          version="3.0"
          unique-identifier="book-id"
-         xml:lang="ja">
+         xml:lang="ja"{nd_prefix}>
 
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">urn:uuid:{book_id}</dc:identifier>
@@ -1724,7 +1901,7 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     <meta property="dcterms:modified">{now_iso}</meta>{cover_meta}
     <meta property="rendition:layout">reflowable</meta>
     <meta property="rendition:orientation">auto</meta>
-    <meta property="rendition:spread">none</meta>{writing_mode_meta}
+    <meta property="rendition:spread">none</meta>{writing_mode_meta}{nd_meta}
   </metadata>
 
   <manifest>
@@ -2205,6 +2382,7 @@ def build_epub(
     toc_at_end: bool = False,
     images: dict = None,     # {"filename.png": bytes} — 本文中のインライン画像
     horizontal: bool = False,  # True: 横書きePub3を生成
+    meta: dict = None,       # 配信元メタデータ（ジャンル・タグ・連載状態など）
 ):
     """
     ePub3ファイルを生成する。horizontal=True で横書き、False（デフォルト）で縦書き。
@@ -2283,7 +2461,8 @@ def build_epub(
                               inline_images=list(images.keys()) if images else None,
                               synopsis=synopsis,
                               horizontal=horizontal,
-                              publisher=site_name, source_url=source_url))
+                              publisher=site_name, source_url=source_url,
+                              meta=meta))
 
         # nav.xhtml（RS向け機械読み取り専用、spine には linear="no" で含める）
         zf.writestr("OEBPS/nav.xhtml",
@@ -7494,7 +7673,7 @@ def _split_aozora_by_headings(body_text: str) -> list:
     return sections
 
 
-def _aozora_insert_source_url(text: str, card_url: str) -> str:
+def _aozora_insert_source_url(text: str, card_url: str, meta: dict = None) -> str:
     """青空文庫 ZIP 由来テキストに底本URL（冒頭）と図書カードURL（末尾）を挿入する。
 
     冒頭：著者行直後に「底本URL：...」を 1 行差し込む。
@@ -7502,20 +7681,28 @@ def _aozora_insert_source_url(text: str, card_url: str) -> str:
           ない場合は著者行の直後に空行を挟んで挿入する。
     末尾：「底本：」奥付ブロックがあればその後ろに、無ければ全体末尾に
           「図書カード：...」行を追加する。
+
+    メタデータ行は記号説明ブロックがある作品にだけ入れる。
+    aozora_text_to_episodes() は「著者行の次〜2本目の区切り線」を読み飛ばして
+    本文を得るため、区切り線の無い作品では挿入した行がそのまま本文に混ざる。
+    底本URL 行は --append / --check-update が依存しているので従来どおり常に
+    入れるが、行数の増えるメタブロックは安全な場合に限る。
     """
     if not card_url:
         return text
 
     lines = text.split("\n")
+    has_sep = len([ln for ln in lines[:60] if re.match(r"^-{10,}\s*$", ln.strip())]) >= 2
 
     # 著者行（先頭から 2 つ目の非空行）を特定
     non_blank = [i for i, ln in enumerate(lines[:30]) if ln.strip()]
     if len(non_blank) >= 2:
         author_idx = non_blank[1]
-        # 著者行の直後に空行 +「底本URL：」+ 空行 を挿入
+        meta_lines = _format_meta_lines(meta) if has_sep else []
+        # 著者行の直後に空行 +「底本URL：」+ メタ行 + 空行 を挿入
         lines = (
             lines[:author_idx + 1]
-            + ["", f"底本URL：{card_url}", ""]
+            + ["", f"底本URL：{card_url}"] + meta_lines + [""]
             + lines[author_idx + 1:]
         )
 
@@ -7680,7 +7867,9 @@ def run_aozora(args):
 def parse_aozora_text(content: str) -> tuple:
     """
     青空文庫書式テキスト（このツールが出力する形式）を解析して
-    (title, author, synopsis, episodes) を返す。
+    (title, author, synopsis, episodes, meta) を返す。
+    meta はヘッダーの「ラベル：値」行から復元した配信元メタデータ
+    （取得できなければ空 dict）。
 
     対応形式:
       - このツールが出力する青空文庫書式（見出しマーカー・PAGE_BREAK付き）
@@ -7771,7 +7960,9 @@ def parse_aozora_text(content: str) -> tuple:
     if not episodes and body_content.strip():
         episodes.append({"title": title, "body": body_content.strip()})
 
-    return title, author, synopsis, episodes
+    meta = _parse_meta_lines("\n".join(lines[:body_start_ln]))
+
+    return title, author, synopsis, episodes, meta
 
 
 def run_from_file(args):
@@ -7806,7 +7997,13 @@ def run_from_file(args):
         sys.exit(1)
 
     print(f"\n[Step 1] テキストファイルを解析中: {txt_path}  (encoding={used_enc})")
-    title, author, synopsis, episodes = parse_aozora_text(content)
+    title, author, synopsis, episodes, meta = parse_aozora_text(content)
+
+    # 底本URL はメタ行とは別のラベル行なのでヘッダーから直接拾う。
+    # これにより --from-file で作り直した ePub でも dc:source と
+    # 表紙の「○○で読む」リンクが失われない。
+    src_m = re.search(r"底本URL：(https?://\S+)", _header_slice(content))
+    src_url = src_m.group(1).strip() if src_m else ""
 
     # --title / --author オプションで上書き可能
     if getattr(args, "title_override", None):
@@ -7832,7 +8029,9 @@ def run_from_file(args):
 
     print(f"📖 ePub生成中...")
     build_epub(epub_path, title, author, synopsis,
-               "", "ローカルファイル", episodes, cover_bg=cover_bg,
+               src_url,
+               (meta.get("site") if meta else "") or "ローカルファイル",
+               episodes, cover_bg=cover_bg, meta=meta,
                cover_image_path=getattr(args, "cover_image", None) or "",
                font_path=getattr(args, "font", "") or "",
                toc_at_end=getattr(args, "toc_at_end", False),
@@ -8179,6 +8378,11 @@ def parse_epub(epub_path: str) -> tuple:
         nav_href_rel = ""
         spine_hrefs = []   # OPF 相対パス
         manifest = {}      # id -> {"href": str, "props": str}
+        # OPF から直接読めた書誌（本文 XHTML からの復元より優先する）
+        opf_synopsis   = ""
+        opf_source_url = ""
+        opf_site_name  = ""
+        opf_meta: dict = {}
 
         if opf_path in namelist:
             opf = zf.read(opf_path).decode("utf-8")
@@ -8189,6 +8393,37 @@ def parse_epub(epub_path: str) -> tuple:
             m = re.search(r'<dc:creator[^>]*>(.*?)</dc:creator>', opf, re.DOTALL)
             if m:
                 author = _html.unescape(m.group(1)).strip()
+
+            # 書誌は OPF を第一の情報源とする（本文 XHTML からの復元は後段の
+            # フォールバック）。旧版の ePub には無いので取れなければ空のまま。
+            m = re.search(r'<dc:description[^>]*>(.*?)</dc:description>', opf, re.DOTALL)
+            if m:
+                opf_synopsis = _html.unescape(m.group(1)).strip()
+            m = re.search(r'<dc:source[^>]*>(.*?)</dc:source>', opf, re.DOTALL)
+            if m:
+                opf_source_url = _html.unescape(m.group(1)).strip()
+            m = re.search(r'<dc:publisher[^>]*>(.*?)</dc:publisher>', opf, re.DOTALL)
+            if m:
+                opf_site_name = _html.unescape(m.group(1)).strip()
+
+            # nd: 独自メタ（property 属性の文字列一致で拾う。prefix 宣言には依存しない）
+            for mm in re.finditer(
+                    r'<meta[^>]+property="nd:([A-Za-z]+)"[^>]*>(.*?)</meta>', opf, re.DOTALL):
+                prop = mm.group(1)
+                val  = _html.unescape(mm.group(2)).strip()
+                if not val:
+                    continue
+                # camelCase → snake_case（serialStatus → serial_status）
+                key = re.sub(r"(?<!^)([A-Z])", r"_\1", prop).lower()
+                kind = next((k for kk, _l, k in _META_FIELDS if kk == key), "str")
+                if kind == "list":
+                    opf_meta[key] = [t.strip() for t in val.split(",") if t.strip()]
+                elif kind == "int":
+                    digits = re.sub(r"\D", "", val)
+                    if digits:
+                        opf_meta[key] = int(digits)
+                else:
+                    opf_meta[key] = val
 
             for im in re.finditer(r'<item\b([^>]+?)/?>', opf, re.DOTALL):
                 attrs = im.group(1)
@@ -8308,7 +8543,12 @@ def parse_epub(epub_path: str) -> tuple:
 
                 episodes.append({"title": ep_title, "body": body_text})
 
-    return title, author, synopsis, source_url, site_name, episodes
+    # OPF に書誌があればそちらを採用する（本文からの復元は旧版 ePub 用の保険）
+    synopsis   = opf_synopsis   or synopsis
+    source_url = opf_source_url or source_url
+    site_name  = opf_site_name  or site_name
+
+    return title, author, synopsis, source_url, site_name, episodes, opf_meta
 
 
 def run_from_epub(args):
@@ -8323,7 +8563,8 @@ def run_from_epub(args):
 
     print(f"\n[Step 1] ePub3ファイルを解析中: {epub_path}")
     try:
-        title, author, synopsis, source_url, site_name, episodes = parse_epub(epub_path)
+        (title, author, synopsis, source_url,
+         site_name, episodes, meta) = parse_epub(epub_path)
     except Exception as e:
         print(f"エラー: ePub3 ファイルを読み込めませんでした: {e}")
         sys.exit(1)
@@ -8347,7 +8588,7 @@ def run_from_epub(args):
     base     = _apply_output_dir(args, args.output or safe_filename(title, "novel"))
     txt_path = base + ".txt"
 
-    header   = aozora_header(title, author, synopsis, source_url)
+    header   = aozora_header(title, author, synopsis, source_url, meta)
     sections = [
         aozora_chapter_title(ep["title"]) + "\n\n" + ep["body"]
         for ep in episodes
@@ -8870,6 +9111,18 @@ _SITE_DISPATCH: dict[str, tuple[str, str, callable]] = {
 }
 
 
+def _make_runner_args(**overrides) -> argparse.Namespace:
+    """run_* に渡す args を組み立てる（--check-update / --append / --watch 用）。
+
+    以前は呼び出し4箇所がフィールドを全部並べており、CLI オプションを足すたびに
+    4箇所すべてを直す必要があった（足し忘れると getattr の既定値に化けて静かに
+    壊れる）。ここでパーサの既定値を土台にして上書きだけを受け取る形にする。
+    """
+    base = vars(_build_arg_parser().parse_args([]))
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
 def _check_update_one(txt_path: str, delay: float = 1.5) -> dict:
     """1 ファイルの更新チェックを実行し結果辞書を返す。
 
@@ -8915,19 +9168,10 @@ def _check_update_one(txt_path: str, delay: float = 1.5) -> dict:
     label, default_color, runner = entry
 
     # argparse の Namespace を組み立てて check-update 相当のディスパッチを行う
-    fake_args = argparse.Namespace(
-        url=url, output=None, delay=delay,
-        resume=None, start=1, end=None,
-        encoding="utf-8", newline="os",
+    fake_args = _make_runner_args(
+        url=url, delay=delay,
         no_epub=True, list_only=True,
         cover_bg=default_color,
-        from_file=None, from_epub=None,
-        title_override=None, author_override=None,
-        cover_image=None, use_site_cover=False,
-        font=None, toc_at_end=False,
-        output_dir=None, kobo=False, horizontal=False,
-        append_file=None, check_update_file=None,
-        dry_run=False,
     )
 
     global _CHECK_UPDATE_MODE
@@ -9004,17 +9248,13 @@ def _append_one(txt_path: str, base_args: argparse.Namespace) -> dict:
     label, default_color, runner = entry
 
     # --append 相当の args を組み立てる
-    fake_args = argparse.Namespace(
+    fake_args = _make_runner_args(
         url=url, output=ap.stem, delay=base_args.delay,
         resume=0,                     # 既存話数を自動検出
-        start=1, end=None,
         encoding=getattr(base_args, "encoding", "utf-8"),
         newline=getattr(base_args, "newline", "os"),
         no_epub=getattr(base_args, "no_epub", False),
-        list_only=False,
         cover_bg=getattr(base_args, "cover_bg", None) or default_color,
-        from_file=None, from_epub=None,
-        title_override=None, author_override=None,
         cover_image=getattr(base_args, "cover_image", None),
         use_site_cover=getattr(base_args, "use_site_cover", False),
         font=getattr(base_args, "font", None),
@@ -9022,8 +9262,6 @@ def _append_one(txt_path: str, base_args: argparse.Namespace) -> dict:
         output_dir=str(ap.parent) if str(ap.parent) != "." else None,
         kobo=getattr(base_args, "kobo", False),
         horizontal=getattr(base_args, "horizontal", False),
-        append_file=None, check_update_file=None,
-        dry_run=False,
     )
 
     # og:image 取得（--use-site-cover 指定時）
@@ -9182,19 +9420,10 @@ def _check_update_url(url: str, n_cached: int, delay: float) -> dict:
 
     label, default_color, runner = entry
 
-    fake_args = argparse.Namespace(
-        url=norm_url, output=None, delay=delay,
-        resume=None, start=1, end=None,
-        encoding="utf-8", newline="os",
+    fake_args = _make_runner_args(
+        url=norm_url, delay=delay,
         no_epub=True, list_only=True,
         cover_bg=default_color,
-        from_file=None, from_epub=None,
-        title_override=None, author_override=None,
-        cover_image=None, use_site_cover=False,
-        font=None, toc_at_end=False,
-        output_dir=None, kobo=False, horizontal=False,
-        append_file=None, check_update_file=None,
-        dry_run=False,
     )
 
     global _CHECK_UPDATE_MODE
@@ -9418,16 +9647,12 @@ def run_watch(args) -> int:
                     dl_entry = _SITE_DISPATCH.get(site)
                     if dl_entry:
                         _, default_color, runner = dl_entry
-                        fresh_args = argparse.Namespace(
-                            url=norm_url, output=None, delay=args.delay,
-                            resume=None, start=1, end=None,
+                        fresh_args = _make_runner_args(
+                            url=norm_url, delay=args.delay,
                             encoding=getattr(args, "encoding", "utf-8"),
                             newline=getattr(args, "newline", "os"),
                             no_epub=getattr(args, "no_epub", False),
-                            list_only=False,
                             cover_bg=default_color,
-                            from_file=None, from_epub=None,
-                            title_override=None, author_override=None,
                             cover_image=getattr(args, "cover_image", None),
                             use_site_cover=getattr(args, "use_site_cover", False),
                             font=getattr(args, "font", None),
@@ -9435,8 +9660,6 @@ def run_watch(args) -> int:
                             output_dir=output_dir if output_dir != "." else None,
                             kobo=getattr(args, "kobo", False),
                             horizontal=getattr(args, "horizontal", False),
-                            append_file=None, check_update_file=None,
-                            dry_run=False,
                         )
                         try:
                             runner(fresh_args)
@@ -9462,7 +9685,11 @@ def run_watch(args) -> int:
     return 1 if has_error else 0
 
 
-def _main(argv=None):
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """CLI パーサを組み立てて返す。
+
+    _main() のほか、_make_runner_args() が既定値の土台として使う。
+    """
     parser = argparse.ArgumentParser(
         description=(
             "小説家になろう・カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン 共通ダウンローダー\n"
@@ -9603,6 +9830,11 @@ def _main(argv=None):
     parser.add_argument("--list-sites", dest="list_sites", action="store_true",
                         help="対応サイト一覧を JSON で出力して終了（GUI用・読み取り専用）")
 
+    return parser
+
+
+def _main(argv=None):
+    parser = _build_arg_parser()
     args = parser.parse_args(argv)
 
     # ── --list-sites: 対応サイト一覧（GUI用・読み取り専用・オフライン） ──

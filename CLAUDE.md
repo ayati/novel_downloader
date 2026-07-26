@@ -153,6 +153,16 @@ python novel_downloader.py --from-file mynovel.txt
 
    **青空文庫テキストの図書カードURL挿入** — `_aozora_insert_source_url(text, card_url)` が `aozora_resolve_gaiji` の直後で呼ばれ、ZIP オリジナル形式を保ったまま 2 行を差し込む：(1) **冒頭**は著者行の直後に空行を挟んで `底本URL：{card_url}` を挿入（記号説明ブロックの手前）、(2) **末尾**は既存の青空文庫奥付ブロックの後ろに `図書カード：{card_url}` を追加。`底本URL：` ラベルは他サイトと統一されているため `_extract_url_from_txt` がそのまま機能し、`--append` / `--check-update` も青空文庫テキストで動作する。
 
+6b. **配信元メタデータ（ジャンル・タグ・連載状態など）** — サイトから取得した書誌情報を `meta: dict` で持ち回す。`.txt` ヘッダーの「ラベル：値」行として保存されるため、`--from-file` / `--append` / `--from-epub` で作り直しても失われない。主要関数：
+   - `_GENRE_LABELS` / `_GENRE_IDS` — 共通ジャンル軸（`fantasy` / `romance` / `sf` / `mystery` / `drama` / `history` / `literature` / `nonfiction` / `fanfic` / `other` の10種）。サイト側の細分類をそのまま持ち込むと1冊しかない分類が並ぶだけになるため粗くまとめる。サイト原文は `genre_raw` に別途保持
+   - `_META_FIELDS` — `(meta キー, ヘッダーのラベル, 種別)` の一覧。種別は `str` / `int` / `list` / `genre`
+   - `_format_meta_lines(meta)` / `_parse_meta_lines(header)` — ヘッダー行と dict の相互変換。**値が空のキーは行ごと出さない**（行の有無で有無を判定する）
+   - `_header_slice(content)` — 本文を除いたヘッダー部分だけを返す（本文中の「状態：」等の誤検出を防ぐ）
+   - `_extract_meta_from_txt(txt_path)` — `.txt` から meta を取り出す（`_extract_url_from_txt` の meta 版）
+   - `_nd_meta_pairs(meta)` — OPF の独自メタ `nd:*` 用に `[(property名, 値)]` へ変換。キーはキャメルケース化（`serial_status` → `nd:serialStatus`）、リストはカンマ区切り
+   - **底本URL・メタ行は `【あらすじ】` より前**に置く。あらすじブロックは区切り線まで続くものとして読まれるため、後ろに置くとラベル行があらすじに取り込まれる
+   - `_aozora_insert_source_url()` は**記号説明ブロック（区切り線2本）がある作品にだけ**メタ行を入れる。区切り線が無い作品では挿入行が本文に混ざるため（底本URL 行は `--append` が依存しているので従来どおり常に入れる）
+
 7. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・表紙色設定・ディスパッチで参照。`_check_update_one()` でも使用。
 
 8. **`_check_update_one(txt_path, delay)`** — 1ファイルの更新チェックを実行し結果辞書を返す。`--check-update-dir` / `--append-dir` の Phase 1 で使用。`_extract_url_from_txt` → `expand_short_url` → `detect_site` → `normalize_url` → `_SITE_DISPATCH` 参照でディスパッチ。`_CHECK_UPDATE_MODE = True` で `_CheckUpdateDone` 例外をキャッチして新着話数を算出。
@@ -167,6 +177,8 @@ python novel_downloader.py --from-file mynovel.txt
    - `_notify_stdout` — 新着・エラーのみ出力（新着なし・エラーなしなら無音）
    - `_notify_webhook` — 新着エントリをまとめて 1 回 POST。`fmt="discord"` → `{"content":"..."}` / `fmt="slack"` → `{"text":"..."}`
    - `run_watch` — list.txt を走査 → `_check_update_url` → 通知収集 → `auto=true` 時に `_append_one`（既存 .txt あり）または `run_*` 新規 DL → キャッシュ保存 → `_notify_stdout` / `_notify_webhook`
+
+10b. **`_build_arg_parser()` / `_make_runner_args(**overrides)`** — CLI パーサの構築を `_main()` から切り出し、`--check-update` / `--append` / `--watch` の内部ランナー呼び出し（4箇所）はパーサの既定値を土台に上書きだけを渡す。以前は4箇所が全フィールドを明示列挙しており、CLI オプションを足すたびに4箇所すべての修正が必要で、漏れると `getattr` の既定値に化けて静かに壊れていた。**新しいオプションを足しても4箇所は無修正でよい**。
 
 11. **`main()`** — `_host_matches` でドメイン判定（スプーフィング対策）、`detect_site` でサイト判定、`normalize_url` で話数 URL → 作品トップ URL 正規化。引数解析後の処理順：`--watch`（ウォッチモード）→ `--check-update-dir`（一括チェック）→ `--append-dir`（一括追記: Phase 1 事前チェック → 確認プロンプト → Phase 2 ダウンロード → サマリー）→ `--from-epub` / `--from-file` → `--append` → `--check-update` → `--use-site-cover`（og:image 取得）→ `_SITE_DISPATCH` によるディスパッチ（`try/except _CheckUpdateDone/finally`）。
 

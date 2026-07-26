@@ -468,7 +468,7 @@ schema:accessibilitySummary = 本文はテキストのみで構成されてい�
 | Phase | 内容 | 備考 |
 |---|---|---|
 | **1** | §1.1 A〜F＋§1.2 のバグ修正。`_normalize_synopsis()` 新設。青空文庫のあらすじ対応 | **v2.3.1 でリリース済み** |
-| **2** | 共通スキーマ、`meta` 引数の配管、`.txt` ヘッダー拡張、`parse_aozora_text` 5要素化、`_extract_meta_from_txt`、`--from-epub` の OPF 直読み | **基盤。ここを飛ばすと後で全やり直し** |
+| **2** | 共通スキーマ、`meta` 引数の配管、`.txt` ヘッダー拡張、`parse_aozora_text` 5要素化、`_extract_meta_from_txt`、`--from-epub` の OPF 直読み、`_make_runner_args()` | **実装済み**（`nd:` の OPF 出力も込み・下記） |
 | **3** | 共通ジャンル辞書（§3）＋カクヨム・monogatary・アルファポリス・なろうのメタ取得 | 既存 JSON から拾う3サイトは低コスト |
 | **4** | OPF 出力（subtitle / dc:subject / dc:date 是正 / contributor / audience / a11y / `nd:`）＋ epubcheck | |
 | **5** | yomikake 書誌ブロック拡張（§7.1） | |
@@ -500,6 +500,20 @@ Phase 3 以降はサイト単位で分割リリースできる。
 | `_aozora_insert_source_url()` `:7497` | メタブロックも挿入。**区切り線を検出できたときだけ**（§1.6） |
 | 新設 `_make_runner_args(**overrides)` | §1.6b。4箇所の `argparse.Namespace` を置き換える |
 | 新設 `_SITE_META` | §1.6c。`_SITE_DISPATCH` は触らない |
+
+**実装時の判断（2026-07-26）**
+
+- **`nd:` の OPF 出力は Phase 4 から Phase 2 に前倒しした。** `.txt` → ePub → `.txt` の往復で
+  メタが保存されることが Phase 2 の受け入れ条件だが、その保存先が OPF なので分離できない。
+  Phase 4 に残るのは**標準語彙**（subtitle / `dc:subject` / `dc:date` 是正 / contributor /
+  `dcterms:audience` / アクセシビリティ）のみ。
+- `prefix="nd: …"` の宣言は **`nd:` を実際に1件以上出すときだけ**付ける。メタ未取得のサイトでは
+  OPF が従来とバイト単位で同一になり、既存の挙動を変えない。
+- 底本URL は `_META_FIELDS` に入れず、従来どおり独立した `底本URL：` 行のままにした。
+  `_extract_url_from_txt()` と `--append` / `--check-update` が依存しているため。
+  `run_from_file()` はヘッダーから直接この行を拾って `dc:source` に戻す。
+- タグ区切りは**全角スラッシュ `／`**。タグ自体に空白を含むサイトがあるため空白区切りにはしない
+  （設計初版の例は空白区切りだったが往復の安全側に倒した）。`nd:tags` はカンマ区切り。
 
 **回帰確認（Phase 2 の必須項目）**
 
