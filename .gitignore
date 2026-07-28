@@ -10,6 +10,9 @@ __pycache__/
 # ヘルスチェックのログ（novel_health_check.py の --log-dir 既定値）
 health_check_logs/
 
+# Windows 向けバイナリ（forwindows/ の exe は GitHub Release で配布する）
+*.exe
+
 # OS
 .DS_Store
 Thumbs.db
