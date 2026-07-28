@@ -100,7 +100,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
 | `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
 | `--cover-image FILE` | — | 表紙に使用するローカル画像ファイル（JPEG/PNG）。指定するとPillowによる自動生成表紙の代わりに使用される。ファイルが存在しない・非対応形式の場合は自動生成にフォールバック |
-| `--use-site-cover` | — | 作品ページの公式サムネイル画像（`og:image`）を表紙として使用する。一時ファイルに保存して `build_epub` に渡し、終了後に自動削除。`--cover-image` が指定されている場合は `--cover-image` が優先 |
+| `--use-site-cover` | — | 作品ページの公式サムネイル画像（`og:image`）を表紙として使用する。一時ファイルに保存して `build_epub` に渡し、終了後に自動削除。`--cover-image` が指定されている場合は `--cover-image` が優先。**品質ゲートあり**：横長・正方形（`w >= h`）／幅 200px 未満／プレースホルダ URL（`no_image`・`/common/`・`top_logo`）は表紙にならないので却下し自動生成表紙へフォールバックする（17サイト中8サイトの og:image は表紙ではなく SNS シェア用カードやサイト共通画像）。berry's cafe・ノベマ！は URL の `-thumb` を外した 2 倍解像度版を優先取得する |
 | `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。`body` のデフォルトフォントとして CSS に設定される。ファイルが存在しない場合は警告を出して埋め込みなしで続行 |
 | `--toc-at-end` | — | 目次ページを奥付の後（末尾）に配置する。デフォルトは表紙の直後・本文の前 |
 | `--output-dir DIR` | カレントディレクトリ | 出力先ディレクトリを指定する。存在しない場合は自動作成。ファイル名は従来通りタイトルから自動生成（`-o` と併用可） |
@@ -137,7 +137,10 @@ python novel_downloader.py --from-file mynovel.txt
    - `_char_class` — 文字の種別（0=漢字・1=ひらがな等）を返す。`々仝〆〇ヶ` は青空文庫規定で漢字（0）扱い
    - `_apply_ruby_auto` — 直前の漢字からルビ親文字を自動検出
    - `_body_lines_to_xhtml` — 青空文庫本文を XHTML に変換。見出しタグ・字下げタグ・図タグを処理。冒頭で `_apply_tcy_pre` を呼び青空文庫縦中横タグをセンチネルに変換、末尾で `_auto_tcy_xhtml(_apply_tcy_post(r))` で数字・英字の自動縦中横ラップ
-   - `make_cover_image` — JPEG 表紙を生成（Pillow、quality=90）、なければ SVG にフォールバック
+   - `make_cover_image` — 表紙を生成。Pillow があれば `_make_cover_daisen`（JPEG、quality=90）、なければ `_make_cover_svg` にフォールバック
+   - `_make_cover_daisen` — **題簽（だいせん）意匠**の表紙 JPEG を描く（800×1200）。地＝グラデーション＋青海波の地紋＋紙ノイズ＋ビネット、その上に淡色の題簽パネル（幅 60%）を置き、題名を**縦組み**で載せる。題名は常に紙 `(247,243,231)` ＋濃墨 `(26,20,12)` の固定 2 色なので**地の色に関係なくコントラスト比 16.47 で一定**。縁取り（`stroke_width`）は目が疲れるため使わない。補助関数は `_cover_gradient` / `_cover_paper_noise` / `_cover_vignette` / `_cover_seigaiha` / `_cover_font` / `_draw_vtext` / `_draw_vtext_auto`
+   - `_fit_panel_title` — 題簽の内寸に収まる最大の（字サイズ, 1列字数, 列数）を返す。列あたり字数は**均等に配り直す**（最終列だけ短いと題簽の下半分が空いて間延びする）。長題 82px／短題 132px
+   - `_draw_vtext` / `_draw_vtext_auto` — 縦組み描画。`draw.text(..., direction="ttb")` は raqm 経由で `「」` の回転・長音符の縦字形を**自動で当てる**ので字形テーブルは不要。`_draw_vtext_auto` は CJK を含まない文字列（`@tea_kaijyu` のような欧文筆名・`berry's cafe` 等のサイト名）を**時計回り 90 度に倒して**描く（縦組みにおける欧文の作法。1 文字ずつ積むと読めない）
    - `_make_toc_xhtml` — 読者向け縦組み目次ページ（toc.xhtml）を生成。`class="vrtl"`・`epub:type` なし
    - `_make_nav_xhtml` — RS向け機械読み取り専用ナビゲーションドキュメント（nav.xhtml）を生成。spine に含めない。`<li>` は必ず `<a>` を含む（`<span>` 単独は ePub3 nav 仕様違反・epubcheck RSC-005 エラー）
    - `_make_opf` — `package.opf` を生成。`meta` から標準語彙も出力する：`<dc:title>` の副題（キャッチコピー・`title-type=subtitle`）、`<dc:subject>`（ジャンル原文＋タグ）、`<dc:contributor>`＋`role`、`<meta property="dcterms:audience">`（年齢制限）、アクセシビリティ metadata（`schema:accessMode` 等・テキストのみなので全書籍共通の固定値）、独自メタ `nd:*`。`<dc:date>` は**作品の初回公開日**（`meta["published"]`）を入れ、無ければ生成日にフォールバックする（生成日を入れると yomikake が「刊行日ではなく生成日」と判定して表示を抑止するため）。**本題の `<dc:title>` は必ず副題より先に出すこと** — yomikake のしおりキーは `querySelector` で拾った文書順で最初の `dc:title` から作られ `title-type` を見ていないので、順序を入れ替えると既存のしおりが全部無効になる。`<dc:creator>` に marc:relators `aut` ロール付与。cover-page spine itemref に `page-spread-right` 付与（日本語 RTL 書籍の表紙は右ページ）。`publisher`（配信元サイト名 → `<dc:publisher>`）と `source_url`（底本 URL → `<dc:source>`）を任意で受け取り、yomikake の書誌ブロック「出版社」欄・「○○で読む」底本リンクに使わせる（空なら行ごと省略。既存 ePub は colophon/cover の本文リンクからフォールバック回収される）
@@ -155,7 +158,7 @@ python novel_downloader.py --from-file mynovel.txt
 
 6b. **配信元メタデータ（ジャンル・タグ・連載状態など）** — サイトから取得した書誌情報を `meta: dict` で持ち回す。`.txt` ヘッダーの「ラベル：値」行として保存されるため、`--from-file` / `--append` / `--from-epub` で作り直しても失われない。主要関数：
    - `_GENRE_LABELS` / `_GENRE_IDS` — 共通ジャンル軸（`fantasy` / `romance` / `sf` / `mystery` / `drama` / `history` / `literature` / `nonfiction` / `fanfic` / `other` の10種）。サイト側の細分類をそのまま持ち込むと1冊しかない分類が並ぶだけになるため粗くまとめる。サイト原文は `genre_raw` に別途保持
-   - `_META_FIELDS` — `(meta キー, ヘッダーのラベル, 種別)` の一覧。種別は `str` / `int` / `list` / `genre`
+   - `_META_FIELDS` — `(meta キー, ヘッダーのラベル, 種別)` の一覧。種別は `str` / `int` / `list` / `genre`。`theme_color`（テーマカラー）もここに含まれ、表紙の地の色に使われる
    - `_format_meta_lines(meta)` / `_parse_meta_lines(header)` — ヘッダー行と dict の相互変換。**値が空のキーは行ごと出さない**（行の有無で有無を判定する）
    - `_header_slice(content)` — 本文を除いたヘッダー部分だけを返す（本文中の「状態：」等の誤検出を防ぐ）
    - `_extract_meta_from_txt(txt_path)` — `.txt` から meta を取り出す（`_extract_url_from_txt` の meta 版）
@@ -178,7 +181,7 @@ python novel_downloader.py --from-file mynovel.txt
    | ネオページ | ページ埋め込みの作品オブジェクト（`sub_category` / `finished` / `words` / `total_chapter` / `labels`） |
    | アルファポリス | JSON-LD の `Article.genre` ＋ `div.p-content-info`（タグ）＋ `div.p-sidebar-content-info__detail`（日付・文字数・完結） |
    | 野いちご / ノベマ！ / berry's cafe | 同一プラットフォーム。`div.subDetails-01`（ジャンル）＋ `div.bookInfo`（状態・文字数・更新日） |
-   | エブリスタ | `div.novelDataWrap` 内の `<meta itemprop="genre">`・`-finished`・文字数、`.tags` |
+   | エブリスタ | `div.novelDataWrap` 内の `<meta itemprop="genre">`・`-finished`・文字数、`.tags`。表紙は `__NUXT_DATA__` の `coverImageName` |
    | NOVEL DAYS | `dl.dl03` の見出し／値 |
    | ノベルアップ＋ | `table.storyMeta` |
    | 青空文庫 | 図書カードの表（読み・NDC・文字遣い・底本・入力者/校正者） |
@@ -191,7 +194,7 @@ python novel_downloader.py --from-file mynovel.txt
 6e. **サイト別メタデータ抽出の実装メモ** — `_narou_meta`（`narou_get_novel_info_api`）/ `_kky_meta_from_work` / `_mono_meta_from_story` / `_alp_meta_from_page`。カクヨム・monogatary は**既に取得済みの JSON から拾うだけで追加リクエストなし**。なろうは公式 API（`api.syosetu.com`）を優先し、失敗時は従来の作品情報ページ解析へフォールバックする（R18 作品は別ドメインのため 0 件になる）。
    - **アルファポリスは必ず作品本体のコンテナ内だけを見る**。作品ページには推薦カードが数十件並んでおり、ページ全体を検索すると別作品の値を拾う（実測: `文字数` はページ内に9回出現し、最初の1件は推薦カードのもの）。タグは `div.p-content-info` 内、公開日・更新日・文字数・完結判定は `div.p-sidebar-content-info__detail` 内に限定する
 
-7. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・表紙色設定・ディスパッチで参照。`_check_update_one()` でも使用。
+7. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・ディスパッチで参照。`_check_update_one()` でも使用。直後に `_SITE_COLOR_BY_LABEL`（表示名 → 既定色の逆引き）と `_resolve_cover_bg(cover_bg, meta, site_name)` を定義する。`build_epub()` は `site_name`（表示名）しか受け取らないため逆引きが必要で、これがあるおかげで表紙色のロジックを 1 箇所に集約でき **17個の `run_*` を触らずに済む**。
 
 8. **`_check_update_one(txt_path, delay)`** — 1ファイルの更新チェックを実行し結果辞書を返す。`--check-update-dir` / `--append-dir` の Phase 1 で使用。`_extract_url_from_txt` → `expand_short_url` → `detect_site` → `normalize_url` → `_SITE_DISPATCH` 参照でディスパッチ。`_CHECK_UPDATE_MODE = True` で `_CheckUpdateDone` 例外をキャッチして新着話数を算出。
 
@@ -272,7 +275,12 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 - **字下げタグ**：`［＃N字下げ］`（単行）→ `text-indent: Nem`、`［＃ここからN字下げ］` → `div.aozora-indent-Nem`（縦書き `padding-top`）、`［＃ここから改行天付き、折り返してN字下げ］` → `div.aozora-hanging-Nem`
 - **青空文庫図タグ**：`「ファイル名」の図（ファイル名）入る` → `<figure><img></figure>`。画像は `OEBPS/images/` に配置し、src は `images/filename`（`../images/` は誤り）
 - **青空文庫外字注記**：`※［＃「説明」、識別子］` を `aozora_resolve_gaiji()` で Unicode 文字に置換。識別子は `U+XXXX` / `第3水準1-X-Y` / `第4水準2-X-Y` / 素の `P-R-C`（プレフィックス省略形、P=1 or 2）の4形式（JIS X 0213）。マッピング表は `data/aozora_gaiji_jis0213.tsv`（11,233 エントリ、`tools/build_gaiji_table.py` で再生成）。`U+XXXX、ページ-行` のような併記形にも対応するため、`、` で区切られた要素を順に走査し最初の解決可能な識別子を採用。複合説明（説明部に `、` を含む）にも対応。**Unicode 解決不能ケース**（Unicode 未収録字形・UCV・78字形・ページ-行のみ等）は `_extract_gaiji_description()` で説明部だけ抜き取り `※（説明）` 形式へフォールバック（例: `※［＃感嘆符三つ、626-10］` → `※（感嘆符三つ）`）。フォールバック適用件数は ℹ で stderr 集約レポート、説明も取得できないレアケースのみ ⚠ で原文保持
-- **表紙背景色のデフォルト**：なろう `#18b7cd`、カクヨム `#4BAAE0`、アルファポリス `#e05c2c`、エブリスタ `#00A0E9`、野いちご `#FA8296`、ハーメルン `#6E654C`、ノベマ！ `#595757`、ノベルアップ＋ `#0CBF97`、ステキブンゲイ `#E4097D`、NOVEL DAYS `#CBA13F`、青空文庫 `#000066`、プロジェクト杉田玄白 `#1D3461`、結城浩翻訳の部屋 `#2D6A4F`、ネオページ `#E94F37`、ソリスピア `#7C3AED`、berry's cafe `#C8245A`、monogatary.com `#231815`、ローカル `#16234b`
+- **エブリスタ本文の画像は Markdown 記法 `![alt](url)`**。`est_extract_images()` が青空文庫の図タグ `［＃「挿絵」の図（ファイル名）入る］` へ変換し、画像本体を `images` dict に貯めて `build_epub(images=...)` で ePub に埋め込む。**必ず `normalize_tate()` より前に処理すること** — `normalize_tate` は `!` を `！` に変換するため、後で処理すると「！」と生の URL が本文に残る（これが実際に起きていた不具合）。取得に失敗した画像はタグを出さずに読み飛ばす（壊れた `img src` を残さないため）
+- **エブリスタの第1話の画像は表紙とは限らない**。実測では作品によって「表紙そのもの」（26146379: 第1話の画像と公式表紙の平均画素差 0.628 ＝ 再エンコード差のみ）と「キャラ紹介の挿絵」（26486552: 第1話・第2話が別々のキャラ絵で、公式表紙は third の別画像）に分かれるため、**第1話の画像を表紙として扱ってはいけない**。表紙は `coverImageName` を使う
+- **表紙の地の色の決まり方**：`_resolve_cover_bg()`（`_SITE_DISPATCH` の直後）が **`--cover-bg` の明示指定 > `meta["theme_color"]`（作者が選んだイメージカラー）> サイト既定色 > `#16234b`** の順で決める。解決は `build_epub()` の冒頭で一括して行うので、**17個の `run_*` は `cover_bg=args.cover_bg` のままでよい**。そのため `main()` はサイト既定色を代入せず **None のまま通す**（代入すると「明示された色」と区別できなくなる）。サイト既定色は表示名から `_SITE_COLOR_BY_LABEL` で逆引きする
+- **`theme_color` を持つのはカクヨムのみ**（`baseColor`・作者が54色から選ぶ）。`_META_FIELDS` に入っているので `.txt` ヘッダー（`テーマカラー：#42B8C1`）と OPF（`nd:themeColor`）に残り、`--from-file` / `--append` で作り直しても色が維持される
+- **明度クランプ**：`_clamp_cover_bg()` が HSV の V だけを `[0.12, 0.46]` に収める（色相・彩度は変えない＝作者の色味を保つ）。相対輝度は G 成分の寄与が 0.7152 と支配的で、**緑〜黄緑〜水色系は V を落としても輝度が下がらない**ため上限は実測で決めた。この処理により全17サイトの既定色＋カクヨム代表色の計24色すべてで地の文字が WCAG AA(4.5) を満たす
+- **表紙背景色のサイト既定値**：なろう `#18b7cd`、カクヨム `#4BAAE0`、アルファポリス `#e05c2c`、エブリスタ `#00A0E9`、野いちご `#FA8296`、ハーメルン `#6E654C`、ノベマ！ `#595757`、ノベルアップ＋ `#0CBF97`、ステキブンゲイ `#E4097D`、NOVEL DAYS `#CBA13F`、青空文庫 `#000066`、プロジェクト杉田玄白 `#1D3461`、結城浩翻訳の部屋 `#2D6A4F`、ネオページ `#E94F37`、ソリスピア `#7C3AED`、berry's cafe `#C8245A`、monogatary.com `#231815`、ローカル `#16234b`
 - **リクエスト間隔**：デフォルト 1.5 秒、リトライ最大 3 回（間隔 5 秒）
 
 ## GUI 連携 API（インプロセス利用）

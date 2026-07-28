@@ -105,6 +105,8 @@ import threading
 import uuid
 import zipfile
 import argparse
+import colorsys
+import math
 import unicodedata
 from datetime import date, datetime, timezone
 from urllib.request import urlopen, Request
@@ -137,7 +139,7 @@ except ImportError:
 
 # 表紙画像生成用ライブラリ（必須推奨）
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
     import io as _io
     _PILLOW_AVAILABLE = True
 except ImportError:
@@ -232,6 +234,83 @@ def _parse_hex_color(hex_str: str) -> tuple:
 def _darken_color(r: int, g: int, b: int, factor: float = 0.6) -> tuple:
     """色を暗くする。"""
     return int(r * factor), int(g * factor), int(b * factor)
+
+
+# ── 自動生成表紙の配色（設計書 design_cover_source.md §3.3 / §3.5）─────────
+# 題名は題簽（だいせん）パネルの上に置くので背景色に依存しない固定 2 色。
+# 地の上に直接置くのは著者名と配信元だけで、そちらは輝度比で色を選ぶ。
+_COVER_V_MAX      = 0.46            # 地の明度上限。全色で AA(4.5) を満たす実測値
+_COVER_V_MIN      = 0.12            # 真っ黒を避ける下限
+_COVER_INK_LIGHT  = (255, 248, 215) # 暗い地に載せるクリーム
+_COVER_INK_DARK   = (28, 22, 12)    # 明るい地に載せる濃墨
+_COVER_PANEL      = (247, 243, 231) # 題簽の紙色
+_COVER_PANEL_INK  = (26, 20, 12)    # 題簽上の題名
+_COVER_PANEL_RULE = (150, 134, 96)  # 題簽の内側罫
+_COVER_SEIGAIHA   = True            # 青海波の地紋を敷くか
+
+
+def _rel_luminance(rgb: tuple) -> float:
+    """WCAG 2.x の相対輝度を返す。"""
+    def _lin(c):
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (_lin(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast_ratio(a: tuple, b: tuple) -> float:
+    """WCAG 2.x のコントラスト比を返す。"""
+    la, lb = _rel_luminance(a), _rel_luminance(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _clamp_cover_bg(hex_str: str) -> str:
+    """表紙の地の明度だけを可読域に収める。色相・彩度は変えない。
+
+    作者が選んだ色味を保ちたいので RGB の一律スケーリングではなく HSV の V だけを
+    clamp する。相対輝度は G 成分の寄与が大きく、緑〜黄緑〜水色系は V を落としても
+    輝度が下がりにくいため、上限は実測して 0.46 に決めた。
+    """
+    try:
+        r, g, b = _parse_hex_color(hex_str)
+    except Exception:
+        return hex_str
+    h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+    v2 = min(max(v, _COVER_V_MIN), _COVER_V_MAX)
+    if abs(v2 - v) < 1e-6:
+        return hex_str
+    r2, g2, b2 = colorsys.hsv_to_rgb(h, s, v2)
+    return "#%02X%02X%02X" % (int(r2 * 255), int(g2 * 255), int(b2 * 255))
+
+
+def _cover_bg_ink(bg: tuple) -> tuple:
+    """地の上に直接置く文字（著者名・配信元）の色を輝度比で選ぶ。
+
+    現状 _COVER_V_MAX = 0.46 では地が必ず十分暗くなるため、実際に返るのは常に
+    クリーム側になる（濃墨の枝は到達しない）。_COVER_V_MAX を上げたときに
+    自動で追随させるために残してある。
+    """
+    if _contrast_ratio(_COVER_INK_LIGHT, bg) >= _contrast_ratio(_COVER_INK_DARK, bg):
+        return _COVER_INK_LIGHT
+    return _COVER_INK_DARK
+
+
+def _fit_panel_title(title: str, inner_w: int, inner_h: int,
+                     col_gap: float = 1.22, start: int = 132) -> tuple:
+    """題簽の内寸に収まる最大の (字サイズ, 1列字数, 列数) を返す。"""
+    n = max(1, len(title))
+    sz = start
+    while sz > 26:
+        per  = max(1, int(inner_h // (sz * 1.06)))
+        ncol = math.ceil(n / per)
+        if ncol * (sz * col_gap) <= inner_w:
+            break
+        sz -= 2
+    per  = max(1, int(inner_h // (sz * 1.06)))
+    ncol = math.ceil(n / per)
+    # 最終列だけ極端に短くなると題簽の下半分が空くので、列あたり字数を均等に配り直す
+    return sz, math.ceil(n / ncol), ncol
 
 
 def normalize_tate(text: str) -> str:
@@ -456,6 +535,7 @@ _META_FIELDS = [
     ("char_count",    "文字数",         "int"),
     ("age_rating",    "年齢制限",       "str"),
     ("series",        "シリーズ",       "str"),
+    ("theme_color",   "テーマカラー",   "str"),
 ]
 
 
@@ -2380,55 +2460,61 @@ else:
     )
 
 
-def _make_cover_svg(title: str, author: str, cover_bg: str = "#16234b") -> bytes:
+def _make_cover_svg(title: str, author: str, cover_bg: str = "#16234b",
+                    site_name: str = "") -> bytes:
     """
-    Pillow不要のSVG表紙を生成する。
-    標準ライブラリのみで動作するフォールバック。
+    Pillow不要のSVG表紙を生成する。標準ライブラリのみで動作するフォールバック。
+
+    意匠は Pillow 版（_make_cover_daisen）と揃えて題簽（淡色パネル＋縦組みの題名）
+    にする。SVG 表紙を正しく描けるリーダーは限られるので、地紋・ビネットなどの
+    凝った処理は入れない。
     """
-    W, H = 800, 1200
+    W, H = _COVER_W, _COVER_H
 
     def esc(s):
         return (s.replace("&", "&amp;").replace("<", "&lt;")
                  .replace(">", "&gt;").replace('"', "&quot;"))
 
-    # タイトルを折り返す（1行20文字目安）
-    MAX_CH = 14
-    t_lines = []
-    buf = ""
-    for ch in title:
-        buf += ch
-        if len(buf) >= MAX_CH:
-            t_lines.append(buf)
-            buf = ""
-    if buf:
-        t_lines.append(buf)
+    bg  = _parse_hex_color(_clamp_cover_bg(cover_bg))
+    ink = _cover_bg_ink(bg)
+    _r1, _g1, _b1 = _darken_color(*bg)
+    _color_top    = "#%02x%02x%02x" % (_r1, _g1, _b1)
+    _color_bottom = "#%02x%02x%02x" % bg
+    _ink          = "#%02x%02x%02x" % ink
+    _panel        = "#%02x%02x%02x" % _COVER_PANEL
+    _panel_ink    = "#%02x%02x%02x" % _COVER_PANEL_INK
+    _panel_rule   = "#%02x%02x%02x" % _COVER_PANEL_RULE
 
-    title_fs  = 72
-    title_y0  = int(H * 0.25)
-    line_gap  = title_fs + 20
+    # 題簽パネル（Pillow 版と同じ寸法）
+    PW, PH = int(W * 0.60), int(H * 0.72)
+    PX, PY = W - PW - 62, int(H * 0.085)
+
+    sz, per, ncol = _fit_panel_title(title, PW - 74, PH - 78)
+    block_h = int(per * sz * 1.06)
+    y_top   = PY + max(38, (PH - block_h) // 2)
+    x_right = PX + PW // 2 + int(ncol * sz * 1.22) // 2
+
+    cols = [title[i:i + per] for i in range(0, len(title), per)]
     title_els = "\n".join(
-        f'  <text x="400" y="{title_y0 + i * line_gap}" '
-        f'font-size="{title_fs}" fill="#fff8d7" '
-        f'text-anchor="middle" font-family="serif" font-weight="bold">'
-        f'{esc(l)}</text>'
-        for i, l in enumerate(t_lines)
+        f'  <text x="{x_right - sz - i * int(sz * 1.22)}" y="{y_top}" '
+        f'font-size="{sz}" fill="{_panel_ink}" font-family="serif" '
+        f'font-weight="bold" writing-mode="vertical-rl" '
+        f'style="writing-mode:vertical-rl">{esc(c)}</text>'
+        for i, c in enumerate(cols)
     )
 
-    # 作者名は下飾り線(H*0.80)より下のエリア中央に固定配置
-    LINE_Y2  = int(H * 0.80)
-    BOTTOM   = H - 50   # 下枠内側
-    author_y = LINE_Y2 + (BOTTOM - LINE_Y2) // 2 + 56 // 3
+    ax = PX - 54
     author_el = (
-        f'  <text x="400" y="{author_y}" '
-        f'font-size="56" fill="#dccda8" '
-        f'text-anchor="middle" font-family="serif">'
-        f'{esc(author)}</text>'
-    )
-
-    _r0, _g0, _b0 = _parse_hex_color(cover_bg)
-    _r1, _g1, _b1 = _darken_color(_r0, _g0, _b0)
-    _color_top    = f"#{_r1:02x}{_g1:02x}{_b1:02x}"
-    _color_bottom = f"#{_r0:02x}{_g0:02x}{_b0:02x}"
+        f'  <text x="{ax - 44}" y="{PY + 34}" font-size="44" fill="{_ink}" '
+        f'font-family="serif" writing-mode="vertical-rl" '
+        f'style="writing-mode:vertical-rl">{esc(author)}</text>'
+    ) if author else ""
+    site_el = (
+        f'  <text x="{ax - 88}" y="{PY + 34 + len(author) * 48 + 46}" '
+        f'font-size="27" fill="{_ink}" font-family="serif" '
+        f'writing-mode="vertical-rl" '
+        f'style="writing-mode:vertical-rl">{esc(site_name)}</text>'
+    ) if site_name else ""
 
     svg = f"""\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -2440,17 +2526,163 @@ def _make_cover_svg(title: str, author: str, cover_bg: str = "#16234b") -> bytes
     </linearGradient>
   </defs>
   <rect width="{W}" height="{H}" fill="url(#bg)"/>
-  <rect x="38" y="38" width="{W-76}" height="{H-76}" fill="none" stroke="#c8b482" stroke-width="3"/>
-  <rect x="50" y="50" width="{W-100}" height="{H-100}" fill="none" stroke="#b4a06e" stroke-width="1"/>
-  <line x1="68" y1="{int(H*0.14)}" x2="{W-68}" y2="{int(H*0.14)}" stroke="#c8b482" stroke-width="1"/>
-  <line x1="68" y1="{int(H*0.80)}" x2="{W-68}" y2="{int(H*0.80)}" stroke="#c8b482" stroke-width="1"/>
+  <rect x="{PX}" y="{PY}" width="{PW}" height="{PH}" fill="{_panel}"/>
+  <rect x="{PX+12}" y="{PY+12}" width="{PW-24}" height="{PH-24}" fill="none"
+        stroke="{_panel_rule}" stroke-width="2"/>
 {title_els}
 {author_el}
+{site_el}
 </svg>"""
     return svg.encode("utf-8")
 
 
-def make_cover_image(title: str, author: str, cover_bg: str = "#16234b"):
+
+# ── 題簽（だいせん）表紙のレンダラ ──────────────────────────────────────
+# 設計は design_cover_source.md §3.5。題名を淡色のパネル上に置くので地の色に
+# 依存せずコントラストが一定になる。縁取り（stroke）は目が疲れるため使わない。
+
+def _cover_gradient(bg: tuple):
+    """上を暗くした縦グラデーションの下地を作る。"""
+    img = Image.new("RGB", (_COVER_W, _COVER_H))
+    d   = ImageDraw.Draw(img)
+    top = _darken_color(*bg)
+    for y in range(_COVER_H):
+        t = y / _COVER_H
+        d.line([(0, y), (_COVER_W, y)],
+               fill=tuple(int(top[i] + (bg[i] - top[i]) * t) for i in range(3)))
+    return img
+
+
+def _cover_paper_noise(img, sigma: int = 5):
+    """紙のざらつきを薄く重ねて平板さを消す。"""
+    n = Image.effect_noise((_COVER_W, _COVER_H), sigma).convert("RGB")
+    return Image.blend(img, ImageChops.add(img, n, 2, -110), 0.30)
+
+
+def _cover_vignette(img, strength: int = 70):
+    """周辺を落として中央に視線を寄せる。"""
+    m  = Image.new("L", (_COVER_W, _COVER_H), 0)
+    md = ImageDraw.Draw(m)
+    md.ellipse([-_COVER_W * 0.30, -_COVER_H * 0.18,
+                _COVER_W * 1.30,  _COVER_H * 1.18], fill=255)
+    m = m.filter(ImageFilter.GaussianBlur(120))
+    dark = Image.new("RGB", (_COVER_W, _COVER_H), (0, 0, 0))
+    return Image.composite(img, Image.blend(img, dark, strength / 255), m)
+
+
+def _cover_seigaiha(img, light: bool, step: int = 96, alpha: int = 20):
+    """青海波の地紋を薄く敷く。light=True で白、False で黒の線を使う。"""
+    ov = Image.new("RGBA", (_COVER_W, _COVER_H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(ov)
+    c  = ((255, 255, 255) if light else (0, 0, 0)) + (alpha,)
+    r  = step
+    for row, y in enumerate(range(-r, _COVER_H + r, r // 2)):
+        off = 0 if row % 2 == 0 else r // 2
+        for x in range(-r + off, _COVER_W + r, r):
+            for k in (1.0, 0.72, 0.44):
+                rr = r * k
+                od.arc([x - rr, y - rr, x + rr, y + rr], 180, 360, fill=c, width=2)
+    return Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+
+
+def _cover_font(size: int, bold: bool = True):
+    """表紙用の CJK フォントを読み込む。"""
+    path = _FONT_BOLD_PATH if bold else (_FONT_MEDIUM_PATH or _FONT_BOLD_PATH)
+    idx  = _FONT_BOLD_IDX  if bold else (_FONT_MEDIUM_IDX if _FONT_MEDIUM_PATH
+                                         else _FONT_BOLD_IDX)
+    return ImageFont.truetype(path, size, index=idx)
+
+
+def _draw_vtext(d, x_right: int, y_top: int, text: str, font, fill: tuple,
+                per_col: int, col_gap: float = 1.22) -> int:
+    """縦組みで右から左へ描く。描いた列数を返す。
+
+    direction="ttb" は Pillow が raqm 経由で縦組み字形（「」の回転・長音符など）を
+    自動で当ててくれるので、字形テーブルを自前で持つ必要はない。
+    """
+    sz   = font.size
+    cols = [text[i:i + per_col] for i in range(0, len(text), per_col)]
+    for i, col in enumerate(cols):
+        d.text((x_right - sz - i * int(sz * col_gap), y_top), col,
+               font=font, fill=fill, direction="ttb")
+    return len(cols)
+
+
+_RE_HAS_CJK = re.compile(r"[぀-ヿ㐀-鿿豈-﫿ｦ-ﾟ]")
+
+
+def _draw_vtext_auto(img, d, x_right: int, y_top: int, text: str, font,
+                     fill: tuple) -> int:
+    """縦組みで 1 行ぶん描き、占めた高さを返す。
+
+    CJK を含まない文字列（欧文の筆名・"berry's cafe" などのサイト名）は
+    1 文字ずつ縦に積むと読みにくいので、縦組みの作法どおり時計回りに 90 度
+    倒して描く。CJK を含む場合は従来どおり 1 文字ずつ縦に並べる。
+    """
+    if not text:
+        return 0
+    sz = font.size
+    if not _RE_HAS_CJK.search(text):
+        bbox = font.getbbox(text)
+        w = max(1, bbox[2] - bbox[0] + 8)
+        h = max(1, bbox[3] - bbox[1] + 8)
+        lay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        ImageDraw.Draw(lay).text((-bbox[0] + 4, -bbox[1] + 4), text,
+                                 font=font, fill=tuple(fill) + (255,))
+        rot = lay.rotate(-90, expand=True)
+        img.paste(rot, (x_right - rot.width, y_top), rot)
+        return rot.height
+    _draw_vtext(d, x_right, y_top, text, font, fill, len(text))
+    return int(len(text) * sz * 1.06)
+
+
+def _make_cover_daisen(title: str, author: str, cover_bg: str,
+                       site_name: str = "") -> bytes:
+    """題簽（和装本風）の表紙 JPEG をバイト列で返す。"""
+    if _FONT_BOLD_PATH is None:
+        raise RuntimeError("CJK font not found")
+
+    bg  = _parse_hex_color(_clamp_cover_bg(cover_bg))
+    ink = _cover_bg_ink(bg)
+
+    img = _cover_paper_noise(_cover_gradient(bg))
+    if _COVER_SEIGAIHA:
+        img = _cover_seigaiha(img, light=(ink is _COVER_INK_LIGHT))
+    img = _cover_vignette(img)
+    d = ImageDraw.Draw(img, "RGBA")
+
+    # 題簽パネル（幅は表紙の 60%。ここを広く取るほど題字を大きくできる）
+    PW, PH = int(_COVER_W * 0.60), int(_COVER_H * 0.72)
+    PX, PY = _COVER_W - PW - 62, int(_COVER_H * 0.085)
+    d.rectangle([PX + 9, PY + 11, PX + PW + 9, PY + PH + 11], fill=(0, 0, 0, 70))
+    d.rectangle([PX, PY, PX + PW, PY + PH], fill=_COVER_PANEL)
+    d.rectangle([PX + 12, PY + 12, PX + PW - 12, PY + PH - 12],
+                outline=_COVER_PANEL_RULE, width=2)
+
+    # 題名（題簽の内寸に収まる最大サイズ・縦中央寄せ）
+    sz, per, ncol = _fit_panel_title(title, PW - 74, PH - 78)
+    font_t  = _cover_font(sz)
+    block_h = int(per * sz * 1.06)
+    _draw_vtext(d, PX + PW // 2 + int(ncol * sz * 1.22) // 2,
+                PY + max(38, (PH - block_h) // 2),
+                title, font_t, _COVER_PANEL_INK, per)
+
+    # 著者名（題簽の左・地の上に直接）
+    ax, ay = PX - 54, PY + 34
+    ah = _draw_vtext_auto(img, d, ax, ay, author, _cover_font(44, bold=False), ink)
+
+    # 配信元（著者名の下に小さく）
+    if site_name:
+        _draw_vtext_auto(img, d, ax - 44, ay + ah + 46, site_name,
+                         _cover_font(27, bold=False), ink)
+
+    buf = _io.BytesIO()
+    img.save(buf, format="JPEG", quality=90, optimize=True)
+    return buf.getvalue()
+
+
+def make_cover_image(title: str, author: str, cover_bg: str = "#16234b",
+                     site_name: str = ""):
     """
     書籍表紙を模したカバー画像を生成してバイト列で返す。
     戻り値: (data: bytes, fmt: str)
@@ -2460,133 +2692,7 @@ def make_cover_image(title: str, author: str, cover_bg: str = "#16234b"):
     """
     if _PILLOW_AVAILABLE:
         try:
-            W, H = _COVER_W, _COVER_H
-            img  = Image.new("RGB", (W, H))
-            draw = ImageDraw.Draw(img)
-
-            # 背景グラデーション（上: 暗め / 下: 指定色）
-            _r0, _g0, _b0 = _parse_hex_color(cover_bg)
-            _r1, _g1, _b1 = _darken_color(_r0, _g0, _b0)
-            for y in range(H):
-                t = y / H
-                r = int(_r1 + (_r0 - _r1) * t)
-                g = int(_g1 + (_g0 - _g1) * t)
-                b = int(_b1 + (_b0 - _b1) * t)
-                draw.line([(0, y), (W, y)], fill=(r, g, b))
-
-            # 外枠（二重線）
-            M    = 38
-            GOLD     = (200, 180, 130)
-            GOLD_DIM = (180, 160, 110)
-            draw.rectangle([M,    M,    W-M,    H-M   ], outline=GOLD,     width=3)
-            draw.rectangle([M+12, M+12, W-M-12, H-M-12], outline=GOLD_DIM, width=1)
-
-            # レイアウト定数
-            # LINE_Y1: タイトル領域の上端飾り線
-            # LINE_Y2: タイトル領域の下端飾り線 ＝ 作者名エリアの上境界
-            # 作者名は LINE_Y2 より下（下枠マージン内）に固定配置する
-            LINE_Y1   = int(H * 0.14)
-            LINE_Y2   = int(H * 0.80)
-            AUTHOR_SZ = 56
-            # 作者名エリア: LINE_Y2 ～ 下枠(H-M) の中央に配置
-            # getbbox で ascent 分の余白を考慮し、視覚的中央を求める
-            AUTHOR_AREA_TOP = LINE_Y2
-            AUTHOR_AREA_BOT = H - M - 10          # 下枠内側ギリギリ
-            draw.line([(M+30, LINE_Y1), (W-M-30, LINE_Y1)], fill=GOLD, width=1)
-            draw.line([(M+30, LINE_Y2), (W-M-30, LINE_Y2)], fill=GOLD, width=1)
-
-            def load_font(path, idx, size):
-                """CJKフォントを読み込む。パスがNoneまたは失敗時はNoneを返す。"""
-                if path is None:
-                    return None
-                try:
-                    return ImageFont.truetype(path, size, index=idx)
-                except Exception:
-                    return None
-
-            def wrap_text(text, font, max_w):
-                lines, cur = [], ""
-                for ch in text:
-                    test = cur + ch
-                    try:
-                        w = font.getbbox(test)[2]
-                    except Exception:
-                        w = len(test) * (getattr(font, "size", 12))
-                    if w > max_w:
-                        lines.append(cur)
-                        cur = ch
-                    else:
-                        cur = test
-                if cur:
-                    lines.append(cur)
-                return lines
-
-            max_title_w = W - M * 2 - 50
-            # タイトル描画可能な縦幅（LINE_Y1 ～ LINE_Y2、上下に余白を確保）
-            TITLE_PAD_TOP = int((LINE_Y2 - LINE_Y1) * 0.08)
-            TITLE_PAD_BOT = int((LINE_Y2 - LINE_Y1) * 0.08)
-            title_region_h = (LINE_Y2 - LINE_Y1) - TITLE_PAD_TOP - TITLE_PAD_BOT
-
-            # CJKフォントが見つからない場合はSVGフォールバックへ
-            if _FONT_BOLD_PATH is None:
-                raise RuntimeError("CJK font not found")
-
-            # タイトルが収まる最大フォントサイズを算出
-            title_sz = 92
-            while True:
-                font_t = load_font(_FONT_BOLD_PATH, _FONT_BOLD_IDX, title_sz)
-                if font_t is None:
-                    raise RuntimeError("Failed to load bold font")
-                lines  = wrap_text(title, font_t, max_title_w)
-                if len(lines) * (title_sz + 18) <= title_region_h or title_sz <= 28:
-                    break
-                title_sz -= 4
-            line_h = title_sz + 18
-            # タイトルブロック全体を LINE_Y1～LINE_Y2 の中央に縦配置
-            block_h   = len(lines) * line_h
-            title_top = LINE_Y1 + TITLE_PAD_TOP + max(0, (title_region_h - block_h) // 2)
-            for i, line in enumerate(lines):
-                try:
-                    lw = font_t.getbbox(line)[2]
-                except Exception:
-                    lw = len(line) * title_sz
-                x = (W - lw) / 2
-                y = title_top + i * line_h
-                draw.text((x+3, y+3), line, font=font_t, fill=(0, 0, 0, 100))
-                draw.text((x,   y  ), line, font=font_t, fill=(255, 248, 215))
-
-            # ── 作者名：LINE_Y2 より下のエリア中央に固定配置 ──────────
-            # 著者名が横幅に収まるようにフォントサイズを縮小
-            author_sz = AUTHOR_SZ
-            while author_sz >= 20:
-                font_a = load_font(_FONT_MEDIUM_PATH, _FONT_MEDIUM_IDX, author_sz)
-                if font_a is None:
-                    font_a = font_t
-                    break
-                try:
-                    _aw_test = font_a.getbbox(author)[2]
-                except Exception:
-                    _aw_test = len(author) * author_sz
-                if _aw_test <= max_title_w:
-                    break
-                author_sz -= 4
-            try:
-                ab = font_a.getbbox(author)   # (left, top, right, bottom)
-                aw = ab[2] - ab[0]
-                ah = ab[3] - ab[1]
-            except Exception:
-                aw = len(author) * author_sz
-                ah = author_sz
-            ax = (W - aw) / 2
-            # 作者名エリアの視覚的中央（ascent オフセットを補正）
-            area_h = AUTHOR_AREA_BOT - AUTHOR_AREA_TOP
-            ay = AUTHOR_AREA_TOP + (area_h - ah) / 2 - (ab[1] if 'ab' in locals() else 0)
-            draw.text((ax+2, ay+2), author, font=font_a, fill=(0, 0, 0, 100))
-            draw.text((ax,   ay  ), author, font=font_a, fill=(220, 205, 170))
-
-            buf = _io.BytesIO()
-            img.save(buf, format="JPEG", quality=90, optimize=True)
-            return buf.getvalue(), "jpg"
+            return _make_cover_daisen(title, author, cover_bg, site_name), "jpg"
 
         except Exception as _png_err:
             import traceback as _tb
@@ -2613,7 +2719,7 @@ def build_epub(
     source_url: str,
     site_name: str,
     episodes: list,          # [{"title": str, "body": str}, ...]
-    cover_bg: str = "#16234b",
+    cover_bg: str | None = None,   # None なら theme_color / サイト既定色から解決する
     cover_image_path: str = "",  # ローカル表紙画像ファイルパス（JPEG/PNG）
     font_path: str = "",
     toc_at_end: bool = False,
@@ -2647,13 +2753,16 @@ def build_epub(
             ep["title"] = f"第{i}話"
     ep_titles = [ep["title"] for ep in episodes]
     synopsis  = _normalize_synopsis(synopsis)   # 表紙ページ・dc:description 共通
+    # 地の色は --cover-bg > meta["theme_color"] > サイト既定色 の順で決まる。
+    # ここで一括解決するので 17 個の run_* は cover_bg=args.cover_bg のままでよい。
+    cover_bg  = _resolve_cover_bg(cover_bg, meta, site_name)
 
     # 表紙画像：外部ファイル指定があればそちらを使用、なければ自動生成
     if cover_image_path:
         if not os.path.isfile(cover_image_path):
             print(f"[警告] 表紙画像ファイルが見つかりません: {cover_image_path}")
             print("       自動生成の表紙を使用します。")
-            cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
+            cover_data, cover_fmt = make_cover_image(title, author, cover_bg, site_name)
         else:
             _ext = Path(cover_image_path).suffix.lower()
             if _ext in (".jpg", ".jpeg"):
@@ -2663,14 +2772,14 @@ def build_epub(
             else:
                 print(f"[警告] 非対応の画像形式です: {_ext}（対応: .jpg / .jpeg / .png）")
                 print("       自動生成の表紙を使用します。")
-                cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
+                cover_data, cover_fmt = make_cover_image(title, author, cover_bg, site_name)
             if cover_fmt in ("jpg", "png"):
                 with open(cover_image_path, "rb") as _f:
                     cover_data = _f.read()
                 print(f"  表紙画像: {cover_image_path}")
     else:
         # 表紙画像を自動生成（Pillow利用可能時JPEG、なければSVGフォールバック）
-        cover_data, cover_fmt = make_cover_image(title, author, cover_bg)
+        cover_data, cover_fmt = make_cover_image(title, author, cover_bg, site_name)
 
     # 埋め込みフォントの準備（CSS注入対策: " \ 改行を除去）
     if font_path and not os.path.isfile(font_path):
@@ -4774,6 +4883,38 @@ def est_api(session, page_path: str, query: str, data: dict,
     raise RuntimeError(f"APIの呼び出しに失敗しました: {query}")
 
 
+# エブリスタ本文中の画像は Markdown 記法 ![alt](url) で埋め込まれている。
+# normalize_tate() が "!" を "！" に変換してしまうため、必ずその手前で処理する
+# （放置すると「！」と生の URL が本文に残る）。
+_EST_MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^)\s]+)\)")
+
+
+def est_extract_images(body: str, session, images: dict, delay: float = 1.5) -> str:
+    """本文の Markdown 画像を青空文庫の図タグへ変換し、画像を images に貯める。
+
+    戻り値は変換後の本文。画像の取得に失敗した行はタグを出さずに読み飛ばす
+    （壊れた img src を ePub に残さないため）。
+    """
+    if "![" not in body:
+        return body
+
+    def _repl(m):
+        url = m.group(2)
+        name = safe_filename(os.path.basename(url.split("?")[0]), "image")
+        if not os.path.splitext(name)[1]:
+            name += ".jpg"
+        if name not in images:
+            data, _ct = _fetch_cover_bytes(url, _EST_BASE)
+            if not data:
+                print(f"    [警告] 挿絵の取得に失敗しました: {url}")
+                return ""
+            images[name] = data
+            _sleep(delay)
+        return f"［＃「挿絵」の図（{name}）入る］"
+
+    return _EST_MD_IMG_RE.sub(_repl, body)
+
+
 def est_get_episode_list(session, work_id: str, delay: float = 1.5) -> list:
     """エピソード一覧を API で取得する。
 
@@ -4891,10 +5032,15 @@ def run_estar(args):
     current_chapter  = ""
     page_in_episode  = 0
 
+    est_images = {}
     for page_no in target_pages:
         body_raw = all_bodies.get(page_no, "（取得失敗）")
-        body = (normalize_tate(body_raw)
-                if body_raw != "（取得失敗）" else body_raw)
+        if body_raw != "（取得失敗）":
+            # 画像の変換は normalize_tate より前に行う（"!" が "！" に化けるため）
+            body = normalize_tate(
+                est_extract_images(body_raw, session, est_images, args.delay))
+        else:
+            body = body_raw
 
         ep_start = all_titles.get(page_no, "")
         if ep_start:
@@ -4937,6 +5083,7 @@ def run_estar(args):
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
+                   images=est_images or None,
                    horizontal=getattr(args, "horizontal", False))
         print(f"✅ ePub出力完了: {epub_path}")
 
@@ -8846,13 +8993,12 @@ def run_from_file(args):
 
     base      = _apply_output_dir(args, args.output or safe_filename(title, "novel"))
     epub_path = base + _epub_ext(args)
-    cover_bg  = args.cover_bg or "#16234b"
 
     print(f"📖 ePub生成中...")
     build_epub(epub_path, title, author, synopsis,
                src_url,
                (meta.get("site") if meta else "") or "ローカルファイル",
-               episodes, cover_bg=cover_bg, meta=meta,
+               episodes, cover_bg=args.cover_bg, meta=meta,
                cover_image_path=getattr(args, "cover_image", None) or "",
                font_path=getattr(args, "font", "") or "",
                toc_at_end=getattr(args, "toc_at_end", False),
@@ -9552,9 +9698,92 @@ def _follow_one_redirect(url: str) -> tuple[str, str | None]:
     return url, None
 
 
-def _fetch_ogp_cover(page_url: str) -> str:
+# ── og:image の品質判定（design_cover_source.md §4）──────────────────────
+# 17 サイトのうち 8 サイトは og:image が「表紙」ではない。なろう・カクヨム・
+# ハーメルン・ソリスピア・ネオページ・エブリスタは 1200×630 等の横長シェア用
+# カード、ノベルアップ＋と青空文庫はサイト共通の画像を返す。無条件に採用すると
+# 表紙が壊れるので、採用前に検査して落ちたら自動生成の表紙へ回す。
+_COVER_REJECT_URL_PAT = re.compile(r"(no_image|/common/|top_logo)", re.I)
+_COVER_MIN_WIDTH = 200      # NOVEL DAYS の 200×320 が最大解像度なので 200 は通す
+
+
+def _site_cover_url_from_html(site: str, html: str) -> str:
+    """og:image より先に試すサイト固有の公式表紙 URL を返す。無ければ ""。
+
+    エブリスタは og:image が 600×314 の横長カードで表紙にならないが、ページの
+    __NUXT_DATA__ に `coverImageName` として本物の表紙（実測 930×1692〜
+    1500×2100 の縦長）を持っている。
+    """
+    if site != "estar":
+        return ""
+    try:
+        data = _est_nuxt_data(html)
+        for i, v in enumerate(data):
+            if isinstance(v, dict) and "coverImageName" in v:
+                name = str((_est_resolve(data, i) or {}).get("coverImageName") or "").strip()
+                if name:
+                    return f"https://img.estar.jp/public/user_upload/{name}"
+                break
+    except Exception:
+        pass
+    return ""
+
+
+def _site_hires_cover_url(site: str, img_url: str) -> str:
+    """サイト固有の高解像度表紙 URL を返す。無ければ ""。
+
+    berry's cafe とノベマ！は og:image が -thumb 付きの小さい画像だが、
+    -thumb を外すと 2 倍の解像度が返る（実測: 166×250 → 500×750 /
+    250×342 → 500×684）。
+    """
+    if site in ("berrys", "novema") and "-thumb." in img_url:
+        return img_url.replace("-thumb.", ".")
+    return ""
+
+
+def _cover_image_acceptable(data: bytes, img_url: str) -> tuple:
+    """表紙として使える画像か判定する。(可否, 却下理由) を返す。"""
+    if _COVER_REJECT_URL_PAT.search(img_url):
+        return False, "サイト共通のプレースホルダ画像です"
+    if not _PILLOW_AVAILABLE:
+        # 寸法を測れないので URL パターンだけで判定し、あとは従来どおり通す
+        return True, ""
+    try:
+        _im = Image.open(_io.BytesIO(data))
+        w, h = _im.width, _im.height
+    except Exception:
+        return True, ""          # 画像として開けないなら判定を諦めて通す
+    if w > h:
+        return False, f"表紙ではなく横長のシェア用画像です（{w}×{h}）"
+    if w == h:
+        return False, f"表紙ではなく正方形の画像です（{w}×{h}）"
+    if w < _COVER_MIN_WIDTH:
+        return False, f"画像が小さすぎます（{w}×{h}）"
+    return True, ""
+
+
+def _fetch_cover_bytes(img_url: str, referer: str) -> tuple:
+    """画像を取得して (bytes, Content-Type) を返す。失敗時は (b"", "")。"""
+    try:
+        import requests as _rq
+        _ir = _rq.get(img_url, headers={"User-Agent": UA, "Referer": referer},
+                      timeout=15)
+        _ir.raise_for_status()
+        return _ir.content, _ir.headers.get("Content-Type", "")
+    except Exception:
+        try:
+            import urllib.request as _ur
+            _ireq = _ur.Request(img_url, headers={"User-Agent": UA, "Referer": referer})
+            with _ur.urlopen(_ireq, timeout=15) as _ir:
+                return _ir.read(), _ir.headers.get("Content-Type", "")
+        except Exception:
+            return b"", ""
+
+
+def _fetch_ogp_cover(page_url: str, site: str = "") -> str:
     """作品ページの og:image をダウンロードして一時ファイルパスを返す。
-    取得失敗時は "" を返す。呼び出し元が一時ファイルを削除すること。"""
+    取得失敗・表紙として不適と判定した場合は "" を返す（呼び出し元は自動生成の
+    表紙にフォールバックする）。呼び出し元が一時ファイルを削除すること。"""
     _check_abort()
     # ── ページ HTML 取得 ──────────────────────────────────────────
     html = ""
@@ -9576,55 +9805,57 @@ def _fetch_ogp_cover(page_url: str) -> str:
             print("       自動生成の表紙を使用します。")
             return ""
 
-    # ── og:image URL 抽出 ─────────────────────────────────────────
-    # property が先のパターン
+    # ── 表紙 URL の候補を決める ───────────────────────────────────
+    # サイトが公式の表紙フィールドを持っていればそれが最優先（og:image は
+    # シェア用カードのことが多く、表紙として使えない）。
+    candidates = []
+    _official = _site_cover_url_from_html(site, html)
+    if _official:
+        candidates.append(_official)
+
+    # og:image（property が先／content が先の両パターン）
     _m = re.search(
         r'<meta\b[^>]+\bproperty=["\']og:image["\'][^>]+\bcontent=["\']([^"\']+)["\']',
         html, re.I)
-    # content が先のパターン
     if not _m:
         _m = re.search(
             r'<meta\b[^>]+\bcontent=["\']([^"\']+)["\'][^>]+\bproperty=["\']og:image["\']',
             html, re.I)
-    if not _m:
-        print("[警告] サイト公式サムネイル: og:image が見つかりませんでした。")
+    if _m:
+        img_url = _m.group(1).strip()
+        # スキーム補完
+        if img_url.startswith("//"):
+            img_url = "https:" + img_url
+        elif img_url.startswith("/"):
+            from urllib.parse import urlparse as _up
+            _p = _up(page_url)
+            img_url = f"{_p.scheme}://{_p.netloc}{img_url}"
+        _hires = _site_hires_cover_url(site, img_url)
+        if _hires:
+            candidates.append(_hires)
+        candidates.append(img_url)
+
+    if not candidates:
+        print("[警告] サイト公式サムネイル: 表紙画像が見つかりませんでした。")
         print("       自動生成の表紙を使用します。")
         return ""
-
-    img_url = _m.group(1).strip()
-    # スキーム補完
-    if img_url.startswith("//"):
-        img_url = "https:" + img_url
-    elif img_url.startswith("/"):
-        from urllib.parse import urlparse as _up
-        _p = _up(page_url)
-        img_url = f"{_p.scheme}://{_p.netloc}{img_url}"
-
-    # ── 画像データ取得 ─────────────────────────────────────────────
-    img_data = b""
-    content_type = ""
-    try:
-        import requests as _rq
-        _ir = _rq.get(img_url,
-                      headers={"User-Agent": UA, "Referer": page_url},
-                      timeout=15)
-        _ir.raise_for_status()
-        img_data     = _ir.content
-        content_type = _ir.headers.get("Content-Type", "")
-    except Exception:
-        try:
-            import urllib.request as _ur
-            _ireq = _ur.Request(img_url, headers={"User-Agent": UA, "Referer": page_url})
-            with _ur.urlopen(_ireq, timeout=15) as _ir:
-                img_data     = _ir.read()
-                content_type = _ir.headers.get("Content-Type", "")
-        except Exception as _e:
-            print(f"[警告] サイト公式サムネイル: 画像ダウンロード失敗 ({_e})")
-            print("       自動生成の表紙を使用します。")
-            return ""
+    # ── 候補を順に取得し、表紙として使える最初のものを採用する ──────
+    img_url, img_data, content_type = "", b"", ""
+    reason = "画像ダウンロードに失敗しました"
+    for _cand in candidates:
+        _data, _ct = _fetch_cover_bytes(_cand, page_url)
+        if not _data:
+            continue
+        _ok, _why = _cover_image_acceptable(_data, _cand)
+        if _ok:
+            img_url, img_data, content_type = _cand, _data, _ct
+            break
+        reason = _why
 
     if not img_data:
-        print("[警告] サイト公式サムネイル: 画像データが空です。自動生成の表紙を使用します。")
+        # 異常ではなく仕様どおりの退避なので [情報]。なろう・カクヨムでは毎回出る。
+        print(f"[情報] サイト公式サムネイル: {reason}")
+        print("       自動生成の表紙を使用します。")
         return ""
 
     # ── 拡張子判定 ─────────────────────────────────────────────────
@@ -9931,6 +10162,28 @@ _SITE_DISPATCH: dict[str, tuple[str, str, callable]] = {
     "solispia":   ("ソリスピア",           "#7C3AED", run_solispia),
 }
 
+# 表示名 → サイト既定の表紙色。build_epub は site_name（表示名）しか受け取らないので
+# 逆引きできるようにしておく。これがあるおかげで 17 個の run_* を触らずに済む。
+_SITE_COLOR_BY_LABEL: dict[str, str] = {
+    label: color for label, color, _fn in _SITE_DISPATCH.values()
+}
+
+
+def _resolve_cover_bg(cover_bg: str | None, meta: dict | None, site_name: str) -> str:
+    """表紙の地の色を決める。
+
+    優先順位は --cover-bg の明示指定 > meta["theme_color"]（作者が選んだ
+    イメージカラー）> サイト既定色 > "#16234b"。
+    main() は既定色を代入せず None のまま通すので、ここで「明示されたか」を
+    区別できる。
+    """
+    if cover_bg:
+        return cover_bg
+    theme = str((meta or {}).get("theme_color") or "").strip()
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", theme):
+        return theme
+    return _SITE_COLOR_BY_LABEL.get(site_name, "#16234b")
+
 
 def _make_runner_args(**overrides) -> argparse.Namespace:
     """run_* に渡す args を組み立てる（--check-update / --append / --watch 用）。
@@ -10075,7 +10328,7 @@ def _append_one(txt_path: str, base_args: argparse.Namespace) -> dict:
         encoding=getattr(base_args, "encoding", "utf-8"),
         newline=getattr(base_args, "newline", "os"),
         no_epub=getattr(base_args, "no_epub", False),
-        cover_bg=getattr(base_args, "cover_bg", None) or default_color,
+        cover_bg=getattr(base_args, "cover_bg", None),   # None なら build_epub が解決
         cover_image=getattr(base_args, "cover_image", None),
         use_site_cover=getattr(base_args, "use_site_cover", False),
         font=getattr(base_args, "font", None),
@@ -10088,7 +10341,7 @@ def _append_one(txt_path: str, base_args: argparse.Namespace) -> dict:
     # og:image 取得（--use-site-cover 指定時）
     ogp_tmp = ""
     if fake_args.use_site_cover and not fake_args.cover_image:
-        ogp_tmp = _fetch_ogp_cover(url)
+        ogp_tmp = _fetch_ogp_cover(url, site)
         if ogp_tmp:
             fake_args.cover_image = ogp_tmp
 
@@ -10473,7 +10726,7 @@ def run_watch(args) -> int:
                             encoding=getattr(args, "encoding", "utf-8"),
                             newline=getattr(args, "newline", "os"),
                             no_epub=getattr(args, "no_epub", False),
-                            cover_bg=default_color,
+                            cover_bg=getattr(args, "cover_bg", None),
                             cover_image=getattr(args, "cover_image", None),
                             use_site_cover=getattr(args, "use_site_cover", False),
                             font=getattr(args, "font", None),
@@ -10943,8 +11196,8 @@ def _main(argv=None):
         run_from_epub(args)
     elif args.from_file:
         # ── テキスト → ePub 変換モード ─────────────────────────
-        if args.cover_bg is None:
-            args.cover_bg = "#16234b"
+        # 既定色は build_epub 側で解決する（.txt の配信元・テーマカラーを使えるよう
+        # ここでは None のまま通す）。
         run_from_file(args)
     else:
         # ── --append または URL モード ───────────────────────────
@@ -11002,15 +11255,13 @@ def _main(argv=None):
         args.url = expand_short_url(args.url)
         site = detect_site(args.url)
         args.url = normalize_url(args.url, site)
-        # サイト別デフォルト表紙色
-        if args.cover_bg is None:
-            entry = _SITE_DISPATCH.get(site)
-            args.cover_bg = entry[1] if entry else "#18b7cd"
+        # 表紙色は build_epub 側で解決する（--cover-bg 明示 > meta["theme_color"] >
+        # サイト既定色）。ここで既定色を代入すると「明示された色」と区別できなくなる。
 
         # ── --use-site-cover: og:image を表紙に使用 ────────────────
         _use_site_cover_tmp = ""
         if getattr(args, "use_site_cover", False) and not getattr(args, "cover_image", None):
-            _use_site_cover_tmp = _fetch_ogp_cover(args.url)
+            _use_site_cover_tmp = _fetch_ogp_cover(args.url, site)
             if _use_site_cover_tmp:
                 args.cover_image = _use_site_cover_tmp
 
