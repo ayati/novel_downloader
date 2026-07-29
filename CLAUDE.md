@@ -87,6 +87,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `--encoding ENC` | `utf-8` | テキスト出力エンコーディング（`utf-8` / `utf-8-sig` / `shift_jis` / `cp932`） |
 | `--newline MODE` | `os` | テキスト出力の改行コード（`os`=実行環境標準 / `lf`=LF / `crlf`=CRLF） |
 | `--no-epub` | — | ePub 出力を省略し、テキストのみ出力 |
+| `--no-inline-images` | — | 本文中の挿絵を取得せず ePub にも埋め込まない（**表紙画像には影響しない**）。`_inline_images_dict(args)` が `images` を `None` にすることで、なろう・アルファポリス・ノベルアップ＋・エブリスタ・NOVEL DAYS の挿絵処理を一括で無効化する。サイト側の画像まわりが変わって取得エラーが続くときの避難口。なろうの `\x00IMG:` マーカーとエブリスタの `![alt](url)` 記法は**残すと本文に露出するので明示的に除去する** |
 | `--cover-bg COLOR` | サイト依存 | 表紙背景色（`#RRGGBB` 形式） |
 | `--from-file FILE` | — | ローカルテキストから ePub3 を生成 |
 | `--from-epub FILE` | — | ローカル ePub3 から青空文庫書式テキストを生成 |
@@ -259,6 +260,7 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 縦中横（`.tcy`）対応：
 - 明示タグ `［＃縦中横］TEXT［＃縦中横終わり］` → `<span class="tcy">TEXT</span>`（センチネル2フェーズ変換で `_apply_ruby_auto` と干渉しない）
 - 自動検出：`_auto_tcy_xhtml()` がテキストノード内の**1〜3桁の孤立数字**および**1〜3文字の孤立半角英字**を自動でラップ。4桁以上・4文字以上は対象外。
+  - **数値文字参照は分割単位として保護すること**。`&#\d+;` と名前付き参照だけでなく **16進参照 `&#[xX][0-9a-fA-F]+;` も保護対象に含める**。`html.escape(quote=True)` はアポストロフィを `&#x27;` にするため、保護しないと `x` だけが縦中横化されて `&#<span class="tcy">x</span>27;` となり、**本文にアポストロフィがあるだけで ePub が構文エラー（epubcheck RSC-016 fatal）で開けなくなる**
   - **連結フレーズ除外**：英数字が半角の連結記号（スペース・カンマ・ピリオド・ハイフン・コロン・スラッシュ・アポストロフィ `[ ,.:/'\-]`）を介して別の英数字と連なる場合は「英語の文章/連結語」と見なし、まとめて横向きのまま残す（縦中横化しない）。`_TCY_DIGITS_RE` の第1選択肢が連結フレーズ全体を先に飲み込むため、内部の短いトークン（1〜3文字）も縦中横にならない。例：`Men in Black` の `Men`/`in`、`U.S.A`、`3.14`、`A-1` は横向き維持。`23時` の `23` や孤立した `OK` は従来通り縦中横化。判定は `_tcy_wrap()`（連結記号を含むマッチはそのまま返す）が行う。
 
 `epub:type` は `epub:type="cover"` / `epub:type="cover-image"`（cover-image.xhtml）と nav の `epub:type="toc"` / `epub:type="landmarks"` のみ付与。本文 body・cover.xhtml・colophon.xhtml の `epub:type` は除去（DPFJガイド準拠）。表紙・奥付の外部URL `<a>` には `epub:type` を一切付けない（`epub:type="link"` は EPUB 3 spec に存在しない値で、リーダーによっては内部ナビゲーションとして誤解釈され外部ジャンプが効かなくなる）。
@@ -276,6 +278,17 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 - **青空文庫図タグ**：`「ファイル名」の図（ファイル名）入る` → `<figure><img></figure>`。画像は `OEBPS/images/` に配置し、src は `images/filename`（`../images/` は誤り）
 - **青空文庫外字注記**：`※［＃「説明」、識別子］` を `aozora_resolve_gaiji()` で Unicode 文字に置換。識別子は `U+XXXX` / `第3水準1-X-Y` / `第4水準2-X-Y` / 素の `P-R-C`（プレフィックス省略形、P=1 or 2）の4形式（JIS X 0213）。マッピング表は `data/aozora_gaiji_jis0213.tsv`（11,233 エントリ、`tools/build_gaiji_table.py` で再生成）。`U+XXXX、ページ-行` のような併記形にも対応するため、`、` で区切られた要素を順に走査し最初の解決可能な識別子を採用。複合説明（説明部に `、` を含む）にも対応。**Unicode 解決不能ケース**（Unicode 未収録字形・UCV・78字形・ページ-行のみ等）は `_extract_gaiji_description()` で説明部だけ抜き取り `※（説明）` 形式へフォールバック（例: `※［＃感嘆符三つ、626-10］` → `※（感嘆符三つ）`）。フォールバック適用件数は ℹ で stderr 集約レポート、説明も取得できないレアケースのみ ⚠ で原文保持
 - **エブリスタ本文の画像は Markdown 記法 `![alt](url)`**。`est_extract_images()` が青空文庫の図タグ `［＃「挿絵」の図（ファイル名）入る］` へ変換し、画像本体を `images` dict に貯めて `build_epub(images=...)` で ePub に埋め込む。**必ず `normalize_tate()` より前に処理すること** — `normalize_tate` は `!` を `！` に変換するため、後で処理すると「！」と生の URL が本文に残る（これが実際に起きていた不具合）。取得に失敗した画像はタグを出さずに読み飛ばす（壊れた `img src` を残さないため）
+- **本文中の挿絵は「共通ユーティリティ」の `_inline_image_tag()` / `_replace_imgs_with_fig_tags()` で扱う**。前者は画像を取得して `images` dict（`{ファイル名: bytes}`）に登録し青空文庫の図タグ `［＃「挿絵」の図（ファイル名）入る］` を返す。後者は BS4 要素配下の `<img>` を一括で図タグに置き換える（`get_text()` の前に呼ぶこと）。`build_epub(images=...)` で `OEBPS/images/` に埋め込まれる。**必ず `normalize_tate()` より前に処理する**。`seen`（URL → ファイル名）を `images` と対にして持ち回し、同一画像の二重取得と、別 URL が同名になったときの取り違え（連番で退避）を防ぐ。拡張子のない URL は Content-Type から補う。取得に失敗した画像はタグを出さずに読み飛ばす（壊れた `img src` を残さないため）
+- **挿絵に対応しているサイトと本文中のマークアップ**（いずれも実ページで確認済み）：
+  | サイト | 本文コンテナ | 挿絵の形 |
+  |---|---|---|
+  | 小説家になろう | `.p-novel__text` の `<p id="L…">` | `<a><img src="//NNNNN.mitemin.net/userpageimage/viewimagebig/icode/iXXXXXX/">`。**プロトコル相対 URL かつ拡張子なし**なので `urljoin` でスキームを補い、拡張子は Content-Type から決める |
+  | アルファポリス | AJAX で取得する本文 HTML | `<img src="https://cdn-image.alphapolis.co.jp/story_image/…/pc/UUID.jpeg">`。`/pc/` 以外（`/sp/`・`/original/`）は **403** なので高解像度版は取れない |
+  | ノベルアップ＋ | `p#episode_content` | `<img src="https://novelup.plus/uploads/…" alt="○○の挿絵N">` |
+  | エブリスタ | — | 本文が Markdown 記法 `![alt](url)`（下記） |
+  | NOVEL DAYS | `div.episode div.inner` | `<img class="imgc">`（下記） |
+  - なろうは `NarouEpisodeParser`（stdlib の `HTMLParser`）が `<img>` を `\x00IMG:{src}\x00` マーカーとして本文に残し、`narou_extract_images()` が図タグへ置き換える（パーサはネットワークに触らないため2段階に分ける）。正規表現フォールバック `narou_extract_body_fallback()` も**タグ除去より先に**マーカー化する（先に除去すると挿絵の位置が失われる）
+  - カクヨムは本文への画像挿入機能自体がない（近況ノートのみ）
 - **NOVEL DAYS 本文の挿絵は `<img class="imgc">`**。`days_extract_images()` が `div.episode div.inner` 内の `<img>` を青空文庫の図タグへ置き換え、画像本体を `images` dict に貯めて `build_epub(images=...)` で ePub に埋め込む。`get_text()` の前（＝ `days_html_to_aozora` の冒頭）で呼ぶこと。`/shared/` 配下はサイト共通の UI アイコン（ロゴ・SNS ボタン）なので除外する。本文の src はファイル名に `thumb_` が付いたサムネイル（実測 800×533）で、**同じパスの接頭辞なし URL が原寸版**（1536×1024）なので原寸 → サムネイルの順で試す（`_days_img_candidates`）。images のキーは `thumb_` を外した名前に寄せ、同一画像の二重取得を防ぐ。取得に失敗した画像はタグを出さずに読み飛ばす
 - **エブリスタの第1話の画像は表紙とは限らない**。実測では作品によって「表紙そのもの」（26146379: 第1話の画像と公式表紙の平均画素差 0.628 ＝ 再エンコード差のみ）と「キャラ紹介の挿絵」（26486552: 第1話・第2話が別々のキャラ絵で、公式表紙は third の別画像）に分かれるため、**第1話の画像を表紙として扱ってはいけない**。表紙は `coverImageName` を使う
 - **表紙の地の色の決まり方**：`_resolve_cover_bg()`（`_SITE_DISPATCH` の直後）が **`--cover-bg` の明示指定 > `meta["theme_color"]`（作者が選んだイメージカラー）> サイト既定色 > `#16234b`** の順で決める。解決は `build_epub()` の冒頭で一括して行うので、**17個の `run_*` は `cover_bg=args.cover_bg` のままでよい**。そのため `main()` はサイト既定色を代入せず **None のまま通す**（代入すると「明示された色」と区別できなくなる）。サイト既定色は表示名から `_SITE_COLOR_BY_LABEL` で逆引きする

@@ -339,6 +339,85 @@ def _normalize_synopsis(synopsis: str) -> str:
 
 
 # ══════════════════════════════════════════
+#  本文中の挿絵（サイト共通）
+# ══════════════════════════════════════════
+#
+# 各サイトの本文から挿絵を拾い、青空文庫の図タグ
+# ［＃「挿絵」の図（ファイル名）入る］へ置き換える。画像本体は
+# images dict（{ファイル名: bytes}）に貯め、build_epub(images=...) で
+# ePub の OEBPS/images/ に埋め込む。
+
+_INLINE_IMG_MIME_EXT = {
+    "image/jpeg": ".jpg", "image/jpg":  ".jpg", "image/png":  ".png",
+    "image/gif":  ".gif", "image/webp": ".webp", "image/bmp": ".bmp",
+}
+
+
+def _inline_images_dict(args):
+    """本文挿絵を貯める dict を返す。`--no-inline-images` 指定時は None。
+
+    None を渡された各サイトの抽出処理は画像取得ごとスキップするため、
+    サイト側の画像まわりが変わって取得エラーが続くときの避難口になる。
+    """
+    return None if getattr(args, "no_inline_images", False) else {}
+
+
+def _inline_image_tag(url: str, referer: str, images: dict, seen: dict,
+                      delay: float = 1.5, default_ext: str = ".jpg") -> str:
+    """挿絵を取得して images に登録し、青空文庫の図タグを返す。
+
+    seen は URL → ファイル名の対応表。同じ画像の二重取得を防ぐと同時に、
+    別 URL がたまたま同じファイル名を持つ場合の取り違えも防ぐ
+    （なろうの挿絵 URL は拡張子を持たず、末尾要素しか手掛かりがない）。
+    取得に失敗した場合は "" を返す（呼び出し元はタグを出さずに読み飛ばす）。
+    """
+    if url in seen:
+        return f"［＃「挿絵」の図（{seen[url]}）入る］"
+
+    data, ctype = _fetch_cover_bytes(url, referer)
+    if not data:
+        print(f"    [警告] 挿絵の取得に失敗しました: {url}")
+        return ""
+
+    stem = os.path.basename(urlparse(url).path.rstrip("/")) or "image"
+    name = safe_filename(stem, "image")
+    if not os.path.splitext(name)[1]:
+        # 拡張子なしの URL（なろうの viewimagebig 等）は Content-Type から補う
+        mime = (ctype or "").split(";")[0].strip().lower()
+        name += _INLINE_IMG_MIME_EXT.get(mime, default_ext)
+    if name in images:
+        # 別 URL が同名になった場合は連番で退避する
+        base, ext = os.path.splitext(name)
+        n = 2
+        while f"{base}_{n}{ext}" in images:
+            n += 1
+        name = f"{base}_{n}{ext}"
+
+    images[name] = data
+    seen[url]    = name
+    _sleep(delay)
+    return f"［＃「挿絵」の図（{name}）入る］"
+
+
+def _replace_imgs_with_fig_tags(container, base_url: str, referer: str,
+                                images: dict, seen: dict, delay: float = 1.5,
+                                skip_re=None) -> None:
+    """BS4 の要素配下の <img> を図タグへ置き換える（container を破壊的に変更）。
+
+    get_text() の前に呼ぶこと。skip_re に一致する src はサイト共通の UI 画像
+    とみなして取り除く。取得に失敗した画像もタグを出さずに取り除く。
+    """
+    for img in container.find_all("img"):
+        src = (img.get("src") or "").strip()
+        if not src or (skip_re and skip_re.search(src)):
+            img.decompose()
+            continue
+        tag = _inline_image_tag(urljoin(base_url, src), referer,
+                                images, seen, delay)
+        img.replace_with(f"\n{tag}\n" if tag else "")
+
+
+# ══════════════════════════════════════════
 #  配信元メタデータ（ジャンル・タグ・連載状態など）
 # ══════════════════════════════════════════
 #
@@ -1496,8 +1575,10 @@ def _apply_tcy_post(html: str) -> str:
 def _auto_tcy_xhtml(html: str) -> str:
     """XHTML テキストノード内の2-3桁の連続数字を <span class="tcy"> でラップする。
     既存の tcy スパン内の数字は二重ラップしない。
-    HTMLエンティティ（&#160; &amp; 等）は分割単位として保護し数値を誤変換しない。"""
-    parts = re.split(r'(<[^>]+>|&#\d+;|&[a-zA-Z]+;)', html)
+    HTMLエンティティ（&#160; &#x27; &amp; 等）は分割単位として保護し数値を誤変換しない。
+    16進参照（&#x27; = アポストロフィ）を保護しないと "x" だけが縦中横化されて
+    &#<span class="tcy">x</span>27; となり、ePub が構文エラーで開けなくなる。"""
+    parts = re.split(r'(<[^>]+>|&#[xX][0-9a-fA-F]+;|&#\d+;|&[a-zA-Z]+;)', html)
     out = []
     in_tcy = 0
     for part in parts:
@@ -3235,6 +3316,12 @@ class NarouEpisodeParser(HTMLParser):
             if self._in_p:
                 if tag == "br":
                     self._cur_para.append("\n")
+                elif tag == "img":
+                    # 挿絵。ここでは取得せずマーカーだけ残し、
+                    # narou_extract_images() が図タグへ置き換える
+                    src = d.get("src", "").strip()
+                    if src:
+                        self._cur_para.append(f"\x00IMG:{src}\x00")
                 elif tag == "ruby":
                     # <ruby>ベース<rt>よみ</rt></ruby> 形式（<rb>なし）に対応
                     self._in_ruby = True
@@ -3354,9 +3441,40 @@ def narou_extract_body_fallback(html: str) -> str:
         parts.append(p_html[pos:])
         p_html = "".join(parts)
         clean = re.sub(r"<br\s*/?>", "\n", p_html)
+        # 挿絵はタグ除去より先にマーカー化する（除去されると位置が失われる）
+        clean = _NAROU_IMG_TAG_RE.sub(lambda m: f"\x00IMG:{m.group(1)}\x00", clean)
         clean = re.sub(r"<[^>]+>", "", clean)
         lines.append(clean.strip())
     return "\n".join(lines).strip()
+
+
+# 挿絵マーカー（NarouEpisodeParser / フォールバック抽出が本文に埋める）
+_NAROU_IMG_TAG_RE  = re.compile(r"<img[^>]*\ssrc=[\"']([^\"']+)[\"'][^>]*>", re.I)
+_NAROU_IMG_MARK_RE = re.compile(r"\x00IMG:([^\x00]+)\x00")
+
+
+def narou_extract_images(body: str, images: dict, seen: dict,
+                         delay: float = 1.5) -> str:
+    """本文中の挿絵マーカーを図タグへ置き換え、画像を images に貯める。
+
+    挿絵の src は `//35601.mitemin.net/userpageimage/viewimagebig/icode/iXXXXXX/`
+    のようなプロトコル相対 URL で拡張子を持たないため、urljoin でスキームを
+    補い、拡張子は Content-Type から決める（_inline_image_tag が行う）。
+    normalize_tate() より前に呼ぶこと。images が None
+    （`--no-inline-images`）のときはマーカーごと取り除く。
+    """
+    if "\x00IMG:" not in body:
+        return body
+    if images is None:
+        return _NAROU_IMG_MARK_RE.sub("", body)
+
+    def _repl(m):
+        url = urljoin("https://ncode.syosetu.com/", m.group(1))
+        tag = _inline_image_tag(url, "https://ncode.syosetu.com/",
+                                images, seen, delay)
+        return f"\n{tag}\n" if tag else ""
+
+    return _NAROU_IMG_MARK_RE.sub(_repl, body)
 
 
 # ══════════════════════════════════════════
@@ -3452,6 +3570,9 @@ def run_narou(args):
         epub_episodes= []
         print(f"\n[Step 2] 本文ダウンロード開始")
 
+    narou_images   = _inline_images_dict(args)
+    narou_img_seen = {}
+
     for idx, (path, ep_title, ep_group) in enumerate(target, start_idx + 1):
         if idx < resume_from:
             continue
@@ -3484,6 +3605,9 @@ def run_narou(args):
             print("    !! 本文が空。")
             body = "（本文取得失敗）"
         else:
+            # 挿絵の変換は normalize_tate より前に行う
+            body = narou_extract_images(body, narou_images, narou_img_seen,
+                                        args.delay)
             body = normalize_tate(body)
 
         sections.append(f"{aozora_chapter_title(subtitle)}\n\n{body}\n")
@@ -3511,6 +3635,7 @@ def run_narou(args):
         print(f"📖 ePub生成中...")
         build_epub(epub_path, title, author, synopsis,
                    base_url, "小説家になろう", epub_episodes,
+                   images=narou_images or None,
                    cover_bg=args.cover_bg, meta=meta,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
@@ -4516,12 +4641,20 @@ def alp_get_episode_list(soup) -> list:
     return episodes
 
 
-def alp_html_to_aozora(html: str) -> str:
-    """エピソード本文HTMLを青空文庫書式テキストに変換する。"""
+def alp_html_to_aozora(html: str, images: dict = None, seen: dict = None,
+                       delay: float = 1.5) -> str:
+    """エピソード本文HTMLを青空文庫書式テキストに変換する。
+
+    images に dict を渡すと本文中の挿絵を取得して図タグへ変換する。
+    """
     if not html.strip():
         return ""
 
     soup = BeautifulSoup(html, "html.parser")
+
+    if images is not None:
+        _replace_imgs_with_fig_tags(soup, _ALP_BASE, _ALP_BASE + "/",
+                                    images, seen, delay)
 
     # <ruby> → 青空文庫ルビ記法
     for ruby in soup.find_all("ruby"):
@@ -4555,7 +4688,8 @@ def alp_html_to_aozora(html: str) -> str:
     return soup.get_text().strip()
 
 
-def alp_extract_episode(session, ep_url: str) -> tuple:
+def alp_extract_episode(session, ep_url: str, images: dict = None,
+                        seen: dict = None, delay: float = 1.5) -> tuple:
     """
     エピソードページを取得し (エピソードタイトル, 本文テキスト) を返す。
 
@@ -4584,7 +4718,8 @@ def alp_extract_episode(session, ep_url: str) -> tuple:
             if loading:
                 loading.decompose()
             if novel_body.get_text(strip=True):
-                return ep_title, alp_html_to_aozora(str(novel_body))
+                return ep_title, alp_html_to_aozora(str(novel_body), images,
+                                                    seen, delay)
 
     # ── (B) AJAX POST で本文を取得 ─────────────────────────────────
 
@@ -4642,7 +4777,7 @@ def alp_extract_episode(session, ep_url: str) -> tuple:
     resp.encoding = (ct.split("charset=")[-1].split(";")[0].strip()
                      if "charset=" in ct else "utf-8")
 
-    return ep_title, alp_html_to_aozora(resp.text)
+    return ep_title, alp_html_to_aozora(resp.text, images, seen, delay)
 
 
 def run_alphapolis(args):
@@ -4694,12 +4829,15 @@ def run_alphapolis(args):
 
     print("[3/3] 各エピソードを取得中...")
     episodes_data = []
+    alp_images    = _inline_images_dict(args)
+    alp_img_seen  = {}
 
     for i, ep in enumerate(episode_list, 1):
         print(f"  [{i:4d}/{len(episode_list)}] {ep['title'][:50]}")
         _progress(i, len(episode_list), f"{ep['title'][:50]}")
         try:
-            ep_title, body = alp_extract_episode(session, ep["url"])
+            ep_title, body = alp_extract_episode(session, ep["url"], alp_images,
+                                                 alp_img_seen, args.delay)
             episodes_data.append({"title": ep_title or ep["title"], "body": body,
                                   "chapter": ep.get("chapter", "")})
         except RuntimeError as e:
@@ -4731,6 +4869,7 @@ def run_alphapolis(args):
         build_epub(epub_path, info["title"], info["author"],
                    info.get("description", ""),
                    work_url, "アルファポリス", epub_episodes,
+                   images=alp_images or None,
                    cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
@@ -4894,9 +5033,13 @@ def est_extract_images(body: str, session, images: dict, delay: float = 1.5) -> 
 
     戻り値は変換後の本文。画像の取得に失敗した行はタグを出さずに読み飛ばす
     （壊れた img src を ePub に残さないため）。
+    images が None（`--no-inline-images`）のときは記法ごと取り除く
+    — 残すと normalize_tate が "!" を "！" に変えて生 URL が本文に残る。
     """
     if "![" not in body:
         return body
+    if images is None:
+        return _EST_MD_IMG_RE.sub("", body)
 
     def _repl(m):
         url = m.group(2)
@@ -5032,7 +5175,7 @@ def run_estar(args):
     current_chapter  = ""
     page_in_episode  = 0
 
-    est_images = {}
+    est_images = _inline_images_dict(args)
     for page_no in target_pages:
         body_raw = all_bodies.get(page_no, "（取得失敗）")
         if body_raw != "（取得失敗）":
@@ -6961,8 +7104,16 @@ def novelup_get_episode_list(soup) -> list:
     return episodes
 
 
-def novelup_html_to_aozora(content_p) -> str:
-    """本文 <p id="episode_content"> を青空文庫書式テキストに変換する。"""
+def novelup_html_to_aozora(content_p, images: dict = None, seen: dict = None,
+                           delay: float = 1.5) -> str:
+    """本文 <p id="episode_content"> を青空文庫書式テキストに変換する。
+
+    images に dict を渡すと本文中の挿絵を取得して図タグへ変換する。
+    """
+    if images is not None:
+        _replace_imgs_with_fig_tags(content_p, _NOVELUP_BASE,
+                                    _NOVELUP_BASE + "/", images, seen, delay)
+
     # ルビ変換: <ruby><rb>漢字</rb><rp>(</rp><rt>かんじ</rt></ruby> → 漢字《かんじ》
     for ruby in content_p.find_all("ruby"):
         rb  = ruby.find("rb")
@@ -6999,7 +7150,8 @@ def novelup_html_to_aozora(content_p) -> str:
     return "\n".join(out_lines)
 
 
-def novelup_get_episode_body(soup) -> str:
+def novelup_get_episode_body(soup, images: dict = None, seen: dict = None,
+                             delay: float = 1.5) -> str:
     """エピソードページから本文（前書き＋本文＋後書き）を青空文庫書式で返す。"""
     parts = []
 
@@ -7011,7 +7163,7 @@ def novelup_get_episode_body(soup) -> str:
 
     content_p = soup.find("p", id="episode_content")
     if content_p:
-        parts.append(novelup_html_to_aozora(content_p))
+        parts.append(novelup_html_to_aozora(content_p, images, seen, delay))
     else:
         parts.append("（本文取得失敗）")
 
@@ -7077,6 +7229,8 @@ def run_novelup(args):
     print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
     got_eps       = 0
+    nup_images    = _inline_images_dict(args)
+    nup_img_seen  = {}
 
     for ep_i, (ep_id, ep_title, ep_chapter) in enumerate(target_eps, 1):
         print(f"  [{ep_i:3d}/{len(target_eps)}] {ep_title}")
@@ -7084,7 +7238,8 @@ def run_novelup(args):
         try:
             ep_url  = f"{_NOVELUP_BASE}/story/{work_id}/{ep_id}"
             ep_soup, _ = novelup_fetch(session, ep_url)
-            body = novelup_get_episode_body(ep_soup)
+            body = novelup_get_episode_body(ep_soup, nup_images, nup_img_seen,
+                                            args.delay)
         except RuntimeError as e:
             print(f"    [エラー] {e}")
             body = "（取得失敗）"
@@ -7114,6 +7269,7 @@ def run_novelup(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ノベルアップ＋", epub_episodes,
+                   images=nup_images or None,
                    cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
@@ -7611,7 +7767,7 @@ def run_days(args):
     print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
     got_eps       = 0
-    days_images   = {}
+    days_images   = _inline_images_dict(args)
 
     for ep_i, ep in enumerate(target_eps, 1):
         print(f"  [{ep_i:3d}/{len(target_eps)}] {ep['title']}")
@@ -10877,6 +11033,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                              "。lf=LF(Unix形式) / crlf=CRLF(Windows形式)")
     parser.add_argument("--no-epub", dest="no_epub", action="store_true",
                         help="ePub出力を省略してテキストのみ出力する")
+    parser.add_argument("--no-inline-images", dest="no_inline_images",
+                        action="store_true",
+                        help="本文中の挿絵を取得せず ePub にも埋め込まない"
+                             "（表紙画像には影響しない）")
     parser.add_argument("--list-only", dest="list_only", action="store_true",
                         help="ダウンロードせずエピソード一覧と話数のみ表示して終了する")
     parser.add_argument("--cover-bg", dest="cover_bg", default=None, metavar="COLOR",
