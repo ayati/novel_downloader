@@ -22,6 +22,23 @@ val appVersion: String = run {
 val appVerParts: List<Int> =
     (appVersion.split(".") + listOf("0", "0", "0")).take(3).map { it.toIntOrNull() ?: 0 }
 
+// リリース署名鍵。Android Developer Console に登録した鍵で署名するため、debug 鍵とは分ける。
+// 鍵の場所とパスワードはリポジトリに置かず、次の優先順で解決する:
+//   優先1: 環境変数  NOVEL_KEYSTORE / NOVEL_KEYSTORE_PASSWORD / NOVEL_KEY_ALIAS / NOVEL_KEY_PASSWORD
+//   優先2: ~/.gradle/gradle.properties の novelStoreFile / novelStorePassword / novelKeyAlias / novelKeyPassword
+// 未設定なら release 用 signingConfig を作らない（未署名で失敗させ、
+// debug 鍵の APK をそのまま野良配布してしまう事故を構造的に防ぐ）。
+fun signingSecret(env: String, prop: String): String? =
+    (System.getenv(env) ?: project.findProperty(prop) as String?)?.trim()?.takeIf { it.isNotEmpty() }
+
+val releaseStorePath = signingSecret("NOVEL_KEYSTORE", "novelStoreFile")
+val releaseStorePassword = signingSecret("NOVEL_KEYSTORE_PASSWORD", "novelStorePassword")
+val releaseKeyAlias = signingSecret("NOVEL_KEY_ALIAS", "novelKeyAlias")
+val releaseKeyPassword =
+    signingSecret("NOVEL_KEY_PASSWORD", "novelKeyPassword") ?: releaseStorePassword
+val hasReleaseSigning =
+    releaseStorePath != null && releaseStorePassword != null && releaseKeyAlias != null
+
 android {
     namespace = "com.ayati.noveldownloader"
     compileSdk = 35
@@ -36,6 +53,29 @@ android {
         ndk {
             // 配布対象は実機スマホのみなので arm64 に絞って APK を小さくする
             abiFilters += listOf("arm64-v8a")
+        }
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                // "~/..." は Gradle が展開しないので自前でホームに置換する
+                storeFile =
+                    file(releaseStorePath!!.replaceFirst("~", System.getProperty("user.home")))
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            // Chaquopy の Python 側がリフレクション経由で触るクラスを削らせない
+            isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

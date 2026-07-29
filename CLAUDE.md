@@ -276,6 +276,7 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 - **青空文庫図タグ**：`「ファイル名」の図（ファイル名）入る` → `<figure><img></figure>`。画像は `OEBPS/images/` に配置し、src は `images/filename`（`../images/` は誤り）
 - **青空文庫外字注記**：`※［＃「説明」、識別子］` を `aozora_resolve_gaiji()` で Unicode 文字に置換。識別子は `U+XXXX` / `第3水準1-X-Y` / `第4水準2-X-Y` / 素の `P-R-C`（プレフィックス省略形、P=1 or 2）の4形式（JIS X 0213）。マッピング表は `data/aozora_gaiji_jis0213.tsv`（11,233 エントリ、`tools/build_gaiji_table.py` で再生成）。`U+XXXX、ページ-行` のような併記形にも対応するため、`、` で区切られた要素を順に走査し最初の解決可能な識別子を採用。複合説明（説明部に `、` を含む）にも対応。**Unicode 解決不能ケース**（Unicode 未収録字形・UCV・78字形・ページ-行のみ等）は `_extract_gaiji_description()` で説明部だけ抜き取り `※（説明）` 形式へフォールバック（例: `※［＃感嘆符三つ、626-10］` → `※（感嘆符三つ）`）。フォールバック適用件数は ℹ で stderr 集約レポート、説明も取得できないレアケースのみ ⚠ で原文保持
 - **エブリスタ本文の画像は Markdown 記法 `![alt](url)`**。`est_extract_images()` が青空文庫の図タグ `［＃「挿絵」の図（ファイル名）入る］` へ変換し、画像本体を `images` dict に貯めて `build_epub(images=...)` で ePub に埋め込む。**必ず `normalize_tate()` より前に処理すること** — `normalize_tate` は `!` を `！` に変換するため、後で処理すると「！」と生の URL が本文に残る（これが実際に起きていた不具合）。取得に失敗した画像はタグを出さずに読み飛ばす（壊れた `img src` を残さないため）
+- **NOVEL DAYS 本文の挿絵は `<img class="imgc">`**。`days_extract_images()` が `div.episode div.inner` 内の `<img>` を青空文庫の図タグへ置き換え、画像本体を `images` dict に貯めて `build_epub(images=...)` で ePub に埋め込む。`get_text()` の前（＝ `days_html_to_aozora` の冒頭）で呼ぶこと。`/shared/` 配下はサイト共通の UI アイコン（ロゴ・SNS ボタン）なので除外する。本文の src はファイル名に `thumb_` が付いたサムネイル（実測 800×533）で、**同じパスの接頭辞なし URL が原寸版**（1536×1024）なので原寸 → サムネイルの順で試す（`_days_img_candidates`）。images のキーは `thumb_` を外した名前に寄せ、同一画像の二重取得を防ぐ。取得に失敗した画像はタグを出さずに読み飛ばす
 - **エブリスタの第1話の画像は表紙とは限らない**。実測では作品によって「表紙そのもの」（26146379: 第1話の画像と公式表紙の平均画素差 0.628 ＝ 再エンコード差のみ）と「キャラ紹介の挿絵」（26486552: 第1話・第2話が別々のキャラ絵で、公式表紙は third の別画像）に分かれるため、**第1話の画像を表紙として扱ってはいけない**。表紙は `coverImageName` を使う
 - **表紙の地の色の決まり方**：`_resolve_cover_bg()`（`_SITE_DISPATCH` の直後）が **`--cover-bg` の明示指定 > `meta["theme_color"]`（作者が選んだイメージカラー）> サイト既定色 > `#16234b`** の順で決める。解決は `build_epub()` の冒頭で一括して行うので、**17個の `run_*` は `cover_bg=args.cover_bg` のままでよい**。そのため `main()` はサイト既定色を代入せず **None のまま通す**（代入すると「明示された色」と区別できなくなる）。サイト既定色は表示名から `_SITE_COLOR_BY_LABEL` で逆引きする
 - **`theme_color` を持つのはカクヨムのみ**（`baseColor`・作者が54色から選ぶ）。`_META_FIELDS` に入っているので `.txt` ヘッダー（`テーマカラー：#42B8C1`）と OPF（`nd:themeColor`）に残り、`--from-file` / `--append` で作り直しても色が維持される
@@ -351,7 +352,16 @@ scripts/release.sh 2.3.0 --no-release
 
 - **版数の単一ソースは `novel_downloader.py` の `__version__`**。実行時は `--version` で名乗れる（Android/Windows/コピー配布など git の無い環境でも有効）。`scripts/release.sh <X.Y.Z>` が `__version__` を書き換えて `release: vX.Y.Z` としてコミットし、その上にタグを打つ。**手で `__version__` を編集する必要はない**（それが唯一の書き手）。
 - **版数は一元管理**: Android の `versionName` は `__version__` と常に一致する。`app/build.gradle.kts` は `-PappVersion=X.Y.Z`（release スクリプトが渡す）→ 無ければ直下 `novel_downloader.py` の `__version__` を読む、の順で解決し、`versionCode = major*10000 + minor*100 + patch`（例 `2.3.0`→`20300`）。**build.gradle.kts の版数を手で書き換える必要はない**（minor/patch は各 <100 が前提）。
-- **APK 同梱スクリプト**: `app/build.gradle.kts` の `syncNovelDownloader` タスクがビルド時に直下の `novel_downloader.py` を `app/src/main/python/` へコピーするため、**本体の変更はリビルドだけで APK に反映**される（同梱コピーは `.gitignore` 済み）。署名は debug のまま（野良配布のみ）。
+- **APK 同梱スクリプト**: `app/build.gradle.kts` の `syncNovelDownloader` タスクがビルド時に直下の `novel_downloader.py` を `app/src/main/python/` へコピーするため、**本体の変更はリビルドだけで APK に反映**される（同梱コピーは `.gitignore` 済み）。
+- **署名鍵**: 配布 APK は `assembleRelease` でリリース鍵署名。**debug 鍵で配ってはいけない**（`~/.android/debug.keystore` はパスワードが公開値で誰でも同一の鍵を作れるため、Android Developer Console に登録する鍵として使えない）。鍵の情報はリポジトリに置かず、環境変数 `NOVEL_KEYSTORE` / `NOVEL_KEYSTORE_PASSWORD` / `NOVEL_KEY_ALIAS`（必要なら `NOVEL_KEY_PASSWORD`）か `~/.gradle/gradle.properties` の `novelStoreFile` / `novelStorePassword` / `novelKeyAlias` で渡す。未設定なら `build.gradle.kts` は release 用 signingConfig を作らず、`release.sh` は事前チェックで停止する。ビルド後は `apksigner verify --print-certs` で **debug 鍵（`CN=Android Debug`）でないこと**まで検証してから配布物にコピーする。
+  ```bash
+  keytool -genkeypair -v -keystore ~/keys/noveldownloader-release.jks \
+    -storetype PKCS12 -alias noveldownloader -keyalg RSA -keysize 4096 -validity 36500
+  # Developer Console 登録用の公開鍵証明書を書き出す（秘密鍵は渡さない）
+  keytool -exportcert -rfc -alias noveldownloader \
+    -keystore ~/keys/noveldownloader-release.jks -file noveldownloader-cert.pem
+  ```
+  **この keystore を失うと `com.ayati.noveldownloader` を二度と更新できない**（要バックアップ）。
 - **陳腐化ガード（B）**: `scripts/release.sh` はビルド後に `android/.apk_built_from`（`novel_downloader.py` の sha256・`.gitignore` 済み）を記録する。`scripts/install-hooks.sh` を一度実行して `pre-push` フックを入れておくと、`vX.Y.Z` タグ push 時に **(1) `__version__` とタグの不一致**、**(2) APK が古い（本体を変えたのに作り直していない）** を検知して警告する（いずれもブロックはしない）。
 - 配布 APK（`android/noveldownloader_vX.Y.Z.apk`）は `.gitignore` 済み。GitHub Release のアセットとして配る。
 

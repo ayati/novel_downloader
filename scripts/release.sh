@@ -50,7 +50,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 [ -f novel_downloader.py ] || die "リポジトリルートに novel_downloader.py がありません（$ROOT）"
 [ -d android ] || die "android/ がありません"
-APK_OUT="android/app/build/outputs/apk/debug/app-debug.apk"
+APK_OUT="android/app/build/outputs/apk/release/app-release.apk"
 APK_DIST="android/noveldownloader_${TAG}.apk"
 STAMP="android/.apk_built_from"
 
@@ -61,6 +61,20 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   die "tracked な未コミット変更があります。コミットしてから実行してください（未追跡ファイルは無視されます）"
 fi
 command -v gh >/dev/null || die "gh（GitHub CLI）が必要です"
+
+# ---- 署名鍵の事前チェック ----
+# Android Developer Console に登録した鍵で署名されていない APK を配布しないための門番。
+# 鍵は環境変数か ~/.gradle/gradle.properties で渡す（リポジトリには置かない）。
+have_key=0
+if [ -n "${NOVEL_KEYSTORE:-}" ]; then
+  have_key=1
+elif grep -qs '^[[:space:]]*novelStoreFile[[:space:]]*=' "$HOME/.gradle/gradle.properties"; then
+  have_key=1
+fi
+[ "$have_key" = 1 ] || die "リリース署名鍵が未設定です。
+  環境変数 NOVEL_KEYSTORE / NOVEL_KEYSTORE_PASSWORD / NOVEL_KEY_ALIAS （必要なら NOVEL_KEY_PASSWORD）
+  または ~/.gradle/gradle.properties の novelStoreFile / novelStorePassword / novelKeyAlias を設定してください。
+  鍵の作り方は CLAUDE.md「リリース手順」の署名鍵の節を参照。"
 
 # ---- 実行内容の提示と確認 ----
 echo "──────────────────────────────────────────" >&2
@@ -115,8 +129,26 @@ fi
 
 # ---- 2) APK ビルド ----
 info "APK をビルド（-PappVersion=$VER）"
-( cd android && ./gradlew assembleDebug -PappVersion="$VER" --console=plain )
+( cd android && ./gradlew assembleRelease -PappVersion="$VER" --console=plain )
 [ -f "$APK_OUT" ] || die "APK が生成されませんでした: $APK_OUT"
+
+# ---- 2b) 署名の検証 ----
+# 「署名済みか」だけでなく「debug 鍵で署名されていないか」まで見る。
+# debug 鍵はパスワードが公開値で誰でも同一の鍵を作れるため、配布物の署名には使えない。
+SDK_DIR="$(sed -n 's/^sdk\.dir=//p' android/local.properties 2>/dev/null | head -1)"
+APKSIGNER="$(ls -1 "${SDK_DIR:-$HOME/Android/Sdk}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)"
+if [ -n "$APKSIGNER" ]; then
+  CERTS="$("$APKSIGNER" verify --print-certs "$APK_OUT" 2>&1)" \
+    || die "APK の署名検証に失敗しました:
+$CERTS"
+  if grep -q "CN=Android Debug" <<<"$CERTS"; then
+    die "APK が debug 鍵で署名されています。リリース鍵の設定を確認してください（配布中止）"
+  fi
+  info "署名 OK: $(grep -m1 -o 'SHA-256 digest: [0-9a-f]*' <<<"$CERTS" || echo '(指紋の抽出に失敗)')"
+else
+  info "⚠ apksigner が見つからず署名検証をスキップしました（$SDK_DIR/build-tools）"
+fi
+
 cp -f "$APK_OUT" "$APK_DIST"
 info "APK: $APK_DIST ($(du -h "$APK_DIST" | cut -f1))"
 

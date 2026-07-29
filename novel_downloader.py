@@ -7435,8 +7435,68 @@ def days_get_episode_list(soup) -> list:
     return episodes
 
 
-def days_html_to_aozora(body_div) -> str:
-    """div.episode div.inner の内容を青空文庫書式テキストに変換する。"""
+# NOVEL DAYS の本文中の挿絵は <img class="imgc"> として直接置かれている。
+# /shared/ 配下はサイト共通の UI アイコン（ロゴ・SNS ボタン等）なので除外する。
+_DAYS_IMG_SKIP_RE = re.compile(r"/shared/", re.I)
+
+
+def _days_img_candidates(url: str) -> list:
+    """挿絵 URL から取得候補を [原寸, サムネイル] の順で返す。
+
+    本文に埋め込まれているのはファイル名に "thumb_" が付いたサムネイル
+    （実測 800x533）で、同じパスに接頭辞なしの原寸版（1536x1024）が置かれている。
+    """
+    base, _, name = url.rpartition("/")
+    if name.startswith("thumb_") and base:
+        return [f"{base}/{name[len('thumb_'):]}", url]
+    return [url]
+
+
+def days_extract_images(body_div, session, images: dict, delay: float = 1.5) -> None:
+    """本文中の <img> を青空文庫の図タグに置き換え、画像を images に貯める。
+
+    body_div を破壊的に書き換える（get_text() の前に呼ぶこと）。
+    取得に失敗した画像はタグを出さずに取り除く
+    （壊れた img src を ePub に残さないため）。
+    """
+    for img in body_div.find_all("img"):
+        src = (img.get("src") or "").strip()
+        if not src or _DAYS_IMG_SKIP_RE.search(src):
+            img.decompose()
+            continue
+        url = urljoin(_DAYS_BASE + "/", src)
+        # サムネイルと原寸で同じ名前に寄せ、同一画像の二重取得を防ぐ
+        stem = os.path.basename(urlparse(url).path)
+        if stem.startswith("thumb_"):
+            stem = stem[len("thumb_"):]
+        name = safe_filename(stem, "image")
+        if not os.path.splitext(name)[1]:
+            name += ".png"
+
+        if name not in images:
+            data = b""
+            for cand in _days_img_candidates(url):
+                data, _ct = _fetch_cover_bytes(cand, _DAYS_BASE + "/")
+                if data:
+                    break
+            if not data:
+                print(f"    [警告] 挿絵の取得に失敗しました: {url}")
+                img.decompose()
+                continue
+            images[name] = data
+            _sleep(delay)
+        img.replace_with(f"\n［＃「挿絵」の図（{name}）入る］\n")
+
+
+def days_html_to_aozora(body_div, session=None, images: dict = None,
+                        delay: float = 1.5) -> str:
+    """div.episode div.inner の内容を青空文庫書式テキストに変換する。
+
+    images に dict を渡すと本文中の挿絵を取得して図タグへ変換する。
+    """
+    if images is not None:
+        days_extract_images(body_div, session, images, delay)
+
     # ルビ変換: <ruby><rb>漢字</rb><rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby> → 漢字《かんじ》
     for ruby in body_div.find_all("ruby"):
         rb = ruby.find("rb")
@@ -7478,11 +7538,12 @@ def days_html_to_aozora(body_div) -> str:
     return "\n".join(out_lines)
 
 
-def days_get_episode_body(soup) -> str:
+def days_get_episode_body(soup, session=None, images: dict = None,
+                          delay: float = 1.5) -> str:
     """エピソードページから本文を青空文庫書式で返す。"""
     body_div = soup.select_one("div.episode div.inner")
     if body_div:
-        return days_html_to_aozora(body_div)
+        return days_html_to_aozora(body_div, session, images, delay)
     return "（本文取得失敗）"
 
 
@@ -7550,13 +7611,14 @@ def run_days(args):
     print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
     got_eps       = 0
+    days_images   = {}
 
     for ep_i, ep in enumerate(target_eps, 1):
         print(f"  [{ep_i:3d}/{len(target_eps)}] {ep['title']}")
         _progress(ep_i, len(target_eps), f"{ep['title']}")
         try:
             ep_soup, _ = days_fetch(session, ep["url"])
-            body = days_get_episode_body(ep_soup)
+            body = days_get_episode_body(ep_soup, session, days_images, args.delay)
         except RuntimeError as e:
             print(f"    [エラー] {e}")
             body = "（取得失敗）"
@@ -7586,6 +7648,7 @@ def run_days(args):
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "NOVEL DAYS", epub_episodes,
+                   images=days_images or None,
                    cover_bg=args.cover_bg, meta=info,
                    cover_image_path=getattr(args, "cover_image", None) or "",
                    font_path=getattr(args, "font", "") or "",
