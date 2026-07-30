@@ -186,7 +186,8 @@ python novel_downloader.py --from-file mynovel.txt
    | NOVEL DAYS | `dl.dl03` の見出し／値 |
    | ノベルアップ＋ | `table.storyMeta` |
    | 青空文庫 | 図書カードの表（読み・NDC・文字遣い・底本・入力者/校正者） |
-   | ソリスピア / ステキブンゲイ / ハーメルン | タグ・完結表示のみ（バッジが JS 後付けのため限定的） |
+   | ハーメルン | `div#maind` 直下の最初の `div.ss`（タグ）＋ `section.episode-list` の `<time>`（公開日＝最小値・更新日＝最大値）。**一覧の並びは投稿順とは限らない**ので先頭／末尾ではなく min/max を採る |
+   | ソリスピア / ステキブンゲイ | タグ・完結表示のみ（バッジが JS 後付けのため限定的） |
 
    - **必ず作品本体のコンテナに限定すること。** 推薦カードが並ぶサイトでページ全体を検索すると別作品の値を拾う（実測: アルファポリスは `文字数` がページ内9回・`c-attribute-tag` が57回、berry's は `.genre_name` が60件以上、エブリスタは `-finished` が11回）
    - **ジャンルを決め打ちしない。** 杉田玄白・結城浩は文学の翻訳も論考も含むため固定すると誤分類になる（『鏡の国のアリス』が「評論」になる）。ソリスピアの `.genre`（「ライトノベル」）は媒体区分なので内容ジャンルに使わない
@@ -291,6 +292,8 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
   - カクヨムは本文への画像挿入機能自体がない（近況ノートのみ）
 - **NOVEL DAYS 本文の挿絵は `<img class="imgc">`**。`days_extract_images()` が `div.episode div.inner` 内の `<img>` を青空文庫の図タグへ置き換え、画像本体を `images` dict に貯めて `build_epub(images=...)` で ePub に埋め込む。`get_text()` の前（＝ `days_html_to_aozora` の冒頭）で呼ぶこと。`/shared/` 配下はサイト共通の UI アイコン（ロゴ・SNS ボタン）なので除外する。本文の src はファイル名に `thumb_` が付いたサムネイル（実測 800×533）で、**同じパスの接頭辞なし URL が原寸版**（1536×1024）なので原寸 → サムネイルの順で試す（`_days_img_candidates`）。images のキーは `thumb_` を外した名前に寄せ、同一画像の二重取得を防ぐ。取得に失敗した画像はタグを出さずに読み飛ばす
 - **エブリスタの第1話の画像は表紙とは限らない**。実測では作品によって「表紙そのもの」（26146379: 第1話の画像と公式表紙の平均画素差 0.628 ＝ 再エンコード差のみ）と「キャラ紹介の挿絵」（26486552: 第1話・第2話が別々のキャラ絵で、公式表紙は third の別画像）に分かれるため、**第1話の画像を表紙として扱ってはいけない**。表紙は `coverImageName` を使う
+- **ハーメルンの話一覧は `<section class="episode-list">` の `<ul>`/`<li>`**（旧レイアウトの `<table>` ＋ `<span id="話数">` は 2026 年のサイト刷新で消滅した）。`_hameln_episode_list_ul()` が現行レイアウトを読み、`hameln_get_episode_list()` は結果が空のときだけ旧 `<table>` パスへ落ちる。話番号は `<span id>` が無くなったので href の `./N.html` から取る。**話タイトルは `span.episode-list__title` に限定すること** — `<a>` 全体を `get_text()` すると投稿日時と「(改)」まで混ざる。章見出しは `li.episode-list__chapter` の `div.episode-list__chapter-title`
+- **ハーメルンのエピソードページの見出し span（`style="font-size:120%"`）は「章名 `<br>` 話タイトル」**。そのまま `get_text(strip=True)` すると「酒蔵の馬第１話」のように章名が話タイトルへ食い込むので、`<br>` で分割して一覧側の章名（`ep_chapter`）と一致する先頭行を落とす。本文コンテナ（`div#honbun` / `div#maegaki` / `div#atogaki`）は刷新後も変わっていない
 - **表紙の地の色の決まり方**：`_resolve_cover_bg()`（`_SITE_DISPATCH` の直後）が **`--cover-bg` の明示指定 > `meta["theme_color"]`（作者が選んだイメージカラー）> サイト既定色 > `#16234b`** の順で決める。解決は `build_epub()` の冒頭で一括して行うので、**17個の `run_*` は `cover_bg=args.cover_bg` のままでよい**。そのため `main()` はサイト既定色を代入せず **None のまま通す**（代入すると「明示された色」と区別できなくなる）。サイト既定色は表示名から `_SITE_COLOR_BY_LABEL` で逆引きする
 - **`theme_color` を持つのはカクヨムのみ**（`baseColor`・作者が54色から選ぶ）。`_META_FIELDS` に入っているので `.txt` ヘッダー（`テーマカラー：#42B8C1`）と OPF（`nd:themeColor`）に残り、`--from-file` / `--append` で作り直しても色が維持される
 - **明度クランプ**：`_clamp_cover_bg()` が HSV の V だけを `[0.12, 0.46]` に収める（色相・彩度は変えない＝作者の色味を保つ）。相対輝度は G 成分の寄与が 0.7152 と支配的で、**緑〜黄緑〜水色系は V を落としても輝度が下がらない**ため上限は実測で決めた。この処理により全17サイトの既定色＋カクヨム代表色の計24色すべてで地の文字が WCAG AA(4.5) を満たす

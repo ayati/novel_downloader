@@ -3976,13 +3976,49 @@ def _suteki_meta_from_page(soup) -> dict:
 
 
 def _hameln_meta_from_page(soup) -> dict:
-    """ハーメルンのメタデータ。作品はほぼすべて二次創作なのでジャンルを固定する。"""
+    """ハーメルンのメタデータ。作品はほぼすべて二次創作なのでジャンルを固定する。
+
+    公開日・更新日は話一覧の <time> から拾う（サイト刷新で「掲載日：」「最終更新日：」
+    のラベル行が無くなったため）。**一覧の並びは投稿順とは限らない**ので
+    最小値を公開日・最大値を更新日とする。
+    """
     meta: dict = {"site": "ハーメルン", "genre": "fanfic", "genre_raw": "二次創作"}
-    text = soup.get_text("\n")
-    for key, label in (("published", "掲載日"), ("updated", "最終更新日")):
-        v = _iso_date(_labeled_value(text, label))
-        if v:
-            meta[key] = v
+
+    # タグ（作品自身の情報ブロックに限定する。ページ下部には別作品の紹介が並ぶ）
+    maind = soup.find("div", id="maind")
+    info_ss = maind.find("div", class_="ss") if maind else None
+    if info_ss:
+        tags, seen = [], set()
+        for a in info_ss.find_all("a", href=True):
+            if "mode=search" not in a["href"]:
+                continue
+            # 「原作：〜」は二次創作の原典なのでタグとは別物として除く
+            if a.find_parent(attrs={"itemprop": "genre"}):
+                continue
+            t = a.get_text(strip=True)
+            if t and t not in seen:
+                seen.add(t)
+                tags.append(t)
+        if tags:
+            meta["tags"] = tags[:10]
+
+    sec = soup.find("section", class_="episode-list")
+    dates = []
+    for t in (sec.find_all("time") if sec else []):
+        d = _iso_date(t.get("datetime") or t.get_text(strip=True))
+        if d:
+            dates.append(d)
+    if dates:
+        meta["published"] = min(dates)
+        meta["updated"]   = max(dates)
+
+    # 旧レイアウト（ラベル行）へのフォールバック
+    if "published" not in meta:
+        text = soup.get_text("\n")
+        for key, label in (("published", "掲載日"), ("updated", "最終更新日")):
+            v = _iso_date(_labeled_value(text, label))
+            if v:
+                meta[key] = v
     return meta
 
 
@@ -5267,9 +5303,50 @@ def hameln_get_work_info(soup) -> dict:
     return info
 
 
-def hameln_get_episode_list(soup) -> list:
-    """トップページからエピソード一覧を [(ep_num, href, title, chapter), ...] で返す。"""
+def _hameln_episode_list_ul(soup) -> list:
+    """現行レイアウト（<ul class="episode-list__items">）から話一覧を取る。
+
+    話番号は href の `./N.html` から取る（旧レイアウトの `<span id="話数">` が
+    無くなったため）。話タイトルは `span.episode-list__title` に限定すること
+    — <a> 全体を get_text すると投稿日時と「(改)」まで混ざる。
+    """
+    sec = soup.find("section", class_="episode-list")
+    if not sec:
+        return []
+
     episodes = []
+    current_chapter = ""
+    for li in sec.find_all("li"):
+        classes = li.get("class") or []
+        if "episode-list__chapter" in classes:
+            ct = li.find("div", class_="episode-list__chapter-title")
+            chapter_text = (ct or li).get_text(strip=True)
+            if chapter_text:
+                current_chapter = chapter_text
+            continue
+
+        a = li.find("a", class_="episode-list__link", href=True) or li.find("a", href=True)
+        if not a:
+            continue
+        m = re.search(r'(\d+)\.html', a["href"])
+        if not m:
+            continue
+        title_el = a.find("span", class_="episode-list__title")
+        title    = (title_el.get_text(strip=True) if title_el else "").strip()
+        episodes.append((int(m.group(1)), a["href"], title, current_chapter))
+    return episodes
+
+
+def hameln_get_episode_list(soup) -> list:
+    """トップページからエピソード一覧を [(ep_num, href, title, chapter), ...] で返す。
+
+    現行レイアウトは <section class="episode-list"> 内の <ul>/<li>。
+    旧レイアウト（<table> ＋ <span id="話数">）も残しておく。
+    """
+    episodes = _hameln_episode_list_ul(soup)
+    if episodes:
+        return episodes
+
     current_chapter = ""
     table = soup.find("table")
     if not table:
@@ -5432,13 +5509,21 @@ def run_hameln(args):
                 ep_soup = BeautifulSoup(ep_html, "html.parser")
 
                 # エピソードタイトル（ページ内のspan[style*=120%]から取得）
+                # この span は章のある作品では「章名<br>話タイトル」なので、
+                # <br> で分割して章名の行を落とす（そのまま get_text すると
+                # 「酒蔵の馬第１話」のように章名が話タイトルに食い込む）
                 ss = ep_soup.find("div", class_="ss")
                 if ss:
                     for child in ss.children:
                         if (hasattr(child, "name") and child.name == "span"
                                 and "120%" in child.get("style", "")
                                 and child.get("id") != "analytics_start"):
-                            candidate = child.get_text(strip=True)
+                            for br in child.find_all("br"):
+                                br.replace_with("\n")
+                            lines = [l.strip() for l in child.get_text().split("\n") if l.strip()]
+                            if ep_chapter and lines and lines[0] == ep_chapter:
+                                lines = lines[1:]
+                            candidate = "　".join(lines)
                             if candidate:
                                 ep_title = candidate
                                 break
