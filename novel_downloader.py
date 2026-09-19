@@ -479,6 +479,25 @@ def _print_epub_done(epub_path) -> None:
     print(f"✅ ePub出力完了: {epub_path}")
 
 
+def _field_width(s: str) -> int:
+    """表示幅を返す（全角=2 / 半角=1）。桁揃えに使う。"""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+
+
+def _print_field(label: str, value: str, *, indent: int = 0, width: int = 8,
+                 blank_before: bool = False, blank_after: bool = False) -> None:
+    """「ラベル: 値」の 1 行を、表示幅で桁を揃えて出力する。
+
+    詰めを手書きすると同じブロックでも揃わなくなる（実測でラベル+空白の
+    組み合わせが 26 種類あった）。width には同じブロックに並ぶラベルの最大
+    表示幅を渡し、全角を 2 として数えて右側を埋める。
+    """
+    pad = " " * max(0, width - _field_width(label))
+    print(("\n" if blank_before else "") + " " * indent + label + pad + ": " + value
+          + ("\n" if blank_after else ""))
+
+
+
 
 # ══════════════════════════════════════════
 #  共通：青空文庫書式ユーティリティ
@@ -1078,9 +1097,9 @@ def _show_episode_list(title: str, author: str, ep_titles: list[str]) -> None:
         raise _CheckUpdateDone(title, author, ep_titles)
     total = len(ep_titles)
     width = len(str(total))
-    print(f"\nタイトル : {title}")
-    print(f"著者     : {author}")
-    print(f"話数     : {total} 話\n")
+    _print_field("タイトル", f"{title}", width=8, blank_before=True)
+    _print_field("著者", f"{author}", width=8)
+    _print_field("話数", f"{total} 話", width=8, blank_after=True)
     for i, t in enumerate(ep_titles, 1):
         print(f"  {i:{width}}. {t}")
     sys.exit(0)
@@ -3786,9 +3805,9 @@ def run_narou(args):
         print(T("エラー: 話が見つかりません。URLを確認してください。"))
         sys.exit(1)
 
-    print(f"\n  タイトル : {title}")
-    print(f"  作者     : {author}")
-    print(f"  総話数   : {len(episodes)} 話")
+    _print_field("タイトル", f"{title}", indent=2, width=8, blank_before=True)
+    _print_field("作者", f"{author}", indent=2, width=8)
+    _print_field("総話数", f"{len(episodes)} 話", indent=2, width=8)
 
     base     = _apply_output_dir(args, args.output or safe_filename(title, "narou_novel"))
     txt_path = base + ".txt"
@@ -3914,8 +3933,8 @@ def run_narou(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   総話数   : {len(sections)} 話")
-    print(f"   総文字数 : {full_len:,} 文字")
+    _print_field("総話数", f"{len(sections)} 話", indent=3, width=8)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -4663,9 +4682,9 @@ def run_kakuyomu(args):
 
     info = kky_get_work_info(top_soup, next_data, work_url)
     if info["title"]:
-        print(f"      タイトル: {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者    : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     print("[2/3] エピソード一覧を取得中...")
     episode_list = kky_get_episode_urls(next_data, work_url)
@@ -4745,8 +4764,8 @@ def run_kakuyomu(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得話数 : {len(episodes_data)} 話")
-    print(f"   総文字数 : {full_len:,} 文字")
+    _print_field("取得話数", f"{len(episodes_data)} 話", indent=3, width=8)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -5112,9 +5131,9 @@ def run_alphapolis(args):
     top_soup = alp_fetch(session, work_url)
     info     = alp_get_work_info(top_soup)
     if info["title"]:
-        print(f"      タイトル: {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者    : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     print("[2/3] エピソード一覧を取得中...")
     episode_list = alp_get_episode_list(top_soup)
@@ -5178,8 +5197,8 @@ def run_alphapolis(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得話数 : {len(episodes_data)} 話")
-    print(f"   総文字数 : {full_len:,} 文字")
+    _print_field("取得話数", f"{len(episodes_data)} 話", indent=3, width=8)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -5417,15 +5436,15 @@ def run_estar(args):
     top_soup, top_html = est_fetch(session, work_url)
     info = est_get_work_info(top_soup, top_html, work_id)
     if info["title"]:
-        print(f"      タイトル  : {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者      : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     total_pages = info["page_count"]
     if not total_pages:
         print(T("エラー: 総ページ数を取得できませんでした。"))
         sys.exit(1)
-    print(f"      総ページ数: {total_pages}")
+    _print_field("総ページ数", f"{total_pages}", indent=6, width=10)
     _dry_run_exit(args)
 
     start_page   = max(1, args.start or 1)
@@ -5532,7 +5551,7 @@ def run_estar(args):
                 + len(colophon))
     _print_text_done(txt_path)
     print(f"   取得ページ数: {got} / {len(target_pages)}")
-    print(f"   総文字数   : {full_len:,} 文字")
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -5727,16 +5746,16 @@ def run_hameln(args):
 
     info = hameln_get_work_info(top_soup)
     if info["title"]:
-        print(f"      タイトル    : {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者        : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     all_eps = hameln_get_episode_list(top_soup)
     if not all_eps:
         print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(all_eps)
-    print(f"      エピソード数: {total_eps}")
+    _print_field("エピソード数", f"{total_eps}", indent=6, width=12)
 
     start_ep = max(1, args.start or 1)
     end_ep   = min(total_eps, args.end or total_eps)
@@ -5849,8 +5868,8 @@ def run_hameln(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得エピソード: {got} / {len(target)}")
-    print(f"   総文字数      : {full_len:,} 文字")
+    _print_field("取得エピソード", f"{got} / {len(target)}", indent=3, width=14)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=14)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -6085,11 +6104,11 @@ def run_neopage(args):
     if not info["title"]:
         print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
-    print(f"      タイトル    : {info['title']}")
+    _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者        : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
     if info["total_chapter"]:
-        print(f"      総話数      : {info['total_chapter']}")
+        _print_field("総話数", f"{info['total_chapter']}", indent=6, width=8)
 
     if not info["first_chapter_id"]:
         print(T("エラー: 第1話のIDを取得できませんでした。"))
@@ -6179,8 +6198,8 @@ def run_neopage(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得話数  : {got} / {len(target)}")
-    print(f"   総文字数  : {full_len:,} 文字")
+    _print_field("取得話数", f"{got} / {len(target)}", indent=3, width=8)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -6385,7 +6404,7 @@ def run_solispia(args):
             title_a  = ep_soup.find("a", href=lambda h: h and re.search(r"/title/\d+$", h))
             if title_a:
                 work_url = title_a["href"].split("?")[0].rstrip("/")
-                print(f"       作品トップ: {work_url}")
+                _print_field("作品トップ", f"{work_url}", indent=7, width=10)
             else:
                 print(T("  [警告] 作品トップページへのリンクを検出できませんでした。"))
         except RuntimeError as e:
@@ -6403,16 +6422,16 @@ def run_solispia(args):
     if not info["title"]:
         print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
-    print(f"      タイトル    : {info['title']}")
+    _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者        : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     all_eps = solispia_get_episode_list(top_soup)
     if not all_eps:
         print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(all_eps)
-    print(f"      エピソード数: {total_eps}")
+    _print_field("エピソード数", f"{total_eps}", indent=6, width=12)
 
     start_ep = max(1, getattr(args, "start", None) or 1)
     end_ep   = min(total_eps, getattr(args, "end", None) or total_eps)
@@ -6465,8 +6484,8 @@ def run_solispia(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得話数  : {got} / {len(target)}")
-    print(f"   総文字数  : {full_len:,} 文字")
+    _print_field("取得話数", f"{got} / {len(target)}", indent=3, width=8)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -6639,16 +6658,16 @@ def run_noichigo(args):
     top_soup, _ = noichigo_fetch(session, work_url)
     info = noichigo_get_work_info(top_soup)
     if info["title"]:
-        print(f"      タイトル    : {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者        : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     chapters = noichigo_get_chapter_list(top_soup)
     if not chapters:
         print(T("エラー: チャプター一覧を取得できませんでした。"))
         sys.exit(1)
     total_chapters = len(chapters)
-    print(f"      チャプター数: {total_chapters}")
+    _print_field("チャプター数", f"{total_chapters}", indent=6, width=12)
 
     # 1ページ目から総ページ数を取得
     _sleep(args.delay)
@@ -6664,7 +6683,7 @@ def run_noichigo(args):
                 if m:
                     total_pages = int(m.group(1))
     if total_pages:
-        print(f"      総ページ数  : {total_pages}")
+        _print_field("総ページ数", f"{total_pages}", indent=6, width=10)
 
     # チャプター範囲を構築 [(page_start, page_end, title, group_name), ...]
     chapter_ranges = []
@@ -6743,7 +6762,7 @@ def run_noichigo(args):
                 + len(colophon))
     _print_text_done(txt_path)
     print(f"   取得チャプター: {got_chapters} / {len(target_chapters)}")
-    print(f"   総文字数      : {full_len:,} 文字")
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -6847,9 +6866,9 @@ def run_berrys(args):
     if not info["title"]:
         print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
-    print(f"      タイトル    : {info['title']}")
+    _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者        : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     # チャプター一覧（野いちごと同構造: div.bookChapterList）
     chapters = noichigo_get_chapter_list(top_soup)
@@ -6857,11 +6876,11 @@ def run_berrys(args):
         print(T("エラー: チャプター一覧を取得できませんでした。"))
         sys.exit(1)
     total_chapters = len(chapters)
-    print(f"      チャプター数: {total_chapters}")
+    _print_field("チャプター数", f"{total_chapters}", indent=6, width=12)
 
     total_pages = info["total_pages"]
     if total_pages:
-        print(f"      総ページ数  : {total_pages}")
+        _print_field("総ページ数", f"{total_pages}", indent=6, width=12)
     else:
         # フォールバック: 1ページ目の og:title "(1/N)" から取得
         _sleep(args.delay)
@@ -6872,7 +6891,7 @@ def run_berrys(args):
             if m:
                 total_pages = int(m.group(2))
         if total_pages:
-            print(f"      総ページ数  : {total_pages}")
+            _print_field("総ページ数", f"{total_pages}", indent=6, width=10)
 
     # チャプター範囲を構築 [(page_start, page_end, title, group_name), ...]
     chapter_ranges = []
@@ -6944,7 +6963,7 @@ def run_berrys(args):
                 + len(colophon))
     _print_text_done(txt_path)
     print(f"   取得チャプター: {got_chapters} / {len(target_chapters)}")
-    print(f"   総文字数      : {full_len:,} 文字")
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -7076,9 +7095,9 @@ def run_monogatary(args):
         print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
 
-    print(f"      タイトル    : {story_title}")
+    _print_field("タイトル", f"{story_title}", indent=6, width=8)
     if author:
-        print(f"      著者        : {author}")
+        _print_field("著者", f"{author}", indent=6, width=8)
 
     # あらすじ: ストーリーページ og:description から取得（React SPA のため regex でパース）
     synopsis  = ""
@@ -7099,7 +7118,7 @@ def run_monogatary(args):
         pass
 
     total_episodes = len(episodes_list)
-    print(f"      エピソード数: {total_episodes}")
+    _print_field("エピソード数", f"{total_episodes}", indent=6, width=12)
 
     meta = _mono_meta_from_story(story_data, total_episodes)
 
@@ -7159,8 +7178,8 @@ def run_monogatary(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得エピソード: {got} / {len(target)}")
-    print(f"   総文字数      : {full_len:,} 文字")
+    _print_field("取得エピソード", f"{got} / {len(target)}", indent=3, width=14)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=14)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -7312,16 +7331,16 @@ def run_novema(args):
     top_soup, _ = novema_fetch(session, work_url)
     info = novema_get_work_info(top_soup)
     if info["title"]:
-        print(f"      タイトル    : {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者        : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     episodes = novema_get_episode_list(top_soup)
     if not episodes:
         print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(episodes)
-    print(f"      エピソード数: {total_eps}")
+    _print_field("エピソード数", f"{total_eps}", indent=6, width=12)
 
     # 1エピソードは複数ページに分割されているため総ページ数が必要。
     # 作品ページの「ページ数」で取れなければ先頭ページの「N / M」から拾う。
@@ -7338,7 +7357,7 @@ def run_novema(args):
             if m:
                 total_pages = int(m.group(1))
     if total_pages:
-        print(f"      総ページ数  : {total_pages}")
+        _print_field("総ページ数", f"{total_pages}", indent=6, width=10)
 
     # エピソード範囲を構築 [(page_start, page_end, title, chapter_name), ...]
     ep_ranges = []
@@ -7414,8 +7433,8 @@ def run_novema(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
-    print(f"   総文字数      : {full_len:,} 文字")
+    _print_field("取得エピソード", f"{got_eps} / {len(target_eps)}", indent=3, width=14)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=14)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -7603,16 +7622,16 @@ def run_novelup(args):
     top_soup, _ = novelup_fetch(session, work_url)
     info = novelup_get_work_info(top_soup)
     if info["title"]:
-        print(f"      タイトル    : {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者        : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     episodes = novelup_get_episode_list(top_soup)
     if not episodes:
         print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(episodes)
-    print(f"      エピソード数: {total_eps}")
+    _print_field("エピソード数", f"{total_eps}", indent=6, width=12)
 
     start_ep = max(1, args.start or 1)
     end_ep   = min(total_eps, args.end or total_eps)
@@ -7667,8 +7686,8 @@ def run_novelup(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
-    print(f"   総文字数      : {full_len:,} 文字")
+    _print_field("取得エピソード", f"{got_eps} / {len(target_eps)}", indent=3, width=14)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=14)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -7829,16 +7848,16 @@ def run_sutekibungei(args):
     top_soup, _ = suteki_fetch(session, work_url)
     info = suteki_get_work_info(top_soup)
     if info["title"]:
-        print(f"      タイトル    : {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者        : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     episodes = suteki_get_episode_list(top_soup)
     if not episodes:
         print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(episodes)
-    print(f"      エピソード数: {total_eps}")
+    _print_field("エピソード数", f"{total_eps}", indent=6, width=12)
 
     start_ep   = max(1, args.start or 1)
     end_ep     = min(total_eps, args.end or total_eps)
@@ -7889,8 +7908,8 @@ def run_sutekibungei(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
-    print(f"   総文字数      : {full_len:,} 文字")
+    _print_field("取得エピソード", f"{got_eps} / {len(target_eps)}", indent=3, width=14)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=14)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -8126,7 +8145,7 @@ def run_days(args):
         if work_link:
             href = work_link.get("href", "")
             work_url = (_DAYS_BASE + href) if href.startswith("/") else href
-            print(f"       作品トップ: {work_url}")
+            _print_field("作品トップ", f"{work_url}", indent=7, width=10)
         else:
             print(T("エラー: 作品トップページへのリンクが見つかりません。作品URLを直接指定してください。"))
             sys.exit(1)
@@ -8139,16 +8158,16 @@ def run_days(args):
     top_soup, _ = days_fetch(session, work_url)
     info = days_get_work_info(top_soup)
     if info["title"]:
-        print(f"      タイトル    : {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者        : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     episodes = days_get_episode_list(top_soup)
     if not episodes:
         print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(episodes)
-    print(f"      エピソード数: {total_eps}")
+    _print_field("エピソード数", f"{total_eps}", indent=6, width=12)
 
     start_ep   = max(1, args.start or 1)
     end_ep     = min(total_eps, args.end or total_eps)
@@ -8200,8 +8219,8 @@ def run_days(args):
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
     _print_text_done(txt_path)
-    print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
-    print(f"   総文字数      : {full_len:,} 文字")
+    _print_field("取得エピソード", f"{got_eps} / {len(target_eps)}", indent=3, width=14)
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=14)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -8448,10 +8467,10 @@ def run_genpaku(args):
         print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
 
-    print(f"      タイトル: {info['title']}")
-    print(f"      著者    : {info['author']}")
+    _print_field("タイトル", f"{info['title']}", indent=6, width=8)
+    _print_field("著者", f"{info['author']}", indent=6, width=8)
     if info["description"]:
-        print(f"      原題    : {info['description']}")
+        _print_field("原題", f"{info['description']}", indent=6, width=8)
 
     print("[2/3] 本文を解析中...")
     episodes = genpaku_extract_chapters(soup, info["title"])
@@ -8488,7 +8507,7 @@ def run_genpaku(args):
                 + len(colophon))
     _print_text_done(txt_path)
     print(f"   章数        : {len(episodes)}")
-    print(f"   総文字数    : {full_len:,} 文字")
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -8789,8 +8808,8 @@ def run_hyuki(args):
         print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
 
-    print(f"      タイトル: {info['title']}")
-    print(f"      著者    : {info['author']}")
+    _print_field("タイトル", f"{info['title']}", indent=6, width=8)
+    _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     print("[2/3] 本文を解析中...")
     episodes = hyuki_extract_episodes(soup, info["title"])
@@ -8827,7 +8846,7 @@ def run_hyuki(args):
                 + len(colophon))
     _print_text_done(txt_path)
     print(f"   章数        : {len(episodes)}")
-    print(f"   総文字数    : {full_len:,} 文字")
+    _print_field("総文字数", f"{full_len:,} 文字", indent=3, width=8)
 
     if not getattr(args, "no_epub", False):
         _print_epub_start()
@@ -9391,9 +9410,9 @@ def run_aozora(args):
 
     info = aozora_get_work_info(card_html)
     if info["title"]:
-        print(f"      タイトル: {info['title']}")
+        _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     if info["author"]:
-        print(f"      著者    : {info['author']}")
+        _print_field("著者", f"{info['author']}", indent=6, width=8)
 
     zip_url = aozora_find_zip_url(card_html, work_url)
     if not zip_url:
@@ -9607,9 +9626,9 @@ def run_from_file(args):
         print(T("エラー: テキストファイルから本文を抽出できませんでした。"))
         sys.exit(1)
 
-    print(f"  タイトル : {title}")
-    print(f"  作者     : {author}")
-    print(f"  話数     : {len(episodes)} 話")
+    _print_field("タイトル", f"{title}", indent=2, width=8)
+    _print_field("作者", f"{author}", indent=2, width=8)
+    _print_field("話数", f"{len(episodes)} 話", indent=2, width=8)
 
     base      = _apply_output_dir(args, args.output or safe_filename(title, "novel"))
     epub_path = base + _epub_ext(args)
@@ -10168,9 +10187,9 @@ def run_from_epub(args):
         print(T("エラー: ePub3 ファイルから本文を抽出できませんでした。"))
         sys.exit(1)
 
-    print(f"  タイトル : {title}")
-    print(f"  作者     : {author}")
-    print(f"  話数     : {len(episodes)} 話")
+    _print_field("タイトル", f"{title}", indent=2, width=8)
+    _print_field("作者", f"{author}", indent=2, width=8)
+    _print_field("話数", f"{len(episodes)} 話", indent=2, width=8)
 
     base     = _apply_output_dir(args, args.output or safe_filename(title, "novel"))
     txt_path = base + ".txt"
@@ -12029,8 +12048,8 @@ def _main(argv=None):
             n_total    = len(_cu.ep_titles)
             n_new      = n_total - _cu_n_existing
             new_titles = _cu.ep_titles[_cu_n_existing:] if n_new > 0 else []
-            print(f"\nタイトル : {_cu.title}")
-            print(f"著者     : {_cu.author}")
+            _print_field("タイトル", f"{_cu.title}", width=8, blank_before=True)
+            _print_field("著者", f"{_cu.author}", width=8)
             print(f"既存     : {_cu_n_existing} 話 / サイト全話: {n_total} 話")
             if n_new <= 0:
                 print("[情報] 新着なし（最新話まで取得済み）")
