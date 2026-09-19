@@ -458,6 +458,28 @@ def _progress(n: int, total: int, title: str) -> None:
             pass  # フック側の例外でダウンロードを止めない
 
 
+def _print_epub_start() -> None:
+    """ePub 生成の開始を知らせる。"""
+    print("📖 ePub生成中...")
+
+
+def _print_text_done(txt_path, note: str = "") -> None:
+    """テキスト出力完了を知らせる。note は補足（例: エンコーディング変換）。"""
+    print(f"\n✅ テキスト出力完了: {txt_path}" + (f"  {note}" if note else ""))
+
+
+def _print_epub_done(epub_path) -> None:
+    """ePub 出力完了を知らせる。
+
+    **この 1 行は Windows GUI が完了検出に使うプロセス間の契約**
+    （novel_downloader_gui.py の _RE_EPUB_DONE）。文言・記号・空白を変えないこと。
+    Step P（--progress-json）のイベント発火点もここに置く。
+    design_i18n.md §2.2 / §4 を参照。
+    """
+    print(f"✅ ePub出力完了: {epub_path}")
+
+
+
 # ══════════════════════════════════════════
 #  共通：青空文庫書式ユーティリティ
 # ══════════════════════════════════════════
@@ -3891,12 +3913,12 @@ def run_narou(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   総話数   : {len(sections)} 話")
     print(f"   総文字数 : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print(f"📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, title, author, synopsis,
                    base_url, "小説家になろう", epub_episodes,
                    images=narou_images or None,
@@ -3905,7 +3927,7 @@ def run_narou(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
     if resume_from == 1:
         print(f"\n  途中で中断した場合は以下で再開できます:")
@@ -4722,12 +4744,12 @@ def run_kakuyomu(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得話数 : {len(episodes_data)} 話")
     print(f"   総文字数 : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print(f"📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info.get("description", ""),
                    work_url, "カクヨム", epub_episodes,
@@ -4736,7 +4758,7 @@ def run_kakuyomu(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -5155,12 +5177,12 @@ def run_alphapolis(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得話数 : {len(episodes_data)} 話")
     print(f"   総文字数 : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info.get("description", ""),
                    work_url, "アルファポリス", epub_episodes,
@@ -5170,7 +5192,7 @@ def run_alphapolis(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -5508,12 +5530,12 @@ def run_estar(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得ページ数: {got} / {len(target_pages)}")
     print(f"   総文字数   : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "エブリスタ", epub_episodes,
@@ -5523,7 +5545,7 @@ def run_estar(args):
                    toc_at_end=getattr(args, "toc_at_end", False),
                    images=est_images or None,
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -5826,12 +5848,12 @@ def run_hameln(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得エピソード: {got} / {len(target)}")
     print(f"   総文字数      : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ハーメルン", epub_episodes,
@@ -5840,7 +5862,7 @@ def run_hameln(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -6156,12 +6178,12 @@ def run_neopage(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得話数  : {got} / {len(target)}")
     print(f"   総文字数  : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["synopsis"],
                    work_url, "ネオページ", epub_episodes,
@@ -6170,7 +6192,7 @@ def run_neopage(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -6442,12 +6464,12 @@ def run_solispia(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得話数  : {got} / {len(target)}")
     print(f"   総文字数  : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ソリスピア", epub_episodes,
@@ -6456,7 +6478,7 @@ def run_solispia(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -6719,12 +6741,12 @@ def run_noichigo(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得チャプター: {got_chapters} / {len(target_chapters)}")
     print(f"   総文字数      : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "野いちご", epub_episodes,
@@ -6733,7 +6755,7 @@ def run_noichigo(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -6920,12 +6942,12 @@ def run_berrys(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得チャプター: {got_chapters} / {len(target_chapters)}")
     print(f"   総文字数      : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "berry's cafe", epub_episodes,
@@ -6934,7 +6956,7 @@ def run_berrys(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -7136,12 +7158,12 @@ def run_monogatary(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得エピソード: {got} / {len(target)}")
     print(f"   総文字数      : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, story_title, author,
                    synopsis,
                    story_url, "monogatary.com", epub_episodes,
@@ -7150,7 +7172,7 @@ def run_monogatary(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -7391,12 +7413,12 @@ def run_novema(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
     print(f"   総文字数      : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ノベマ！", epub_episodes,
@@ -7405,7 +7427,7 @@ def run_novema(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -7644,12 +7666,12 @@ def run_novelup(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
     print(f"   総文字数      : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ノベルアップ＋", epub_episodes,
@@ -7659,7 +7681,7 @@ def run_novelup(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -7866,12 +7888,12 @@ def run_sutekibungei(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
     print(f"   総文字数      : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "ステキブンゲイ", epub_episodes,
@@ -7880,7 +7902,7 @@ def run_sutekibungei(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -8177,12 +8199,12 @@ def run_days(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   取得エピソード: {got_eps} / {len(target_eps)}")
     print(f"   総文字数      : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "NOVEL DAYS", epub_episodes,
@@ -8192,7 +8214,7 @@ def run_days(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -8464,12 +8486,12 @@ def run_genpaku(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   章数        : {len(episodes)}")
     print(f"   総文字数    : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "プロジェクト杉田玄白", episodes,
@@ -8478,7 +8500,7 @@ def run_genpaku(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -8803,12 +8825,12 @@ def run_hyuki(args):
                 + sum(len(s) for s in sections)
                 + len(PAGE_BREAK) * max(len(sections) - 1, 0)
                 + len(colophon))
-    print(f"\n✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
     print(f"   章数        : {len(episodes)}")
     print(f"   総文字数    : {full_len:,} 文字")
 
     if not getattr(args, "no_epub", False):
-        print("📖 ePub生成中...")
+        _print_epub_start()
         build_epub(epub_path, info["title"], info["author"],
                    info["description"],
                    work_url, "結城浩翻訳の部屋", episodes,
@@ -8817,7 +8839,7 @@ def run_hyuki(args):
                    font_path=getattr(args, "font", "") or "",
                    toc_at_end=getattr(args, "toc_at_end", False),
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -9404,7 +9426,7 @@ def run_aozora(args):
     txt_path = _txt_base + ".txt"
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(text)
-    print(f"\n✅ テキスト出力完了: {txt_path}  （{enc} → UTF-8 変換済み）")
+    _print_text_done(txt_path, note=f"（{enc} → UTF-8 変換済み）")
 
     if not getattr(args, "no_epub", False):
         print("[3/3] ePub を生成中...")
@@ -9423,7 +9445,7 @@ def run_aozora(args):
                    toc_at_end=getattr(args, "toc_at_end", False),
                    images=images or None,
                    horizontal=getattr(args, "horizontal", False))
-        print(f"✅ ePub出力完了: {epub_path}")
+        _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -9592,7 +9614,7 @@ def run_from_file(args):
     base      = _apply_output_dir(args, args.output or safe_filename(title, "novel"))
     epub_path = base + _epub_ext(args)
 
-    print(f"📖 ePub生成中...")
+    _print_epub_start()
     build_epub(epub_path, title, author, synopsis,
                src_url,
                (meta.get("site") if meta else "") or "ローカルファイル",
@@ -9601,7 +9623,7 @@ def run_from_file(args):
                font_path=getattr(args, "font", "") or "",
                toc_at_end=getattr(args, "toc_at_end", False),
                horizontal=getattr(args, "horizontal", False))
-    print(f"✅ ePub出力完了: {epub_path}")
+    _print_epub_done(epub_path)
 
 
 # ══════════════════════════════════════════
@@ -10166,7 +10188,7 @@ def run_from_epub(args):
 
     write_file(txt_path, header, sections, colophon,
                encoding=args.encoding, newline=args.newline)
-    print(f"✅ テキスト出力完了: {txt_path}")
+    _print_text_done(txt_path)
 
 
 # ══════════════════════════════════════════
