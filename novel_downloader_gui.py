@@ -153,6 +153,33 @@ def engine_cmd(*cli_args) -> list:
     return [sys.executable, script, *cli_args]
 
 
+def _terminate_tree(proc) -> None:
+    """エンジンをプロセスツリーごと止める。
+
+    配布 exe は PyInstaller の onefile（gui_v1_design.md §12.5）。onefile の exe は
+    ブートローダの親プロセスで、実処理は展開先で起動される**子プロセス**が行う。
+    親だけ terminate しても子は走り続けるため、中止ボタンが効かずダウンロードが
+    最後まで進んでしまう。Windows では taskkill /T でツリーごと落とす。
+    """
+    if proc is None or not hasattr(proc, "poll") or proc.poll() is not None:
+        return
+    if IS_WINDOWS:
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=10,
+                           creationflags=_CREATE_NO_WINDOW)
+            return
+        except Exception:
+            pass          # taskkill が無い等は下の terminate/kill にフォールバック
+    for stop in ("terminate", "kill"):
+        try:
+            getattr(proc, stop)()
+            if proc.poll() is not None or proc.wait(timeout=3) is not None:
+                return
+        except Exception:
+            pass
+
+
 def _engine_env() -> dict:
     """エンジン起動用の環境変数。ライブ進捗と UTF-8 出力を保証（§9.3 / §2.3）。"""
     env = os.environ.copy()
@@ -611,12 +638,7 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _abort(self):
         self._abort_event.set()           # ワーカーが起動前チェックで参照する
-        proc = self._proc
-        if hasattr(proc, "terminate"):     # 実プロセス起動済みなら停止（finished で中止判定）
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+        _terminate_tree(self._proc)       # 実プロセス起動済みならツリーごと停止
 
     # ── ダウンロードワーカー（別スレッド・§6） ──────────────────
     def _build_cli_args(self, target_url: str, s: dict) -> list:
@@ -692,10 +714,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._proc = proc
         # 起動と中止が競合した場合、起動直後でも止める
         if self._abort_event.is_set():
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+            _terminate_tree(proc)
 
         t_err = threading.Thread(target=self._read_log, args=(proc.stderr,), daemon=True)
         t_err.start()
@@ -758,6 +777,9 @@ class NovelDownloaderApp(ctk.CTk):
         if kind == "autofill":
             if not self.var_url.get().strip():
                 self.var_url.set(msg[1])
+            return
+        # 中止後にパイプへ残っていた分で表示が進まないようにする
+        if kind in ("progress", "epub") and self._abort_event.is_set():
             return
         if kind == "progress":
             n, m = msg[1], msg[2]
@@ -952,11 +974,7 @@ class NovelDownloaderApp(ctk.CTk):
     # ── 終了 ─────────────────────────────────────────────────
     def _on_close(self):
         self._persist()
-        if hasattr(self._proc, "terminate"):
-            try:
-                self._proc.terminate()
-            except Exception:
-                pass
+        _terminate_tree(self._proc)
         self.destroy()
 
 
