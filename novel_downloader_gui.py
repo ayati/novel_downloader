@@ -166,7 +166,7 @@ def _terminate_tree(proc) -> None:
     if IS_WINDOWS:
         try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=10,
+                           capture_output=True, timeout=5,
                            creationflags=_CREATE_NO_WINDOW)
             return
         except Exception:
@@ -641,7 +641,10 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _abort(self):
         self._abort_event.set()           # ワーカーが起動前チェックで参照する
-        _terminate_tree(self._proc)       # 実プロセス起動済みならツリーごと停止
+        # 停止処理は taskkill / wait でブロックしうるため UI スレッドで走らせない。
+        # ここで同期実行すると中止ボタンを押した瞬間に画面が固まる。
+        threading.Thread(target=_terminate_tree, args=(self._proc,),
+                         daemon=True).start()
 
     # ── ダウンロードワーカー（別スレッド・§6） ──────────────────
     def _build_cli_args(self, target_url: str, s: dict) -> list:
@@ -665,6 +668,14 @@ class NovelDownloaderApp(ctk.CTk):
         return args
 
     def _download_worker(self, url: str, s: dict):
+        """ワーカー本体。どんな失敗でも finished を送り、UI を実行中のまま残さない。"""
+        try:
+            self._download_worker_inner(url, s)
+        except Exception as e:
+            self._queue.put(("rawlog", f"[アプリ内エラー] {e}"))
+            self._queue.put(("finished", 1))
+
+    def _download_worker_inner(self, url: str, s: dict):
         # 1) 事前チェック（未対応 / ハーメルン）
         info = detect_site(url)
         if not info or info.get("site") is None:
@@ -739,12 +750,18 @@ class NovelDownloaderApp(ctk.CTk):
                 self._queue.put(("rawlog", line))   # 想定外の行はログへ流す
                 continue
             got = True
-            kind = ev.get("event")
-            if kind == "progress":
-                self._queue.put(("progress", int(ev.get("n", 0)), int(ev.get("total", 0))))
-            elif kind == "output" and ev.get("kind") == "epub":
-                self._queue.put(("epub", str(ev.get("path", "")).strip()))
-            # stage や未知のイベントは無視する（人間向けの見出しは stderr に出る）
+            # 1 件の異常でループを抜けるとワーカースレッドごと死に、finished が
+            # 送られず GUI が「実行中」のまま固まる。イベント単位で握りつぶす。
+            try:
+                kind = ev.get("event")
+                if kind == "progress":
+                    self._queue.put(("progress",
+                                     int(ev.get("n", 0)), int(ev.get("total", 0))))
+                elif kind == "output" and ev.get("kind") == "epub":
+                    self._queue.put(("epub", str(ev.get("path", "")).strip()))
+                # stage や未知のイベントは無視する（人間向けの見出しは stderr に出る）
+            except Exception:
+                self._queue.put(("rawlog", f"[警告] イベントを解釈できません: {line}"))
         return got
 
     def _read_log(self, stream):
