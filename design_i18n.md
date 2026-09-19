@@ -162,9 +162,14 @@ GUI は **最終非空行**を JSON として読む（`novel_downloader_gui.py` 
 Step B   Pillow 警告を stderr へ           ✅ 完了（1cde7ca）
 Step 1   _UI_LANG と T() カタログ           ✅ 完了（v2.10.0）
 Step 2a  P0 エラー・警告 96 文言            ✅ 完了（v2.10.0）
-Step 0   定型ブロックの共通ヘルパー化        ← 未着手
-  └─ Step P  --progress-json（GUI 連携）    ← 未着手・正式な設計書は別途
+Step 0   定型ブロックの共通ヘルパー化        ✅ 完了（v2.11.0・3 コミットに分割）
+Step P   --progress-json（GUI 連携）        ✅ 完了（v2.11.0・design_progress_json.md）
 ```
+
+**すべて完了。** Step 0 は 5 ヘルパー（`_print_epub_start` / `_print_text_done` /
+`_print_epub_done` / `_print_field` / `_print_stage` / `_print_normalized`）に
+188 箇所を集約した。`[resume]` / `[Step N]` の 11 箇所は全て文言が異なり、
+共通化すると分岐だらけのヘルパーになるため対象外とした。
 
 Step 2b（ヘルプ）と Step 3（言語解決）は PR #1 で完了済み。
 
@@ -335,5 +340,5 @@ python3 novel_downloader_gui.py                                                 
 | 1 | `_UI_LANG` / `T()` / `_MESSAGES_EN` の骨組み | 新規 約 40 行＋カタログ 96 件 | ✅ |
 | 2a | P0 エラー・警告 96 文言の `T()` 化と英訳 | 129 箇所 | ✅ |
 | 検証 | `tools/check_i18n.py` | 新規 約 160 行 | ✅ |
-| 0 | 定型ブロック 8 種を共通ヘルパー化 | 21 関数・235 箇所 → 約 8 箇所 | 未着手 |
-| P | `--progress-json` とイベント発火 | `_progress()` / `_print_outputs()` に各 1 行＋エミッタ約 60 行。GUI 側の読み取りループ改修 | 未着手 |
+| 0 | 定型ブロック 7 種を共通ヘルパー化 | 21 関数・188 箇所 → 6 ヘルパー | ✅ |
+| P | `--progress-json` とイベント発火 | エンジン約 30 行＋発火 4 箇所、GUI の読み取りループを 2 ストリーム化 | ✅ |
