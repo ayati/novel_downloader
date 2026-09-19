@@ -137,6 +137,251 @@ try:
 except ImportError:
     _HAMELN_AVAILABLE = False
 
+# ══════════════════════════════════════════
+#  UI 言語（i18n）
+# ══════════════════════════════════════════
+#
+# 方針は CLAUDE.md「国際化（i18n）方針」/ 設計は design_i18n.md を参照。
+# 英語化するのはエラー・警告と CLI ヘルプだけで、作品本文・青空文庫書式の
+# ラベル・ePub の中身・進捗表示は日本語のまま。
+#
+# カタログは **日本語の原文そのものをキーにする**（gettext の msgid モデル）。
+# 未登録なら日本語をそのまま返すため、カタログが空でも挙動は従来と完全に同じ。
+#
+# このセクションが冒頭にあるのは、モジュール読み込み時点で出力される警告
+# （Pillow 不在・日本語フォント不在）にも T() を効かせるため。argv の解析より
+# 前に実行されるので、_main() の中で言語を決める方式では間に合わない。
+
+
+def _resolve_ui_lang(argv=None) -> str:
+    """Return 'en' or 'ja' for CLI help text.
+
+    Priority: --lang / -L  >  NOVEL_DOWNLOADER_LANG  >  ja.
+    LANG / LC_ALL are ignored so an English locale does not change the default.
+    """
+    import os as _os
+    raw = list(sys.argv[1:] if argv is None else argv)
+    for i, a in enumerate(raw):
+        if a in ("--lang", "-L") and i + 1 < len(raw):
+            v = raw[i + 1].lower()
+            return "en" if v.startswith("en") else "ja"
+        if a.startswith("--lang="):
+            v = a.split("=", 1)[1].lower()
+            return "en" if v.startswith("en") else "ja"
+    env = (_os.environ.get("NOVEL_DOWNLOADER_LANG") or "").lower()
+    if env.startswith("en"):
+        return "en"
+    return "ja"
+
+
+# インプロセス利用（GUI / Android が main(argv) を呼ぶ形）では _main() が argv で
+# 再解決する。ただしモジュール読み込み時の警告だけは sys.argv で決まる。
+_UI_LANG = _resolve_ui_lang()
+
+
+def T(ja: str) -> str:
+    """UI 言語に応じてメッセージを返す。未登録なら日本語のまま返す。"""
+    return _MESSAGES_EN.get(ja, ja) if _UI_LANG == "en" else ja
+
+
+# 日本語原文 → 英語。キーは T() に渡す文字列と一字一句一致させること
+# （ずれると無言で日本語にフォールバックする）。検査は tools/check_i18n.py。
+_MESSAGES_EN = {
+    "\n[エラー]   {count} 作品:":
+        "\n[error]   {count} work(s):",
+    "\n[エラー] {count} 作品:":
+        "\n[error] {count} work(s):",
+    "\n中止しました。":
+        "\nCancelled.",
+    "      [警告] __NEXT_DATA__ が見つかりません。HTMLから直接取得を試みます。":
+        "      [warn] __NEXT_DATA__ not found. Falling back to reading the HTML directly.",
+    "      ⚠ 説明も取得できず原文保持の外字注記 {kinds} 種 / {total} 箇所:":
+        "      ⚠ Gaiji notes kept as-is because no description was available: {kinds} kind(s) / {total} occurrence(s):",
+    "    !! 取得失敗（スキップ）: {e}":
+        "    !! Fetch failed (skipped): {e}",
+    "    [エラー] {e}":
+        "    [error] {e}",
+    "    [エラー] バッチ取得失敗: {e}":
+        "    [error] Batch fetch failed: {e}",
+    "    [エラー] 取得失敗: {e}":
+        "    [error] Fetch failed: {e}",
+    "    [警告] 挿絵の取得に失敗しました: {url}":
+        "    [warn] Could not fetch an inline image: {url}",
+    "    [警告] 本文が見つかりません（CF未解決の可能性）":
+        "    [warn] Body text not found (Cloudflare may not have been cleared)",
+    "  [エラー] スキップします: {e}":
+        "  [error] Skipping: {e}",
+    "  [情報] API 取得に失敗したため作品情報ページを使います: {e}":
+        "  [info] API request failed; using the work info page instead: {e}",
+    "  [警告] API取得失敗 (試行 {attempt}/{retries}): {e}":
+        "  [warn] API request failed (attempt {attempt}/{retries}): {e}",
+    "  [警告] __NEXT_DATA__ からのエピソード取得に失敗: {e}":
+        "  [warn] Could not read episodes from __NEXT_DATA__: {e}",
+    "  [警告] tableOfContents / episodeUnions が見つかりません。Episode を直接列挙します。":
+        "  [warn] tableOfContents / episodeUnions not found. Listing Episode entries directly.",
+    "  [警告] 作品トップページへのリンクを検出できませんでした。":
+        "  [warn] Could not find a link to the work's top page.",
+    "  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}":
+        "  [warn] Fetch failed (attempt {attempt}/{retries}): {e}",
+    "  [警告] 正規化失敗: {e}":
+        "  [warn] URL normalization failed: {e}",
+    "  [警告] 章情報取得失敗 (id={cur_id}): {e}":
+        "  [warn] Could not fetch chapter info (id={cur_id}): {e}",
+    "  → エラー: {error}":
+        "  → Error: {error}",
+    "  → ダウンロード失敗: {e}":
+        "  → Download failed: {e}",
+    "  → 追記失敗: {error}":
+        "  → Append failed: {error}",
+    "--append-dir: ディレクトリが見つかりません: {path}":
+        "--append-dir: directory not found: {path}",
+    "--append: テキストファイルから底本 URL を取得できませんでした: {path}\n  novel_downloader.py が生成した「底本URL：」行を含むファイルを指定してください。":
+        "--append: could not read the source URL from the text file: {path}\n  Specify a file that contains the 「底本URL：」 line written by novel_downloader.py.",
+    "--append: ファイルが見つかりません: {path}":
+        "--append: file not found: {path}",
+    "--check-update-dir: ディレクトリが見つかりません: {path}":
+        "--check-update-dir: directory not found: {path}",
+    "--check-update: テキストファイルから底本 URL を取得できませんでした: {path}\n  novel_downloader.py が生成した「底本URL：」行を含むファイルを指定してください。":
+        "--check-update: could not read the source URL from the text file: {path}\n  Specify a file that contains the 「底本URL：」 line written by novel_downloader.py.",
+    "--check-update: ファイルが見つかりません: {path}":
+        "--check-update: file not found: {path}",
+    "--notify webhook には --webhook-url が必要です":
+        "--notify webhook requires --webhook-url",
+    "--watch: ファイルが見つかりません: {path}":
+        "--watch: file not found: {path}",
+    "[警告] Pillow がインストールされていないため、JPEG表紙画像を生成できません。\n       JPEG表紙を有効にするには以下のコマンドでインストールしてください:\n           [Ubuntu/Debian] sudo apt install python3-pillow\n           [その他]        pip install Pillow\n       Pillow がない場合は SVG フォールバックで表紙を生成しますが、\n       多くの ePub リーダーで SVG 表紙は正しく表示されない場合があります。":
+        "[warn] Pillow is not installed, so JPEG cover images cannot be generated.\n       To enable JPEG covers, install it with one of the following:\n           [Ubuntu/Debian] sudo apt install python3-pillow\n           [Other]         pip install Pillow\n       Without Pillow the cover falls back to SVG, which many EPUB\n       readers do not display correctly.",
+    "[警告] PillowでのJPEG表紙生成中にエラーが発生しました。SVGで代替します。\n       エラー内容: {err}\n       詳細:\n":
+        "[warn] Pillow failed while generating the JPEG cover. Falling back to SVG.\n       Error: {err}\n       Details:\n",
+    "[警告] SVGフォールバックで表紙を生成します。多くのePubリーダーではSVG表紙が正しく表示されない場合があります。":
+        "[warn] Generating the cover as SVG. Many EPUB readers do not display SVG covers correctly.",
+    "[警告] Webhook 送信失敗: HTTP {status}":
+        "[warn] Webhook delivery failed: HTTP {status}",
+    "[警告] Webhook 送信失敗: {e}":
+        "[warn] Webhook delivery failed: {e}",
+    "[警告] {file}:{lineno}: URL として認識できません（スキップ）: {url!r}":
+        "[warn] {file}:{lineno}: not recognized as a URL (skipped): {url!r}",
+    "[警告] キャッシュ書き込み失敗: {e}":
+        "[warn] Could not write the cache: {e}",
+    "[警告] キャッシュ読み込み失敗（新規扱い）: {e}":
+        "[warn] Could not read the cache (treating it as new): {e}",
+    "[警告] サイト公式サムネイル: ページ取得失敗 ({_e})":
+        "[warn] Site cover image: page fetch failed ({_e})",
+    "[警告] サイト公式サムネイル: 一時ファイル作成失敗 ({_e})":
+        "[warn] Site cover image: could not create a temporary file ({_e})",
+    "[警告] サイト公式サムネイル: 表紙画像が見つかりませんでした。":
+        "[warn] Site cover image: no cover image was found.",
+    "[警告] フォントファイルが見つかりません: {font_path}":
+        "[warn] Font file not found: {font_path}",
+    "[警告] 日本語フォントが見つかりませんでした。JPEG表紙はSVGで代替されます。\n       フォントをインストールすると JPEG 表紙が生成されます:\n       [Linux]   sudo apt install fonts-noto-cjk\n                 または: sudo apt install fonts-ipafont\n       [Windows] BIZ UDP明朝 / MS明朝 / 游明朝 など日本語フォントが\n                 C:\\Windows\\Fonts に存在するか確認してください。\n                 Microsoft Office をインストールすると游明朝が追加されます。":
+        "[warn] No Japanese font was found; the JPEG cover falls back to SVG.\n       Installing a font enables JPEG covers:\n       [Linux]   sudo apt install fonts-noto-cjk\n                 or: sudo apt install fonts-ipafont\n       [Windows] Check that a Japanese font such as BIZ UDPMincho,\n                 MS Mincho or Yu Mincho exists in C:\\Windows\\Fonts.\n                 Installing Microsoft Office adds Yu Mincho.",
+    "[警告] 表紙画像ファイルが見つかりません: {cover_image_path}":
+        "[warn] Cover image file not found: {cover_image_path}",
+    "[警告] 非対応の画像形式です: {_ext}（対応: .jpg / .jpeg / .png）":
+        "[warn] Unsupported image format: {_ext} (supported: .jpg / .jpeg / .png)",
+    "エラー: NOVEL DAYSのダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from NOVEL DAYS requires requests and beautifulsoup4.",
+    "エラー: NOVEL DAYSの作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a NOVEL DAYS work URL: {work_url}",
+    "エラー: URLからNコードを取得できません。":
+        "Error: could not extract the N-code from the URL.",
+    "エラー: ZIP ファイルのリンクが見つかりません。":
+        "Error: could not find the ZIP file link.",
+    "エラー: ZIP 取得・展開に失敗しました — {e}":
+        "Error: failed to download or extract the ZIP — {e}",
+    "エラー: berry's cafeのダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from berry's cafe requires requests and beautifulsoup4.",
+    "エラー: berry's cafeの作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a berry's cafe work URL: {work_url}",
+    "エラー: ePub3 ファイルから本文を抽出できませんでした。":
+        "Error: could not extract text from the EPUB3 file.",
+    "エラー: ePub3 ファイルを読み込めませんでした: {e}":
+        "Error: could not read the EPUB3 file: {e}",
+    "エラー: monogatary.comのURLとして認識できません: {work_url}":
+        "Error: not recognized as a monogatary.com URL: {work_url}",
+    "エラー: monogatary.comのダウンロードには requests が必要です。":
+        "Error: downloading from monogatary.com requires requests.",
+    "エラー: {e}":
+        "Error: {e}",
+    "エラー: アルファポリスのダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from Alphapolis requires requests and beautifulsoup4.",
+    "エラー: エピソードが見つかりませんでした。":
+        "Error: no episodes were found.",
+    "エラー: エピソード一覧を取得できませんでした。":
+        "Error: could not retrieve the episode list.",
+    "エラー: エブリスタのダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from Estar requires requests and beautifulsoup4.",
+    "エラー: エブリスタの作品URLとして認識できません: {work_url}":
+        "Error: not recognized as an Estar work URL: {work_url}",
+    "エラー: カクヨムのダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from Kakuyomu requires requests and beautifulsoup4.",
+    "エラー: カードページの取得に失敗しました — {e}":
+        "Error: failed to fetch the card page — {e}",
+    "エラー: ステキブンゲイのダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from Suteki Bungei requires requests and beautifulsoup4.",
+    "エラー: ステキブンゲイの作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a Suteki Bungei work URL: {work_url}",
+    "エラー: ソリスピアのダウンロードには beautifulsoup4 が必要です。":
+        "Error: downloading from Solispia requires beautifulsoup4.",
+    "エラー: ソリスピアの作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a Solispia work URL: {work_url}",
+    "エラー: タイトルを取得できませんでした。":
+        "Error: could not retrieve the title.",
+    "エラー: チャプター一覧を取得できませんでした。":
+        "Error: could not retrieve the chapter list.",
+    "エラー: テキストファイルから本文を抽出できませんでした。":
+        "Error: could not extract text from the text file.",
+    "エラー: ネオページのダウンロードには beautifulsoup4 が必要です。":
+        "Error: downloading from Neopage requires beautifulsoup4.",
+    "エラー: ネオページの作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a Neopage work URL: {work_url}",
+    "エラー: ノベマ！のダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from Novema! requires requests and beautifulsoup4.",
+    "エラー: ノベマ！の作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a Novema! work URL: {work_url}",
+    "エラー: ノベルアップ＋のダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from Novelup+ requires requests and beautifulsoup4.",
+    "エラー: ノベルアップ＋の作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a Novelup+ work URL: {work_url}",
+    "エラー: ハーメルンのダウンロードには beautifulsoup4 が必要です。":
+        "Error: downloading from Hameln requires beautifulsoup4.",
+    "エラー: ハーメルンのダウンロードには playwright が必要です。":
+        "Error: downloading from Hameln requires playwright.",
+    "エラー: ハーメルンの作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a Hameln work URL: {work_url}",
+    "エラー: ファイルが見つかりません: {epub_path}":
+        "Error: file not found: {epub_path}",
+    "エラー: ファイルが見つかりません: {txt_path}":
+        "Error: file not found: {txt_path}",
+    "エラー: ファイルを読み込めません（エンコーディング不明）: {txt_path}":
+        "Error: could not read the file (unknown encoding): {txt_path}",
+    "エラー: プロジェクト杉田玄白のダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from Project Sugita Genpaku requires requests and beautifulsoup4.",
+    "エラー: 作品トップページへのリンクが見つかりません。作品URLを直接指定してください。":
+        "Error: could not find a link to the work's top page. Please pass the work URL directly.",
+    "エラー: 対応しているURLを指定してください。":
+        "Error: please specify a supported URL.",
+    "エラー: 本文を抽出できませんでした。":
+        "Error: could not extract the body text.",
+    "エラー: 章リストを構築できませんでした。":
+        "Error: could not build the chapter list.",
+    "エラー: 第1話のIDを取得できませんでした。":
+        "Error: could not get the ID of the first episode.",
+    "エラー: 結城浩翻訳の部屋のダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from Hiroshi Yuki's Translation Room requires requests and beautifulsoup4.",
+    "エラー: 結城浩翻訳の部屋の作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a Hiroshi Yuki's Translation Room work URL: {work_url}",
+    "エラー: 総ページ数を取得できませんでした。":
+        "Error: could not determine the total page count.",
+    "エラー: 話が見つかりません。URLを確認してください。":
+        "Error: no episodes found. Please check the URL.",
+    "エラー: 野いちごのダウンロードには requests と beautifulsoup4 が必要です。":
+        "Error: downloading from No-ichigo requires requests and beautifulsoup4.",
+    "エラー: 野いちごの作品URLとして認識できません: {work_url}":
+        "Error: not recognized as a No-ichigo work URL: {work_url}",
+}
+
+
 # 表紙画像生成用ライブラリ（必須推奨）
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
@@ -145,12 +390,12 @@ try:
 except ImportError:
     _PILLOW_AVAILABLE = False
     print(
-        "[警告] Pillow がインストールされていないため、JPEG表紙画像を生成できません。\n"
+        T("[警告] Pillow がインストールされていないため、JPEG表紙画像を生成できません。\n"
         "       JPEG表紙を有効にするには以下のコマンドでインストールしてください:\n"
         "           [Ubuntu/Debian] sudo apt install python3-pillow\n"
         "           [その他]        pip install Pillow\n"
         "       Pillow がない場合は SVG フォールバックで表紙を生成しますが、\n"
-        "       多くの ePub リーダーで SVG 表紙は正しく表示されない場合があります。",
+        "       多くの ePub リーダーで SVG 表紙は正しく表示されない場合があります。"),
         file=sys.stderr,   # stdout に出すと --detect-site / --list-sites の JSON を壊す
     )
 
@@ -377,7 +622,7 @@ def _inline_image_tag(url: str, referer: str, images: dict, seen: dict,
 
     data, ctype = _fetch_cover_bytes(url, referer)
     if not data:
-        print(f"    [警告] 挿絵の取得に失敗しました: {url}")
+        print(T("    [警告] 挿絵の取得に失敗しました: {url}").format(url=url))
         return ""
 
     stem = os.path.basename(urlparse(url).path.rstrip("/")) or "image"
@@ -2549,13 +2794,13 @@ if _FONT_BOLD_PATH:
           file=sys.stderr)
 else:
     print(
-        "[警告] 日本語フォントが見つかりませんでした。JPEG表紙はSVGで代替されます。\n"
+        T("[警告] 日本語フォントが見つかりませんでした。JPEG表紙はSVGで代替されます。\n"
         "       フォントをインストールすると JPEG 表紙が生成されます:\n"
         "       [Linux]   sudo apt install fonts-noto-cjk\n"
         "                 または: sudo apt install fonts-ipafont\n"
         "       [Windows] BIZ UDP明朝 / MS明朝 / 游明朝 など日本語フォントが\n"
         "                 C:\\Windows\\Fonts に存在するか確認してください。\n"
-        "                 Microsoft Office をインストールすると游明朝が追加されます。",
+        "                 Microsoft Office をインストールすると游明朝が追加されます。"),
         file=sys.stderr
     )
 
@@ -2797,16 +3042,16 @@ def make_cover_image(title: str, author: str, cover_bg: str = "#16234b",
         except Exception as _png_err:
             import traceback as _tb
             print(
-                "[警告] PillowでのJPEG表紙生成中にエラーが発生しました。SVGで代替します。\n"
-                f"       エラー内容: {_png_err}\n"
-                "       詳細:\n"
+                T("[警告] PillowでのJPEG表紙生成中にエラーが発生しました。SVGで代替します。\n"
+                  "       エラー内容: {err}\n"
+                  "       詳細:\n").format(err=_png_err)
                 + "".join(f"         {l}" for l in _tb.format_exc().splitlines(keepends=True))
             )
 
     # Pillow不在 or PNG生成失敗 → SVGフォールバック
     print(
-        "[警告] SVGフォールバックで表紙を生成します。"
-        "多くのePubリーダーではSVG表紙が正しく表示されない場合があります。"
+        T("[警告] SVGフォールバックで表紙を生成します。"
+        "多くのePubリーダーではSVG表紙が正しく表示されない場合があります。")
     )
     return _make_cover_svg(title, author, cover_bg), "svg"
 
@@ -2860,7 +3105,7 @@ def build_epub(
     # 表紙画像：外部ファイル指定があればそちらを使用、なければ自動生成
     if cover_image_path:
         if not os.path.isfile(cover_image_path):
-            print(f"[警告] 表紙画像ファイルが見つかりません: {cover_image_path}")
+            print(T("[警告] 表紙画像ファイルが見つかりません: {cover_image_path}").format(cover_image_path=cover_image_path))
             print("       自動生成の表紙を使用します。")
             cover_data, cover_fmt = make_cover_image(title, author, cover_bg, site_name)
         else:
@@ -2870,7 +3115,7 @@ def build_epub(
             elif _ext == ".png":
                 cover_fmt = "png"
             else:
-                print(f"[警告] 非対応の画像形式です: {_ext}（対応: .jpg / .jpeg / .png）")
+                print(T("[警告] 非対応の画像形式です: {_ext}（対応: .jpg / .jpeg / .png）").format(_ext=_ext))
                 print("       自動生成の表紙を使用します。")
                 cover_data, cover_fmt = make_cover_image(title, author, cover_bg, site_name)
             if cover_fmt in ("jpg", "png"):
@@ -2883,7 +3128,7 @@ def build_epub(
 
     # 埋め込みフォントの準備（CSS注入対策: " \ 改行を除去）
     if font_path and not os.path.isfile(font_path):
-        print(f"[警告] フォントファイルが見つかりません: {font_path}")
+        print(T("[警告] フォントファイルが見つかりません: {font_path}").format(font_path=font_path))
         print("       埋め込みフォントなしで ePub を生成します。")
         font_path = ""
     _css_unsafe = re.compile(r'["\\\n\r]')
@@ -3111,7 +3356,7 @@ def narou_get_novel_info_api(ncode: str) -> tuple:
         raw = narou_fetch(api_url)
         data = json.loads(raw)
     except Exception as e:
-        print(f"  [情報] API 取得に失敗したため作品情報ページを使います: {e}")
+        print(T("  [情報] API 取得に失敗したため作品情報ページを使います: {e}").format(e=e))
         return None, None, None, None
 
     if not isinstance(data, list) or len(data) < 2 or not isinstance(data[1], dict):
@@ -3505,7 +3750,7 @@ def run_narou(args):
     url   = args.url.rstrip("/") + "/"
     m     = re.search(r"ncode\.syosetu\.com/([a-z0-9]+)", url, re.I)
     if not m:
-        print("エラー: URLからNコードを取得できません。")
+        print(T("エラー: URLからNコードを取得できません。"))
         sys.exit(1)
     ncode    = m.group(1).lower()
     base_url = f"https://ncode.syosetu.com/{ncode}/"
@@ -3516,7 +3761,7 @@ def run_narou(args):
     )
 
     if not episodes:
-        print("エラー: 話が見つかりません。URLを確認してください。")
+        print(T("エラー: 話が見つかりません。URLを確認してください。"))
         sys.exit(1)
 
     print(f"\n  タイトル : {title}")
@@ -3603,7 +3848,7 @@ def run_narou(args):
         try:
             html = narou_fetch(ep_url)
         except Exception as e:
-            print(f"    !! 取得失敗（スキップ）: {e}")
+            print(T("    !! 取得失敗（スキップ）: {e}").format(e=e))
             sections.append(aozora_chapter_title(ep_title) + "\n\n（取得失敗）\n")
             epub_episodes.append({"title": ep_title, "body": "（取得失敗）",
                                   "group": ep_group or None})
@@ -3690,7 +3935,7 @@ def kky_fetch(session, url: str, retries: int = 3):
             resp.encoding = ct.split("charset=")[-1].split(";")[0].strip() if "charset=" in ct else "utf-8"
             return BeautifulSoup(resp.text, "html.parser")
         except Exception as e:
-            print(f"  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}")
+            print(T("  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}").format(attempt=attempt, retries=retries, e=e))
             if attempt < retries:
                 _sleep(3)
     raise RuntimeError(f"URLの取得に失敗しました: {url}")
@@ -4251,7 +4496,7 @@ def kky_get_episode_urls(next_data: dict, work_url: str) -> list:
             if chapter_count:
                 print(f"      章を {chapter_count} 件検出しました")
         else:
-            print("  [警告] tableOfContents / episodeUnions が見つかりません。Episode を直接列挙します。")
+            print(T("  [警告] tableOfContents / episodeUnions が見つかりません。Episode を直接列挙します。"))
             for k, v in apollo.items():
                 if k.startswith("Episode:") and isinstance(v, dict):
                     ep_id = v.get("id", "")
@@ -4262,7 +4507,7 @@ def kky_get_episode_urls(next_data: dict, work_url: str) -> list:
                             "chapter": "",
                         })
     except Exception as e:
-        print(f"  [警告] __NEXT_DATA__ からのエピソード取得に失敗: {e}")
+        print(T("  [警告] __NEXT_DATA__ からのエピソード取得に失敗: {e}").format(e=e))
 
     return episodes
 
@@ -4378,7 +4623,7 @@ def kky_extract_episode_body(soup, next_data: dict, ep_url: str) -> tuple:
 def run_kakuyomu(args):
     """カクヨム小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: カクヨムのダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: カクヨムのダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
@@ -4392,7 +4637,7 @@ def run_kakuyomu(args):
     if next_data:
         print("      __NEXT_DATA__ の取得に成功しました。")
     else:
-        print("      [警告] __NEXT_DATA__ が見つかりません。HTMLから直接取得を試みます。")
+        print(T("      [警告] __NEXT_DATA__ が見つかりません。HTMLから直接取得を試みます。"))
 
     info = kky_get_work_info(top_soup, next_data, work_url)
     if info["title"]:
@@ -4411,7 +4656,7 @@ def run_kakuyomu(args):
             print(f"      HTMLから {len(episode_list)} 話を検出しました。")
 
     if not episode_list:
-        print("エラー: エピソードが見つかりませんでした。")
+        print(T("エラー: エピソードが見つかりませんでした。"))
         sys.exit(1)
 
     # 範囲絞り込み
@@ -4453,7 +4698,7 @@ def run_kakuyomu(args):
                                   "chapter": ep_chapter or ep.get("chapter", ""),
                                   "body": body})
         except RuntimeError as e:
-            print(f"  [エラー] スキップします: {e}")
+            print(T("  [エラー] スキップします: {e}").format(e=e))
             episodes_data.append({"title": ep["title"], "chapter": ep.get("chapter", ""),
                                   "body": "（取得失敗）"})
         if i < len(episode_list):
@@ -4518,7 +4763,7 @@ def alp_fetch(session, url: str, retries: int = 3):
                              if "charset=" in ct else "utf-8")
             return BeautifulSoup(resp.text, "html.parser")
         except Exception as e:
-            print(f"  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}")
+            print(T("  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}").format(attempt=attempt, retries=retries, e=e))
             if attempt < retries:
                 _sleep(3)
     raise RuntimeError(f"URLの取得に失敗しました: {url}")
@@ -4833,7 +5078,7 @@ def alp_extract_episode(session, ep_url: str, images: dict = None,
 def run_alphapolis(args):
     """アルファポリス小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: アルファポリスのダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: アルファポリスのダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
@@ -4852,7 +5097,7 @@ def run_alphapolis(args):
     print("[2/3] エピソード一覧を取得中...")
     episode_list = alp_get_episode_list(top_soup)
     if not episode_list:
-        print("エラー: エピソードが見つかりませんでした。")
+        print(T("エラー: エピソードが見つかりませんでした。"))
         sys.exit(1)
 
     total_all    = len(episode_list)
@@ -4891,7 +5136,7 @@ def run_alphapolis(args):
             episodes_data.append({"title": ep_title or ep["title"], "body": body,
                                   "chapter": ep.get("chapter", "")})
         except RuntimeError as e:
-            print(f"  [エラー] スキップします: {e}")
+            print(T("  [エラー] スキップします: {e}").format(e=e))
             episodes_data.append({"title": ep["title"], "body": "（取得失敗）",
                                   "chapter": ep.get("chapter", "")})
         if i < len(episode_list):
@@ -4952,7 +5197,7 @@ def est_fetch(session, url: str, retries: int = 3):
                              if "charset=" in ct else "utf-8")
             return BeautifulSoup(resp.text, "html.parser"), resp.text
         except Exception as e:
-            print(f"  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}")
+            print(T("  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}").format(attempt=attempt, retries=retries, e=e))
             if attempt < retries:
                 _sleep(3)
     raise RuntimeError(f"URLの取得に失敗しました: {url}")
@@ -5066,7 +5311,7 @@ def est_api(session, page_path: str, query: str, data: dict,
         except AbortRequested:
             raise
         except Exception as e:
-            print(f"  [警告] API取得失敗 (試行 {attempt}/{retries}): {e}")
+            print(T("  [警告] API取得失敗 (試行 {attempt}/{retries}): {e}").format(attempt=attempt, retries=retries, e=e))
             if attempt < retries:
                 _sleep(3)
     raise RuntimeError(f"APIの呼び出しに失敗しました: {query}")
@@ -5099,7 +5344,7 @@ def est_extract_images(body: str, session, images: dict, delay: float = 1.5) -> 
         if name not in images:
             data, _ct = _fetch_cover_bytes(url, _EST_BASE)
             if not data:
-                print(f"    [警告] 挿絵の取得に失敗しました: {url}")
+                print(T("    [警告] 挿絵の取得に失敗しました: {url}").format(url=url))
                 return ""
             images[name] = data
             _sleep(delay)
@@ -5132,14 +5377,14 @@ def est_get_episode_list(session, work_id: str, delay: float = 1.5) -> list:
 def run_estar(args):
     """エブリスタ小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: エブリスタのダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: エブリスタのダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
     work_url = args.url.rstrip("/")
     wid_m = re.search(r'/novels/(\d+)', work_url)
     if not wid_m:
-        print(f"エラー: エブリスタの作品URLとして認識できません: {work_url}")
+        print(T("エラー: エブリスタの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
     work_id = wid_m.group(1)
 
@@ -5156,7 +5401,7 @@ def run_estar(args):
 
     total_pages = info["page_count"]
     if not total_pages:
-        print("エラー: 総ページ数を取得できませんでした。")
+        print(T("エラー: 総ページ数を取得できませんでした。"))
         sys.exit(1)
     print(f"      総ページ数: {total_pages}")
     _dry_run_exit(args)
@@ -5204,7 +5449,7 @@ def run_estar(args):
                 if isinstance(page_no, int) and node.get("body"):
                     all_bodies[page_no] = node["body"].replace("\r", "")
         except RuntimeError as e:
-            print(f"    [エラー] バッチ取得失敗: {e}")
+            print(T("    [エラー] バッチ取得失敗: {e}").format(e=e))
         if batch_i < len(batch_list):
             _sleep(args.delay)
 
@@ -5433,19 +5678,19 @@ def hameln_html_to_aozora(honbun_div, maegaki_div=None, atogaki_div=None) -> str
 def run_hameln(args):
     """ハーメルン小説のダウンロード処理。"""
     if not _HAMELN_AVAILABLE:
-        print("エラー: ハーメルンのダウンロードには playwright が必要です。")
+        print(T("エラー: ハーメルンのダウンロードには playwright が必要です。"))
         print("  pip install playwright")
         print("  python -m playwright install chromium")
         sys.exit(1)
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: ハーメルンのダウンロードには beautifulsoup4 が必要です。")
+        print(T("エラー: ハーメルンのダウンロードには beautifulsoup4 が必要です。"))
         print("  pip install beautifulsoup4")
         sys.exit(1)
 
     work_url = args.url.rstrip("/")
     wid_m = re.search(r'/novel/(\d+)', work_url)
     if not wid_m:
-        print(f"エラー: ハーメルンの作品URLとして認識できません: {work_url}")
+        print(T("エラー: ハーメルンの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
     work_id = wid_m.group(1)
     top_url = f"{_HAM_BASE}/novel/{work_id}/"
@@ -5466,7 +5711,7 @@ def run_hameln(args):
 
     all_eps = hameln_get_episode_list(top_soup)
     if not all_eps:
-        print("エラー: エピソード一覧を取得できませんでした。")
+        print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(all_eps)
     print(f"      エピソード数: {total_eps}")
@@ -5551,14 +5796,14 @@ def run_hameln(args):
                                           "group": ep_chapter or None})
                     got += 1
                 else:
-                    print(f"    [警告] 本文が見つかりません（CF未解決の可能性）")
+                    print(T("    [警告] 本文が見つかりません（CF未解決の可能性）"))
                     sec_title = aozora_chapter_title(ep_title)
                     sections.append(f"{sec_title}\n\n（取得失敗）\n")
                     epub_episodes.append({"title": ep_title, "body": "（取得失敗）",
                                           "group": ep_chapter or None})
 
             except Exception as e:
-                print(f"    [エラー] {e}")
+                print(T("    [エラー] {e}").format(e=e))
                 sec_title = aozora_chapter_title(ep_title)
                 sections.append(f"{sec_title}\n\n（取得失敗）\n")
                 epub_episodes.append({"title": ep_title, "body": "（取得失敗）",
@@ -5800,14 +6045,14 @@ def neopage_content_to_aozora(content_html: str) -> str:
 def run_neopage(args):
     """ネオページ小説のダウンロード処理（requests のみ、playwright 不要）。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: ネオページのダウンロードには beautifulsoup4 が必要です。")
+        print(T("エラー: ネオページのダウンロードには beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
     work_url = args.url.rstrip("/")
     wid_m = re.search(r'/book/(\w+)', work_url)
     if not wid_m:
-        print(f"エラー: ネオページの作品URLとして認識できません: {work_url}")
+        print(T("エラー: ネオページの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
     book_id = wid_m.group(1)
 
@@ -5816,7 +6061,7 @@ def run_neopage(args):
     info = neopage_get_work_info(book_html, book_id)
 
     if not info["title"]:
-        print("エラー: タイトルを取得できませんでした。")
+        print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
     print(f"      タイトル    : {info['title']}")
     if info["author"]:
@@ -5825,7 +6070,7 @@ def run_neopage(args):
         print(f"      総話数      : {info['total_chapter']}")
 
     if not info["first_chapter_id"]:
-        print("エラー: 第1話のIDを取得できませんでした。")
+        print(T("エラー: 第1話のIDを取得できませんでした。"))
         sys.exit(1)
 
     # ── /v1/book/content/ API でチェーン探索・全章リスト構築 ─────────────────
@@ -5844,7 +6089,7 @@ def run_neopage(args):
         try:
             ch_data = neopage_fetch_chapter(cur_id)
         except RuntimeError as e:
-            print(f"  [警告] 章情報取得失敗 (id={cur_id}): {e}")
+            print(T("  [警告] 章情報取得失敗 (id={cur_id}): {e}").format(cur_id=cur_id, e=e))
             break
         if ch_data["volume_name"]:
             current_volume = ch_data["volume_name"]
@@ -5860,7 +6105,7 @@ def run_neopage(args):
         _sleep(0.3)  # チェーン探索は軽量なので短め
 
     if not chapters:
-        print("エラー: 章リストを構築できませんでした。")
+        print(T("エラー: 章リストを構築できませんでした。"))
         sys.exit(1)
 
     total_chapters = len(chapters)
@@ -6104,7 +6349,7 @@ def solispia_html_to_aozora(soup) -> str:
 def run_solispia(args):
     """ソリスピア小説のダウンロード処理（requests + BS4 のみ、playwright 不要）。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: ソリスピアのダウンロードには beautifulsoup4 が必要です。")
+        print(T("エラー: ソリスピアのダウンロードには beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
@@ -6120,13 +6365,13 @@ def run_solispia(args):
                 work_url = title_a["href"].split("?")[0].rstrip("/")
                 print(f"       作品トップ: {work_url}")
             else:
-                print("  [警告] 作品トップページへのリンクを検出できませんでした。")
+                print(T("  [警告] 作品トップページへのリンクを検出できませんでした。"))
         except RuntimeError as e:
-            print(f"  [警告] 正規化失敗: {e}")
+            print(T("  [警告] 正規化失敗: {e}").format(e=e))
 
     tid_m = re.search(r"/title/(\d+)", work_url)
     if not tid_m:
-        print(f"エラー: ソリスピアの作品URLとして認識できません: {work_url}")
+        print(T("エラー: ソリスピアの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
 
     print(f"\n[1/3] 作品情報を取得中: {work_url}")
@@ -6134,7 +6379,7 @@ def run_solispia(args):
 
     info = solispia_get_work_info(top_soup)
     if not info["title"]:
-        print("エラー: タイトルを取得できませんでした。")
+        print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
     print(f"      タイトル    : {info['title']}")
     if info["author"]:
@@ -6142,7 +6387,7 @@ def run_solispia(args):
 
     all_eps = solispia_get_episode_list(top_soup)
     if not all_eps:
-        print("エラー: エピソード一覧を取得できませんでした。")
+        print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(all_eps)
     print(f"      エピソード数: {total_eps}")
@@ -6178,7 +6423,7 @@ def run_solispia(args):
             body    = solispia_html_to_aozora(ep_soup)
             body    = normalize_tate(body)
         except RuntimeError as e:
-            print(f"    [エラー] 取得失敗: {e}")
+            print(T("    [エラー] 取得失敗: {e}").format(e=e))
             body = "（取得失敗）"
 
         sec_title = aozora_chapter_title(ep_title)
@@ -6354,14 +6599,14 @@ def noichigo_html_to_aozora(body_div) -> str:
 def run_noichigo(args):
     """野いちご小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: 野いちごのダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: 野いちごのダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
     work_url = args.url.rstrip("/")
     wid_m = re.search(r"/book/([^/]+)$", work_url)
     if not wid_m:
-        print(f"エラー: 野いちごの作品URLとして認識できません: {work_url}")
+        print(T("エラー: 野いちごの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
     work_id = wid_m.group(1)
 
@@ -6378,7 +6623,7 @@ def run_noichigo(args):
 
     chapters = noichigo_get_chapter_list(top_soup)
     if not chapters:
-        print("エラー: チャプター一覧を取得できませんでした。")
+        print(T("エラー: チャプター一覧を取得できませんでした。"))
         sys.exit(1)
     total_chapters = len(chapters)
     print(f"      チャプター数: {total_chapters}")
@@ -6453,7 +6698,7 @@ def run_noichigo(args):
                 else:
                     page_bodies.append("（本文取得失敗）")
             except RuntimeError as e:
-                print(f"    [エラー] {e}")
+                print(T("    [エラー] {e}").format(e=e))
                 page_bodies.append("（取得失敗）")
             if page_no < page_end:
                 _sleep(args.delay)
@@ -6560,14 +6805,14 @@ def berrys_get_work_info(soup) -> dict:
 def run_berrys(args):
     """berry's cafe 小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: berry's cafeのダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: berry's cafeのダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
     work_url = args.url.rstrip("/")
     wid_m = re.search(r"/book/([^/]+)$", work_url)
     if not wid_m:
-        print(f"エラー: berry's cafeの作品URLとして認識できません: {work_url}")
+        print(T("エラー: berry's cafeの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
     work_id = wid_m.group(1)
 
@@ -6578,7 +6823,7 @@ def run_berrys(args):
     top_soup = berrys_fetch(session, work_url)
     info = berrys_get_work_info(top_soup)
     if not info["title"]:
-        print("エラー: タイトルを取得できませんでした。")
+        print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
     print(f"      タイトル    : {info['title']}")
     if info["author"]:
@@ -6587,7 +6832,7 @@ def run_berrys(args):
     # チャプター一覧（野いちごと同構造: div.bookChapterList）
     chapters = noichigo_get_chapter_list(top_soup)
     if not chapters:
-        print("エラー: チャプター一覧を取得できませんでした。")
+        print(T("エラー: チャプター一覧を取得できませんでした。"))
         sys.exit(1)
     total_chapters = len(chapters)
     print(f"      チャプター数: {total_chapters}")
@@ -6654,7 +6899,7 @@ def run_berrys(args):
                 else:
                     page_bodies.append("（本文取得失敗）")
             except RuntimeError as e:
-                print(f"    [エラー] {e}")
+                print(T("    [エラー] {e}").format(e=e))
                 page_bodies.append("（取得失敗）")
             if page_no < page_end:
                 _sleep(args.delay)
@@ -6757,7 +7002,7 @@ def monogatary_text_to_aozora(text: str) -> str:
 def run_monogatary(args):
     """monogatary.com 小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: monogatary.comのダウンロードには requests が必要です。")
+        print(T("エラー: monogatary.comのダウンロードには requests が必要です。"))
         print("  pip install requests")
         sys.exit(1)
 
@@ -6765,7 +7010,7 @@ def run_monogatary(args):
     ep_m = re.search(r"/episode/(\d+)$", work_url)
     st_m = re.search(r"/story/(\d+)$", work_url)
     if not ep_m and not st_m:
-        print(f"エラー: monogatary.comのURLとして認識できません: {work_url}")
+        print(T("エラー: monogatary.comのURLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
 
     session = requests.Session()
@@ -6791,7 +7036,7 @@ def run_monogatary(args):
     story_data    = _monogatary_fetch_json(session, f"{_MONOGATARY_BASE}/api/story/{story_id}")
     episodes_list = story_data.get("episodes", [])
     if not episodes_list:
-        print("エラー: エピソード一覧を取得できませんでした。")
+        print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
 
     # ストーリータイトル・著者が未取得の場合は最初のエピソード API から取得
@@ -6806,7 +7051,7 @@ def run_monogatary(args):
             author = c.get("userName", "")
 
     if not story_title:
-        print("エラー: タイトルを取得できませんでした。")
+        print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
 
     print(f"      タイトル    : {story_title}")
@@ -6874,7 +7119,7 @@ def run_monogatary(args):
             body_raw = ep_data.get("episodeContents", {}).get("episode", "")
             body     = normalize_tate(monogatary_text_to_aozora(body_raw))
         except RuntimeError as e:
-            print(f"    [エラー] {e}")
+            print(T("    [エラー] {e}").format(e=e))
             body = "（取得失敗）"
 
         sec_title = aozora_chapter_title(ep_title)
@@ -7027,14 +7272,14 @@ def novema_get_episode_list(soup) -> list:
 def run_novema(args):
     """ノベマ！小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: ノベマ！のダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: ノベマ！のダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
     work_url = args.url.rstrip("/")
     wid_m = re.search(r"/book/([^/]+)$", work_url)
     if not wid_m:
-        print(f"エラー: ノベマ！の作品URLとして認識できません: {work_url}")
+        print(T("エラー: ノベマ！の作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
     work_id = wid_m.group(1)
 
@@ -7051,7 +7296,7 @@ def run_novema(args):
 
     episodes = novema_get_episode_list(top_soup)
     if not episodes:
-        print("エラー: エピソード一覧を取得できませんでした。")
+        print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(episodes)
     print(f"      エピソード数: {total_eps}")
@@ -7125,7 +7370,7 @@ def run_novema(args):
                 else:
                     page_bodies.append("（本文取得失敗）")
             except RuntimeError as e:
-                print(f"    [エラー] {e}")
+                print(T("    [エラー] {e}").format(e=e))
                 page_bodies.append("（取得失敗）")
             if page_no < page_end:
                 _sleep(args.delay)
@@ -7318,14 +7563,14 @@ def novelup_get_episode_body(soup, images: dict = None, seen: dict = None,
 def run_novelup(args):
     """ノベルアップ＋小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: ノベルアップ＋のダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: ノベルアップ＋のダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
     work_url = args.url.rstrip("/")
     wid_m = re.search(r"/story/(\d+)$", work_url)
     if not wid_m:
-        print(f"エラー: ノベルアップ＋の作品URLとして認識できません: {work_url}")
+        print(T("エラー: ノベルアップ＋の作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
     work_id = wid_m.group(1)
 
@@ -7342,7 +7587,7 @@ def run_novelup(args):
 
     episodes = novelup_get_episode_list(top_soup)
     if not episodes:
-        print("エラー: エピソード一覧を取得できませんでした。")
+        print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(episodes)
     print(f"      エピソード数: {total_eps}")
@@ -7380,7 +7625,7 @@ def run_novelup(args):
             body = novelup_get_episode_body(ep_soup, nup_images, nup_img_seen,
                                             args.delay)
         except RuntimeError as e:
-            print(f"    [エラー] {e}")
+            print(T("    [エラー] {e}").format(e=e))
             body = "（取得失敗）"
 
         body = normalize_tate(body)
@@ -7546,13 +7791,13 @@ def suteki_get_episode_body(soup) -> str:
 def run_sutekibungei(args):
     """ステキブンゲイ小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: ステキブンゲイのダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: ステキブンゲイのダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
     work_url = args.url.rstrip("/")
     if not re.search(r"/novels/[0-9a-f-]{36}$", work_url):
-        print(f"エラー: ステキブンゲイの作品URLとして認識できません: {work_url}")
+        print(T("エラー: ステキブンゲイの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
 
     session = requests.Session()
@@ -7568,7 +7813,7 @@ def run_sutekibungei(args):
 
     episodes = suteki_get_episode_list(top_soup)
     if not episodes:
-        print("エラー: エピソード一覧を取得できませんでした。")
+        print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(episodes)
     print(f"      エピソード数: {total_eps}")
@@ -7602,7 +7847,7 @@ def run_sutekibungei(args):
             ep_soup, _ = suteki_fetch(session, ep["url"])
             body = suteki_get_episode_body(ep_soup)
         except RuntimeError as e:
-            print(f"    [エラー] {e}")
+            print(T("    [エラー] {e}").format(e=e))
             body = "（取得失敗）"
 
         body = normalize_tate(body)
@@ -7774,7 +8019,7 @@ def days_extract_images(body_div, session, images: dict, delay: float = 1.5) -> 
                 if data:
                     break
             if not data:
-                print(f"    [警告] 挿絵の取得に失敗しました: {url}")
+                print(T("    [警告] 挿絵の取得に失敗しました: {url}").format(url=url))
                 img.decompose()
                 continue
             images[name] = data
@@ -7843,7 +8088,7 @@ def days_get_episode_body(soup, session=None, images: dict = None,
 def run_days(args):
     """NOVEL DAYS 小説のダウンロード処理。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: NOVEL DAYSのダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: NOVEL DAYSのダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
@@ -7861,11 +8106,11 @@ def run_days(args):
             work_url = (_DAYS_BASE + href) if href.startswith("/") else href
             print(f"       作品トップ: {work_url}")
         else:
-            print("エラー: 作品トップページへのリンクが見つかりません。作品URLを直接指定してください。")
+            print(T("エラー: 作品トップページへのリンクが見つかりません。作品URLを直接指定してください。"))
             sys.exit(1)
 
     if not re.search(r"/works/[0-9a-f]{32}\.html$", work_url):
-        print(f"エラー: NOVEL DAYSの作品URLとして認識できません: {work_url}")
+        print(T("エラー: NOVEL DAYSの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
 
     print(f"\n[1/3] 作品情報を取得中: {work_url}")
@@ -7878,7 +8123,7 @@ def run_days(args):
 
     episodes = days_get_episode_list(top_soup)
     if not episodes:
-        print("エラー: エピソード一覧を取得できませんでした。")
+        print(T("エラー: エピソード一覧を取得できませんでした。"))
         sys.exit(1)
     total_eps = len(episodes)
     print(f"      エピソード数: {total_eps}")
@@ -7913,7 +8158,7 @@ def run_days(args):
             ep_soup, _ = days_fetch(session, ep["url"])
             body = days_get_episode_body(ep_soup, session, days_images, args.delay)
         except RuntimeError as e:
-            print(f"    [エラー] {e}")
+            print(T("    [エラー] {e}").format(e=e))
             body = "（取得失敗）"
 
         body = normalize_tate(body)
@@ -8163,7 +8408,7 @@ def genpaku_extract_chapters(soup, work_title: str) -> list:
 def run_genpaku(args):
     """プロジェクト杉田玄白 の作品をダウンロードする。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: プロジェクト杉田玄白のダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: プロジェクト杉田玄白のダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
@@ -8173,12 +8418,12 @@ def run_genpaku(args):
     try:
         soup = genpaku_fetch(work_url)
     except RuntimeError as e:
-        print(f"エラー: {e}")
+        print(T("エラー: {e}").format(e=e))
         sys.exit(1)
 
     info = genpaku_get_work_info(soup)
     if not info["title"]:
-        print("エラー: タイトルを取得できませんでした。")
+        print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
 
     print(f"      タイトル: {info['title']}")
@@ -8190,7 +8435,7 @@ def run_genpaku(args):
     episodes = genpaku_extract_chapters(soup, info["title"])
 
     if not episodes:
-        print("エラー: 本文を抽出できませんでした。")
+        print(T("エラー: 本文を抽出できませんでした。"))
         sys.exit(1)
 
     print(f"      章数    : {len(episodes)}")
@@ -8500,13 +8745,13 @@ def hyuki_extract_episodes(soup, work_title: str) -> list:
 def run_hyuki(args):
     """結城浩翻訳の部屋の作品をダウンロードする。"""
     if not _KAKUYOMU_AVAILABLE:
-        print("エラー: 結城浩翻訳の部屋のダウンロードには requests と beautifulsoup4 が必要です。")
+        print(T("エラー: 結城浩翻訳の部屋のダウンロードには requests と beautifulsoup4 が必要です。"))
         print("  pip install requests beautifulsoup4")
         sys.exit(1)
 
     work_url = args.url
     if not re.search(r"hyuki\.com/trans/[^/?#]+", work_url):
-        print(f"エラー: 結城浩翻訳の部屋の作品URLとして認識できません: {work_url}")
+        print(T("エラー: 結城浩翻訳の部屋の作品URLとして認識できません: {work_url}").format(work_url=work_url))
         print("  例: https://www.hyuki.com/trans/leaf")
         sys.exit(1)
 
@@ -8514,12 +8759,12 @@ def run_hyuki(args):
     try:
         soup = hyuki_fetch(work_url)
     except RuntimeError as e:
-        print(f"エラー: {e}")
+        print(T("エラー: {e}").format(e=e))
         sys.exit(1)
 
     info = hyuki_get_work_info(soup)
     if not info["title"]:
-        print("エラー: タイトルを取得できませんでした。")
+        print(T("エラー: タイトルを取得できませんでした。"))
         sys.exit(1)
 
     print(f"      タイトル: {info['title']}")
@@ -8529,7 +8774,7 @@ def run_hyuki(args):
     episodes = hyuki_extract_episodes(soup, info["title"])
 
     if not episodes:
-        print("エラー: 本文を抽出できませんでした。")
+        print(T("エラー: 本文を抽出できませんでした。"))
         sys.exit(1)
 
     print(f"      章数    : {len(episodes)}")
@@ -8926,8 +9171,7 @@ def aozora_resolve_gaiji(text: str) -> str:
             print(f"        {note}（{n}箇所）", file=sys.stderr)
     if untouched:
         total = sum(untouched.values())
-        print(f"      ⚠ 説明も取得できず原文保持の外字注記 "
-              f"{len(untouched)} 種 / {total} 箇所:", file=sys.stderr)
+        print(T("      ⚠ 説明も取得できず原文保持の外字注記 {kinds} 種 / {total} 箇所:").format(kinds=len(untouched), total=total), file=sys.stderr)
         for note, n in sorted(untouched.items()):
             print(f"        {note}（{n}箇所）", file=sys.stderr)
 
@@ -9120,7 +9364,7 @@ def run_aozora(args):
     try:
         card_html = aozora_fetch_html(work_url)
     except Exception as e:
-        print(f"エラー: カードページの取得に失敗しました — {e}")
+        print(T("エラー: カードページの取得に失敗しました — {e}").format(e=e))
         sys.exit(1)
 
     info = aozora_get_work_info(card_html)
@@ -9131,14 +9375,14 @@ def run_aozora(args):
 
     zip_url = aozora_find_zip_url(card_html, work_url)
     if not zip_url:
-        print("エラー: ZIP ファイルのリンクが見つかりません。")
+        print(T("エラー: ZIP ファイルのリンクが見つかりません。"))
         sys.exit(1)
 
     print(f"[2/3] ZIP をダウンロード中: {zip_url}")
     try:
         txt_filename, txt_bytes, images = aozora_download_extract(zip_url)
     except Exception as e:
-        print(f"エラー: ZIP 取得・展開に失敗しました — {e}")
+        print(T("エラー: ZIP 取得・展開に失敗しました — {e}").format(e=e))
         sys.exit(1)
 
     text, enc = aozora_decode(txt_bytes)
@@ -9295,7 +9539,7 @@ def run_from_file(args):
     """
     txt_path = args.from_file
     if not os.path.exists(txt_path):
-        print(f"エラー: ファイルが見つかりません: {txt_path}")
+        print(T("エラー: ファイルが見つかりません: {txt_path}").format(txt_path=txt_path))
         sys.exit(1)
 
     # エンコーディング自動検出（--encoding 指定を優先）
@@ -9315,7 +9559,7 @@ def run_from_file(args):
             continue
 
     if content is None:
-        print(f"エラー: ファイルを読み込めません（エンコーディング不明）: {txt_path}")
+        print(T("エラー: ファイルを読み込めません（エンコーディング不明）: {txt_path}").format(txt_path=txt_path))
         sys.exit(1)
 
     print(f"\n[Step 1] テキストファイルを解析中: {txt_path}  (encoding={used_enc})")
@@ -9338,7 +9582,7 @@ def run_from_file(args):
         title = Path(txt_path).stem
 
     if not episodes:
-        print("エラー: テキストファイルから本文を抽出できませんでした。")
+        print(T("エラー: テキストファイルから本文を抽出できませんでした。"))
         sys.exit(1)
 
     print(f"  タイトル : {title}")
@@ -9879,7 +10123,7 @@ def run_from_epub(args):
     """
     epub_path = args.from_epub
     if not os.path.exists(epub_path):
-        print(f"エラー: ファイルが見つかりません: {epub_path}")
+        print(T("エラー: ファイルが見つかりません: {epub_path}").format(epub_path=epub_path))
         sys.exit(1)
 
     print(f"\n[Step 1] ePub3ファイルを解析中: {epub_path}")
@@ -9887,7 +10131,7 @@ def run_from_epub(args):
         (title, author, synopsis, source_url,
          site_name, episodes, meta) = parse_epub(epub_path)
     except Exception as e:
-        print(f"エラー: ePub3 ファイルを読み込めませんでした: {e}")
+        print(T("エラー: ePub3 ファイルを読み込めませんでした: {e}").format(e=e))
         sys.exit(1)
 
     if getattr(args, "title_override", None):
@@ -9899,7 +10143,7 @@ def run_from_epub(args):
         title = Path(epub_path).stem
 
     if not episodes:
-        print("エラー: ePub3 ファイルから本文を抽出できませんでした。")
+        print(T("エラー: ePub3 ファイルから本文を抽出できませんでした。"))
         sys.exit(1)
 
     print(f"  タイトル : {title}")
@@ -10155,7 +10399,7 @@ def _fetch_ogp_cover(page_url: str, site: str = "") -> str:
             with _ur.urlopen(_req, timeout=15) as _res:
                 html = _res.read().decode("utf-8", errors="replace")
         except Exception as _e:
-            print(f"[警告] サイト公式サムネイル: ページ取得失敗 ({_e})")
+            print(T("[警告] サイト公式サムネイル: ページ取得失敗 ({_e})").format(_e=_e))
             print("       自動生成の表紙を使用します。")
             return ""
 
@@ -10190,7 +10434,7 @@ def _fetch_ogp_cover(page_url: str, site: str = "") -> str:
         candidates.append(img_url)
 
     if not candidates:
-        print("[警告] サイト公式サムネイル: 表紙画像が見つかりませんでした。")
+        print(T("[警告] サイト公式サムネイル: 表紙画像が見つかりませんでした。"))
         print("       自動生成の表紙を使用します。")
         return ""
     # ── 候補を順に取得し、表紙として使える最初のものを採用する ──────
@@ -10227,7 +10471,7 @@ def _fetch_ogp_cover(page_url: str, site: str = "") -> str:
         with open(tmp_path, "wb") as _f:
             _f.write(img_data)
     except OSError as _e:
-        print(f"[警告] サイト公式サムネイル: 一時ファイル作成失敗 ({_e})")
+        print(T("[警告] サイト公式サムネイル: 一時ファイル作成失敗 ({_e})").format(_e=_e))
         print("       自動生成の表紙を使用します。")
         return ""
 
@@ -10764,7 +11008,7 @@ def _parse_watch_list(path: str) -> list:
         parts = [p.strip() for p in line.split("|")]
         url = parts[0]
         if not url.startswith("http"):
-            print(f"[警告] {Path(path).name}:{lineno}: URL として認識できません（スキップ）: {url!r}")
+            print(T("[警告] {file}:{lineno}: URL として認識できません（スキップ）: {url!r}").format(file=Path(path).name, lineno=lineno, url=url))
             continue
 
         entry = {"url": url, "title": None, "auto": None}
@@ -10791,7 +11035,7 @@ def _load_watch_cache(path: str) -> dict:
     except FileNotFoundError:
         return {}
     except (OSError, json.JSONDecodeError) as e:
-        print(f"[警告] キャッシュ読み込み失敗（新規扱い）: {e}")
+        print(T("[警告] キャッシュ読み込み失敗（新規扱い）: {e}").format(e=e))
         return {}
 
 
@@ -10811,7 +11055,7 @@ def _save_watch_cache(path: str, data: dict) -> None:
                 pass
             raise
     except OSError as e:
-        print(f"[警告] キャッシュ書き込み失敗: {e}")
+        print(T("[警告] キャッシュ書き込み失敗: {e}").format(e=e))
 
 
 def _check_update_url(url: str, n_cached: int, delay: float) -> dict:
@@ -10956,9 +11200,9 @@ def _notify_webhook(notify_results: list, webhook_url: str, fmt: str = "discord"
     try:
         with urlopen(req, timeout=15) as resp:
             if resp.status >= 400:
-                print(f"[警告] Webhook 送信失敗: HTTP {resp.status}")
+                print(T("[警告] Webhook 送信失敗: HTTP {status}").format(status=resp.status))
     except Exception as e:
-        print(f"[警告] Webhook 送信失敗: {e}")
+        print(T("[警告] Webhook 送信失敗: {e}").format(e=e))
 
 
 def run_watch(args) -> int:
@@ -11067,7 +11311,7 @@ def run_watch(args) -> int:
                         cache[norm_url]["output_file"] = str(Path(existing_txt).resolve())
                         print(f"  → {ar['added']} 話追記完了")
                     else:
-                        print(f"  → 追記失敗: {ar['error']}")
+                        print(T("  → 追記失敗: {error}").format(error=ar['error']))
                         has_error = True
                 else:
                     # 既存 .txt なし → 新規フルダウンロード
@@ -11096,7 +11340,7 @@ def run_watch(args) -> int:
                                 cache[norm_url]["output_file"] = str(Path(found).resolve())
                                 print(f"  → ダウンロード完了: {Path(found).name}")
                         except Exception as e:
-                            print(f"  → ダウンロード失敗: {e}")
+                            print(T("  → ダウンロード失敗: {e}").format(e=e))
                             has_error = True
 
             _save_watch_cache(cache_file, cache)
@@ -11112,26 +11356,6 @@ def run_watch(args) -> int:
 
     return 1 if has_error else 0
 
-
-def _resolve_ui_lang(argv=None) -> str:
-    """Return 'en' or 'ja' for CLI help text.
-
-    Priority: --lang / -L  >  NOVEL_DOWNLOADER_LANG  >  ja.
-    LANG / LC_ALL are ignored so an English locale does not change the default.
-    """
-    import os as _os
-    raw = list(sys.argv[1:] if argv is None else argv)
-    for i, a in enumerate(raw):
-        if a in ("--lang", "-L") and i + 1 < len(raw):
-            v = raw[i + 1].lower()
-            return "en" if v.startswith("en") else "ja"
-        if a.startswith("--lang="):
-            v = a.split("=", 1)[1].lower()
-            return "en" if v.startswith("en") else "ja"
-    env = (_os.environ.get("NOVEL_DOWNLOADER_LANG") or "").lower()
-    if env.startswith("en"):
-        return "en"
-    return "ja"
 
 def _build_arg_parser(lang: str = "ja") -> argparse.ArgumentParser:
     """CLI パーサを組み立てて返す。
@@ -11354,7 +11578,9 @@ def _build_arg_parser(lang: str = "ja") -> argparse.ArgumentParser:
 
 
 def _main(argv=None):
-    parser = _build_arg_parser(_resolve_ui_lang(argv))
+    global _UI_LANG
+    _UI_LANG = _resolve_ui_lang(argv)   # インプロセス利用では argv が正
+    parser = _build_arg_parser(_UI_LANG)
     args = parser.parse_args(argv)
 
     # ── --list-sites: 対応サイト一覧（GUI用・読み取り専用・オフライン） ──
@@ -11391,18 +11617,18 @@ def _main(argv=None):
     # ── --watch: ウォッチモード ──────────────────────────────────────
     if getattr(args, "watch", None):
         if not Path(args.watch).exists():
-            parser.error(f"--watch: ファイルが見つかりません: {args.watch}")
+            parser.error(T("--watch: ファイルが見つかりません: {path}").format(path=args.watch))
         if args.notify == "webhook" and not args.webhook_url:
-            parser.error("--notify webhook には --webhook-url が必要です")
+            parser.error(T("--notify webhook には --webhook-url が必要です"))
         sys.exit(run_watch(args))
 
     # ── --check-update-dir: ディレクトリ一括更新チェック ──────────
     if getattr(args, "check_update_dir", None):
         if args.notify == "webhook" and not args.webhook_url:
-            parser.error("--notify webhook には --webhook-url が必要です")
+            parser.error(T("--notify webhook には --webhook-url が必要です"))
         cu_dir = Path(args.check_update_dir).resolve()
         if not cu_dir.is_dir():
-            parser.error(f"--check-update-dir: ディレクトリが見つかりません: {args.check_update_dir}")
+            parser.error(T("--check-update-dir: ディレクトリが見つかりません: {path}").format(path=args.check_update_dir))
         txt_files = sorted(cu_dir.glob("*.txt"))
         if not txt_files:
             print(f"[情報] {cu_dir} に .txt ファイルがありません。")
@@ -11457,7 +11683,7 @@ def _main(argv=None):
                 print(f"  {title_str} — {r['existing']} 話（最新話まで取得済み）")
 
         if errors:
-            print(f"\n[エラー]   {len(errors)} 作品:")
+            print(T("\n[エラー]   {count} 作品:").format(count=len(errors)))
             for r in errors:
                 print(f"  {r['file']} — {r['error']}")
 
@@ -11472,10 +11698,10 @@ def _main(argv=None):
     # ── --append-dir: ディレクトリ一括追記 ───────────────────────
     if getattr(args, "append_dir", None):
         if args.notify == "webhook" and not args.webhook_url:
-            parser.error("--notify webhook には --webhook-url が必要です")
+            parser.error(T("--notify webhook には --webhook-url が必要です"))
         ad_dir = Path(args.append_dir).resolve()
         if not ad_dir.is_dir():
-            parser.error(f"--append-dir: ディレクトリが見つかりません: {args.append_dir}")
+            parser.error(T("--append-dir: ディレクトリが見つかりません: {path}").format(path=args.append_dir))
         txt_files = sorted(ad_dir.glob("*.txt"))
         if not txt_files:
             print(f"[情報] {ad_dir} に .txt ファイルがありません。")
@@ -11516,7 +11742,7 @@ def _main(argv=None):
             elif r["status"] == "uptodate":
                 print(f"  → 新着なし")
             else:
-                print(f"  → エラー: {r['error']}")
+                print(T("  → エラー: {error}").format(error=r['error']))
             if i < len(targets) - 1:
                 _sleep(args.delay)
 
@@ -11525,7 +11751,7 @@ def _main(argv=None):
             # エラーがあった場合は報告
             check_errors = [(tf, r) for tf, r in check_results if r["status"] == "error"]
             if check_errors:
-                print(f"\n[エラー] {len(check_errors)} 作品:")
+                print(T("\n[エラー] {count} 作品:").format(count=len(check_errors)))
                 for tf, r in check_errors:
                     print(f"  {tf.name} — {r['error']}")
             sys.exit(1 if check_errors else 0)
@@ -11590,7 +11816,7 @@ def _main(argv=None):
 
         all_errors = err_list + [(tf, r, None) for tf, r in check_err_list]
         if all_errors:
-            print(f"\n[エラー]   {len(all_errors)} 作品:")
+            print(T("\n[エラー]   {count} 作品:").format(count=len(all_errors)))
             for item in all_errors:
                 if len(item) == 3:
                     tf, _, ar = item
@@ -11650,15 +11876,14 @@ def _main(argv=None):
         if getattr(args, "append_file", None):
             # 既存 .txt から URL・出力先を自動設定して resume ダウンロード
             if args.notify == "webhook" and not args.webhook_url:
-                parser.error("--notify webhook には --webhook-url が必要です")
+                parser.error(T("--notify webhook には --webhook-url が必要です"))
             ap = Path(args.append_file).resolve()
             if not ap.exists():
-                parser.error(f"--append: ファイルが見つかりません: {args.append_file}")
+                parser.error(T("--append: ファイルが見つかりません: {path}").format(path=args.append_file))
             extracted_url = _extract_url_from_txt(str(ap))
             if not extracted_url:
                 parser.error(
-                    f"--append: テキストファイルから底本 URL を取得できませんでした: {args.append_file}\n"
-                    "  novel_downloader.py が生成した「底本URL：」行を含むファイルを指定してください。"
+                    T("--append: テキストファイルから底本 URL を取得できませんでした: {path}\n  novel_downloader.py が生成した「底本URL：」行を含むファイルを指定してください。").format(path=args.append_file)
                 )
             print(f"[情報] 追記モード: {ap.name}")
             print(f"       底本URL   : {extracted_url}")
@@ -11674,15 +11899,14 @@ def _main(argv=None):
         _cu_n_existing = 0
         if getattr(args, "check_update_file", None):
             if args.notify == "webhook" and not args.webhook_url:
-                parser.error("--notify webhook には --webhook-url が必要です")
+                parser.error(T("--notify webhook には --webhook-url が必要です"))
             cu_txt = Path(args.check_update_file).resolve()
             if not cu_txt.exists():
-                parser.error(f"--check-update: ファイルが見つかりません: {args.check_update_file}")
+                parser.error(T("--check-update: ファイルが見つかりません: {path}").format(path=args.check_update_file))
             cu_url = _extract_url_from_txt(str(cu_txt))
             if not cu_url:
                 parser.error(
-                    f"--check-update: テキストファイルから底本 URL を取得できませんでした: {args.check_update_file}\n"
-                    "  novel_downloader.py が生成した「底本URL：」行を含むファイルを指定してください。"
+                    T("--check-update: テキストファイルから底本 URL を取得できませんでした: {path}\n  novel_downloader.py が生成した「底本URL：」行を含むファイルを指定してください。").format(path=args.check_update_file)
                 )
             existing_sections, _ = _load_existing_txt(str(cu_txt))
             _cu_n_existing = len(existing_sections)
@@ -11697,7 +11921,7 @@ def _main(argv=None):
             )
         # --notify webhook のバリデーション（全 URL モード共通）
         if args.notify == "webhook" and not getattr(args, "webhook_url", None):
-            parser.error("--notify webhook には --webhook-url が必要です")
+            parser.error(T("--notify webhook には --webhook-url が必要です"))
         args.url = expand_short_url(args.url)
         site = detect_site(args.url)
         args.url = normalize_url(args.url, site)
@@ -11774,7 +11998,7 @@ def _main(argv=None):
                         "error": "",
                     }], _wh_url, _wh_fmt)
             else:
-                print("エラー: 対応しているURLを指定してください。")
+                print(T("エラー: 対応しているURLを指定してください。"))
                 for s_id, (s_label, _, _) in _SITE_DISPATCH.items():
                     print(f"  {s_label}")
                 sys.exit(1)
@@ -11861,7 +12085,7 @@ def main(argv=None):
     try:
         _main(argv)
     except (AbortRequested, KeyboardInterrupt):
-        print("\n中止しました。", file=sys.stderr)
+        print(T("\n中止しました。"), file=sys.stderr)
         sys.exit(130)
 
 
