@@ -9,7 +9,7 @@
         android:id="@+id/url_input"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="作品ページのURL"
+        android:hint="@string/main_url_hint"
         android:inputType="textUri"
         android:maxLines="1" />
 
@@ -24,7 +24,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="📋 貼り付け" />
+            android:text="@string/main_btn_paste" />
 
         <Space
             android:layout_width="8dp"
@@ -35,7 +35,7 @@
             style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="✕ クリア" />
+            android:text="@string/main_btn_clear" />
     </LinearLayout>
 
     <TextView
@@ -52,7 +52,7 @@
         android:layout_height="56dp"
         android:layout_marginTop="12dp"
         android:enabled="false"
-        android:text="⬇ ダウンロード"
+        android:text="@string/main_btn_download"
         android:textSize="18sp" />
 
     <ProgressBar
@@ -93,6 +93,15 @@
             android:padding="12dp">
 
             <TextView
+                android:id="@+id/done_heading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:textColor="?android:attr/textColorSecondary"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <TextView
                 android:id="@+id/done_file"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -111,7 +120,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="📖 開く" />
+                    android:text="@string/common_btn_open" />
 
                 <Space
                     android:layout_width="8dp"
@@ -123,7 +132,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="📤 共有" />
+                    android:text="@string/common_btn_share" />
             </LinearLayout>
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
@@ -134,7 +143,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
         android:padding="4dp"
-        android:text="▸ 詳細ログ"
+        android:text="@string/main_log_show"
         android:textSize="14sp"
         android:textStyle="bold" />
 

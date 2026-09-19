@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 13 以上で「設定 → アプリ → 言語」にこのアプリの言語切り替えを出す
+  （design_i18n.md §8）。API 33 未満では端末ロケールへの自動追従のみ。
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="ja" />
+    <locale android:name="en" />
+</locale-config>

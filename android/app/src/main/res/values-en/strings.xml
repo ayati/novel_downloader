@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  English UI (design_i18n.md).
+  Only the interface is translated. Downloaded novels and the detail log stay Japanese.
+-->
+<resources>
+    <string name="app_name">Novel EPUB Downloader</string>
+
+    <!-- Common -->
+    <string name="common_btn_open">📖 Open</string>
+    <string name="common_btn_share">📤 Share</string>
+    <string name="common_share">Share</string>
+    <string name="common_more">More</string>
+    <string name="common_delete">Delete</string>
+    <string name="common_cancel">Cancel</string>
+    <string name="common_close">Close</string>
+    <string name="toast_no_epub_reader">Please install an EPUB reader app</string>
+
+    <!-- Main screen -->
+    <string name="main_menu_history">History</string>
+    <string name="main_menu_settings">Settings</string>
+    <string name="main_url_hint">Work page URL</string>
+    <string name="main_btn_paste">📋 Paste</string>
+    <string name="main_btn_clear">✕ Clear</string>
+    <string name="main_btn_download">⬇ Download</string>
+    <string name="main_btn_cancel">⏸ Cancel</string>
+    <string name="main_log_show">▸ Details</string>
+    <string name="main_log_hide">▾ Details</string>
+    <string name="main_recent_heading">Recent download (see all)</string>
+    <string name="main_badge_site">◉ %1$s</string>
+    <string name="main_badge_detect_error">⚠ Detection failed</string>
+    <string name="main_badge_hameln">⚠ Hameln is not supported in the app</string>
+    <string name="main_badge_unknown">🔗 Site unknown (short URLs are expanded at run time)</string>
+    <string name="main_badge_unsupported">⚠ Unsupported URL</string>
+    <string name="main_toast_no_clipboard_url">No URL in the clipboard</string>
+    <string name="main_err_no_write_permission">Cannot download without storage permission</string>
+
+    <!-- Settings dialog -->
+    <string name="settings_title">Settings (applied from the next download)</string>
+    <string name="settings_horizontal">Horizontal writing</string>
+    <string name="settings_kobo">Kobo extension (.kepub.epub)</string>
+    <string name="settings_site_cover">Use the site cover image</string>
+    <string name="settings_save_txt">Also save text (.txt)</string>
+
+    <!-- History screen -->
+    <string name="history_title">Download history</string>
+    <string name="history_empty">No downloads yet</string>
+    <string name="history_menu_import">Import from the save folder</string>
+    <string name="history_menu_clear">Clear all history</string>
+    <string name="history_clear_message">Only the history list is cleared. The downloaded files are not deleted.</string>
+    <string name="history_row_redownload">Download again</string>
+    <string name="history_row_remove">Remove from history</string>
+    <string name="history_remove_message">Only this entry is removed. The downloaded file is not deleted.</string>
+    <string name="history_missing_title">File not found</string>
+    <string name="history_missing_message">The file for “%1$s” seems to have been deleted. Remove this entry?</string>
+    <string name="history_missing_remove">Remove entry</string>
+    <string name="history_missing_keep">Keep</string>
+    <string name="history_file_missing">⚠ File not found</string>
+    <string name="history_toast_no_url">This entry has no source URL</string>
+    <string name="history_toast_nothing_imported">No files to import</string>
+    <string name="history_meta_separator"> · </string>
+
+    <!-- Date formats (used with SimpleDateFormat + Locale.getDefault()) -->
+    <string name="history_date_time">h:mm a</string>
+    <string name="history_date_md">MMM d</string>
+    <string name="history_date_ymd">MMM d, yyyy</string>
+
+    <!-- Status and notifications -->
+    <string name="notif_channel_name">Downloads</string>
+    <string name="status_python_init">Starting Python…</string>
+    <string name="status_preparing">Preparing…</string>
+    <string name="status_cancelled">Cancelled</string>
+    <string name="status_failed">❌ Failed (see details)</string>
+    <string name="status_done">✅ Done: %1$s (Downloads folder)</string>
+    <string name="progress_episodes">%1$d / %2$d episodes</string>
+
+    <!-- Plurals -->
+    <plurals name="episode_count">
+        <item quantity="one">%d episode</item>
+        <item quantity="other">%d episodes</item>
+    </plurals>
+    <plurals name="imported_count">
+        <item quantity="one">Imported %d item</item>
+        <item quantity="other">Imported %d items</item>
+    </plurals>
+</resources>

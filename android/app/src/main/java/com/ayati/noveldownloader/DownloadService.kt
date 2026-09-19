@@ -27,6 +27,7 @@ class DownloadService : Service() {
 
     companion object {
         const val EXTRA_URL = "url"
+        const val EXTRA_SITE_NAME = "site_name"
         const val ACTION_CANCEL = "com.ayati.noveldownloader.action.CANCEL"
         private const val CHANNEL_ID = "download"
         private const val NOTIF_ID_PROGRESS = 1
@@ -43,7 +44,7 @@ class DownloadService : Service() {
     override fun onCreate() {
         super.onCreate()
         val channel = NotificationChannel(
-            CHANNEL_ID, "ダウンロード", NotificationManager.IMPORTANCE_LOW)
+            CHANNEL_ID, getString(R.string.notif_channel_name), NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
@@ -55,7 +56,7 @@ class DownloadService : Service() {
             }
             intent?.getStringExtra(EXTRA_URL) != null && !running -> {
                 running = true
-                val notif = buildProgressNotification("準備中…", 0, 0)
+                val notif = buildProgressNotification(getString(R.string.status_preparing), 0, 0)
                 if (Build.VERSION.SDK_INT >= 29) {
                     startForeground(NOTIF_ID_PROGRESS, notif,
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -63,7 +64,8 @@ class DownloadService : Service() {
                     startForeground(NOTIF_ID_PROGRESS, notif)
                 }
                 val url = intent.getStringExtra(EXTRA_URL)!!
-                thread { work(url) }
+                val siteName = intent.getStringExtra(EXTRA_SITE_NAME).orEmpty()
+                thread { work(url, siteName) }
             }
         }
         return START_NOT_STICKY
@@ -71,9 +73,10 @@ class DownloadService : Service() {
 
     // ── ダウンロード本体（ワーカースレッド） ──────────────────────
 
-    private fun work(url: String) {
+    private fun work(url: String, siteName: String) {
         DownloadState.reset()
-        DownloadState.ui.value = DownloadState.Ui(phase = DownloadState.Phase.PREPARING)
+        DownloadState.ui.value = DownloadState.Ui(
+            phase = DownloadState.Phase.PREPARING, status = DownloadState.Status.PREPARING)
 
         val staging = File(filesDir, "staging")
         staging.deleteRecursively()
@@ -105,15 +108,24 @@ class DownloadService : Service() {
                     .mapNotNull { saveToDownloads(it) }
                 if (saved.isEmpty()) {
                     DownloadState.appendLog("[アプリ内エラー] 保存対象の .epub がありません")
-                    finish(DownloadState.Phase.ERROR, "❌ 失敗（詳細ログ参照）")
+                    finish(DownloadState.Phase.ERROR, DownloadState.Status.FAILED)
                 } else {
                     DownloadState.ui.value = DownloadState.ui.value.copy(savedFiles = saved)
-                    finish(DownloadState.Phase.DONE,
-                        "✅ 完了: ${saved.joinToString { it.name }}（ダウンロードフォルダ）")
+                    DownloadHistory.add(this, DownloadHistory.Entry(
+                        id = DownloadHistory.newId(),
+                        savedAt = System.currentTimeMillis(),
+                        title = DownloadHistory.titleOf(saved.first().name),
+                        sourceUrl = url,
+                        siteName = siteName,
+                        episodeCount = DownloadState.ui.value.total,
+                        files = saved,
+                    ))
+                    finish(DownloadState.Phase.DONE, DownloadState.Status.DONE,
+                        saved.joinToString { it.name })
                 }
             }
-            130 -> finish(DownloadState.Phase.CANCELLED, "中止しました")
-            else -> finish(DownloadState.Phase.ERROR, "❌ 失敗（詳細ログ参照）")
+            130 -> finish(DownloadState.Phase.CANCELLED, DownloadState.Status.CANCELLED)
+            else -> finish(DownloadState.Phase.ERROR, DownloadState.Status.FAILED)
         }
 
         staging.deleteRecursively()
@@ -121,13 +133,14 @@ class DownloadService : Service() {
         stopSelf()
     }
 
-    private fun finish(phase: DownloadState.Phase, message: String) {
-        DownloadState.ui.value = DownloadState.ui.value.copy(phase = phase, statusLine = message)
+    private fun finish(phase: DownloadState.Phase, status: DownloadState.Status, arg: String = "") {
+        DownloadState.ui.value =
+            DownloadState.ui.value.copy(phase = phase, status = status, statusArg = arg)
         stopForeground(STOP_FOREGROUND_REMOVE)
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(message)
+            .setContentText(statusText(status, arg))
             .setContentIntent(openAppIntent())
             .setAutoCancel(true)
             .build()
@@ -146,8 +159,8 @@ class DownloadService : Service() {
         fun onLine(text: String) {
             DownloadState.appendLog(text)
             if (text.isNotBlank()) {
-                DownloadState.ui.value =
-                    DownloadState.ui.value.copy(statusLine = text.trim())
+                DownloadState.ui.value = DownloadState.ui.value.copy(
+                    status = DownloadState.Status.RAW, statusArg = text.trim())
             }
         }
 
@@ -158,7 +171,8 @@ class DownloadService : Service() {
             if (now - lastNotified > 900) {
                 lastNotified = now
                 getSystemService(NotificationManager::class.java).notify(
-                    NOTIF_ID_PROGRESS, buildProgressNotification("$n / $total 話", n, total))
+                    NOTIF_ID_PROGRESS, buildProgressNotification(
+                        getString(R.string.progress_episodes, n, total), n, total))
             }
         }
 
@@ -186,6 +200,20 @@ class DownloadService : Service() {
             .setProgress(if (total > 0) total else 0, n, total <= 0)
             .build()
 
+    /**
+     * MediaStore が実際に付けた表示名を返す。
+     * 同名ファイルが既にある場合 MediaStore は「作品名 (1).epub」へ自動リネームするため、
+     * staging 側の名前をそのまま記録すると履歴に誤った名前が残る（設計書 §2.5）。
+     */
+    private fun actualDisplayName(uri: android.net.Uri, fallback: String): String = try {
+        contentResolver.query(
+            uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        } ?: fallback
+    } catch (e: Exception) {
+        fallback
+    }
+
     /** staging のファイルを公開 Downloads へコピーし、開く/共有に使える SavedFile を返す。 */
     private fun saveToDownloads(file: File): DownloadState.SavedFile? {
         val mime = when {
@@ -206,7 +234,7 @@ class DownloadService : Service() {
                 contentResolver.openOutputStream(uri)?.use { out ->
                     file.inputStream().use { it.copyTo(out) }
                 } ?: return null
-                DownloadState.SavedFile(file.name, uri.toString(), mime)
+                DownloadState.SavedFile(actualDisplayName(uri, file.name), uri.toString(), mime)
             } else {
                 val dir = File(Environment.getExternalStoragePublicDirectory(
                     Environment.DIRECTORY_DOWNLOADS), SUBDIR)

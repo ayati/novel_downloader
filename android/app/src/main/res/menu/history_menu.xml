@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/action_import"
+        android:title="@string/history_menu_import" />
+    <item
+        android:id="@+id/action_clear"
+        android:title="@string/history_menu_clear" />
+</menu>

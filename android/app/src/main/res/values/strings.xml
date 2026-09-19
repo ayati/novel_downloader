@@ -1,4 +1,87 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  既定ロケール＝日本語（design_i18n.md §2.2）。
+  どの修飾子にも一致しない端末はここへフォールバックする。
+
+  注意: 保存先フォルダ名 SUBDIR「小説ダウンローダー」はここに置かない。
+  あれは表示文言ではなくパスであり、ロケールで変わると履歴が壊れる（§4）。
+-->
 <resources>
     <string name="app_name">小説ダウンローダー</string>
+
+    <!-- 共通 -->
+    <string name="common_btn_open">📖 開く</string>
+    <string name="common_btn_share">📤 共有</string>
+    <string name="common_share">共有</string>
+    <string name="common_more">その他</string>
+    <string name="common_delete">削除</string>
+    <string name="common_cancel">キャンセル</string>
+    <string name="common_close">閉じる</string>
+    <string name="toast_no_epub_reader">ePubリーダーアプリをインストールしてください</string>
+
+    <!-- メイン画面 -->
+    <string name="main_menu_history">履歴</string>
+    <string name="main_menu_settings">設定</string>
+    <string name="main_url_hint">作品ページのURL</string>
+    <string name="main_btn_paste">📋 貼り付け</string>
+    <string name="main_btn_clear">✕ クリア</string>
+    <string name="main_btn_download">⬇ ダウンロード</string>
+    <string name="main_btn_cancel">⏸ 中止</string>
+    <string name="main_log_show">▸ 詳細ログ</string>
+    <string name="main_log_hide">▾ 詳細ログ</string>
+    <string name="main_recent_heading">最近のダウンロード（すべて見る）</string>
+    <string name="main_badge_site">◉ %1$s</string>
+    <string name="main_badge_detect_error">⚠ 判定エラー</string>
+    <string name="main_badge_hameln">⚠ ハーメルンはアプリ版では非対応です</string>
+    <string name="main_badge_unknown">🔗 サイト未判定（短縮URLなら実行時に展開されます）</string>
+    <string name="main_badge_unsupported">⚠ 未対応のURLです</string>
+    <string name="main_toast_no_clipboard_url">クリップボードにURLがありません</string>
+    <string name="main_err_no_write_permission">保存権限がないためダウンロードできません</string>
+
+    <!-- 設定ダイアログ -->
+    <string name="settings_title">設定（次のダウンロードから適用）</string>
+    <string name="settings_horizontal">横書きにする</string>
+    <string name="settings_kobo">Kobo用拡張子 (.kepub.epub)</string>
+    <string name="settings_site_cover">サイトの表紙画像を使う</string>
+    <string name="settings_save_txt">テキスト (.txt) も保存する</string>
+
+    <!-- 履歴画面 -->
+    <string name="history_title">ダウンロード履歴</string>
+    <string name="history_empty">まだダウンロード履歴がありません</string>
+    <string name="history_menu_import">保存フォルダを取り込む</string>
+    <string name="history_menu_clear">履歴をすべて削除</string>
+    <string name="history_clear_message">履歴の一覧だけを消します。ダウンロードしたファイルは削除されません。</string>
+    <string name="history_row_redownload">もう一度ダウンロード</string>
+    <string name="history_row_remove">履歴から削除</string>
+    <string name="history_remove_message">履歴の行だけを消します。ダウンロードしたファイルは削除されません。</string>
+    <string name="history_missing_title">ファイルが見つかりません</string>
+    <string name="history_missing_message">「%1$s」のファイルは削除されたようです。この履歴を消しますか？</string>
+    <string name="history_missing_remove">履歴を消す</string>
+    <string name="history_missing_keep">残す</string>
+    <string name="history_file_missing">⚠ ファイルが見つかりません</string>
+    <string name="history_toast_no_url">この履歴には元のURLが記録されていません</string>
+    <string name="history_toast_nothing_imported">取り込めるファイルはありませんでした</string>
+    <string name="history_meta_separator"> ・ </string>
+
+    <!-- 日付書式（SimpleDateFormat・Locale.getDefault() と組で使う / §7.1） -->
+    <string name="history_date_time">HH:mm</string>
+    <string name="history_date_md">M月d日</string>
+    <string name="history_date_ymd">yyyy年M月d日</string>
+
+    <!-- 状態・通知 -->
+    <string name="notif_channel_name">ダウンロード</string>
+    <string name="status_python_init">Python 初期化中…</string>
+    <string name="status_preparing">準備中…</string>
+    <string name="status_cancelled">中止しました</string>
+    <string name="status_failed">❌ 失敗（詳細ログ参照）</string>
+    <string name="status_done">✅ 完了: %1$s（ダウンロードフォルダ）</string>
+    <string name="progress_episodes">%1$d / %2$d 話</string>
+
+    <!-- 複数形（日本語は単複を区別しない / §7.3） -->
+    <plurals name="episode_count">
+        <item quantity="other">%d話</item>
+    </plurals>
+    <plurals name="imported_count">
+        <item quantity="other">%d 件を取り込みました</item>
+    </plurals>
 </resources>

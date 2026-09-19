@@ -20,12 +20,19 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        /** 履歴の「もう一度ダウンロード」から URL を受け取る。 */
+        const val EXTRA_PREFILL_URL = "prefill_url"
+    }
 
     private lateinit var urlInput: EditText
     private lateinit var btnPaste: Button
@@ -36,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressText: TextView
     private lateinit var statusLine: TextView
     private lateinit var doneCard: View
+    private lateinit var doneHeading: TextView
     private lateinit var doneFile: TextView
     private lateinit var btnOpen: Button
     private lateinit var btnShare: Button
@@ -48,7 +56,9 @@ class MainActivity : AppCompatActivity() {
     @Volatile
     private var pythonReady = false
     private var detectedUrl: String? = null   // detect 済みの正規化URL（DL開始に使う）
+    private var detectedSiteName: String = ""  // 履歴に残すサイト表示名
     private var pendingStart = false          // 権限ダイアログ応答後に開始するか
+    private var recent: DownloadHistory.Entry? = null  // IDLE 時に出す「最近のダウンロード」
 
     private val notifPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()) {
@@ -62,7 +72,7 @@ class MainActivity : AppCompatActivity() {
             if (pendingStart) { pendingStart = false; maybeRequestNotifThenStart() }
         } else {
             pendingStart = false
-            Toast.makeText(this, "保存権限がないためダウンロードできません",
+            Toast.makeText(this, getString(R.string.main_err_no_write_permission),
                 Toast.LENGTH_LONG).show()
         }
     }
@@ -80,6 +90,7 @@ class MainActivity : AppCompatActivity() {
         progressText = findViewById(R.id.progress_text)
         statusLine = findViewById(R.id.status_line)
         doneCard = findViewById(R.id.done_card)
+        doneHeading = findViewById(R.id.done_heading)
         doneFile = findViewById(R.id.done_file)
         btnOpen = findViewById(R.id.btn_open)
         btnShare = findViewById(R.id.btn_share)
@@ -87,7 +98,7 @@ class MainActivity : AppCompatActivity() {
         logScroll = findViewById(R.id.log_scroll)
         logView = findViewById(R.id.log_view)
 
-        statusLine.text = "Python 初期化中…"
+        statusLine.text = getString(R.string.status_python_init)
         thread {
             PyBridge.ensureStarted(applicationContext)
             pythonReady = true
@@ -104,7 +115,8 @@ class MainActivity : AppCompatActivity() {
                 .primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() ?: ""
             val url = Regex("""https?://\S+""").find(clip)?.value
             if (url == null) {
-                Toast.makeText(this, "クリップボードにURLがありません", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.main_toast_no_clipboard_url),
+                    Toast.LENGTH_SHORT).show()
             } else {
                 urlInput.setText(url)
             }
@@ -126,11 +138,16 @@ class MainActivity : AppCompatActivity() {
         logToggle.setOnClickListener {
             val open = logScroll.visibility == View.VISIBLE
             logScroll.visibility = if (open) View.GONE else View.VISIBLE
-            logToggle.text = if (open) "▸ 詳細ログ" else "▾ 詳細ログ"
+            logToggle.text = getString(
+                if (open) R.string.main_log_show else R.string.main_log_hide)
         }
 
-        btnOpen.setOnClickListener { firstSavedFile()?.let { openFile(it) } }
-        btnShare.setOnClickListener { firstSavedFile()?.let { shareFile(it) } }
+        btnOpen.setOnClickListener { cardFiles().firstOrNull()?.let { FileActions.open(this, it) } }
+        btnShare.setOnClickListener {
+            val files = cardFiles()
+            if (files.isNotEmpty()) FileActions.share(this, files, cardLabel())
+        }
+        doneHeading.setOnClickListener { openHistory() }
 
         lifecycleScope.launch {
             DownloadState.ui.collect { render(it) }
@@ -144,17 +161,39 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        handleShareIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 履歴画面での削除・取り込みを反映させるため毎回読み直す
+        lifecycleScope.launch {
+            recent = withContext(Dispatchers.IO) {
+                DownloadHistory.load(this@MainActivity).firstOrNull()
+            }
+            render(DownloadState.ui.value)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleShareIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
     }
 
-    /** 共有シート（ACTION_SEND）から受け取ったテキストの先頭URLを入力欄へセットする。 */
-    private fun handleShareIntent(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_SEND) return
+    /**
+     * 外部から渡された URL を入力欄へセットする。
+     * 経路は2つ: 履歴の「もう一度ダウンロード」と、ブラウザ等の共有シート（ACTION_SEND）。
+     */
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+        val prefill = intent.getStringExtra(EXTRA_PREFILL_URL)
+        if (!prefill.isNullOrEmpty()) {
+            intent.removeExtra(EXTRA_PREFILL_URL)   // 画面回転で再適用されないよう消す
+            urlInput.setText(prefill)
+            return
+        }
+        if (intent.action != Intent.ACTION_SEND) return
         val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
         // ページタイトル等が混ざるため最初の URL だけを抽出する
         val url = Regex("""https?://\S+""").find(text)?.value ?: return
@@ -168,56 +207,52 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean =
-        if (item.itemId == R.id.action_settings) {
-            showSettingsDialog()
-            true
-        } else {
-            super.onOptionsItemSelected(item)
-        }
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_history -> { openHistory(); true }
+        R.id.action_settings -> { showSettingsDialog(); true }
+        else -> super.onOptionsItemSelected(item)
+    }
+
+    private fun openHistory() {
+        startActivity(Intent(this, HistoryActivity::class.java))
+    }
 
     private fun showSettingsDialog() {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         val keys = arrayOf("horizontal", "kobo", "use_site_cover", "save_txt")
         val labels = arrayOf(
-            "横書きにする",
-            "Kobo用拡張子 (.kepub.epub)",
-            "サイトの表紙画像を使う",
-            "テキスト (.txt) も保存する",
+            getString(R.string.settings_horizontal),
+            getString(R.string.settings_kobo),
+            getString(R.string.settings_site_cover),
+            getString(R.string.settings_save_txt),
         )
         val checked = BooleanArray(keys.size) { prefs.getBoolean(keys[it], false) }
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("設定（次のダウンロードから適用）")
+            .setTitle(R.string.settings_title)
             .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
                 prefs.edit().putBoolean(keys[which], isChecked).apply()
             }
-            .setPositiveButton("閉じる", null)
+            .setPositiveButton(R.string.common_close, null)
             .show()
     }
 
     // ── 完了カード（開く／共有） ─────────────────────────────────
 
-    private fun firstSavedFile(): DownloadState.SavedFile? =
-        DownloadState.ui.value.savedFiles.firstOrNull()
-
-    private fun openFile(file: DownloadState.SavedFile) {
-        val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(android.net.Uri.parse(file.uri), file.mime)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        try {
-            startActivity(intent)
-        } catch (e: android.content.ActivityNotFoundException) {
-            Toast.makeText(this, "ePubリーダーアプリをインストールしてください",
-                Toast.LENGTH_LONG).show()
-        }
+    /** 完了直後は今回の成果物、IDLE 時は履歴の最新エントリを対象にする。 */
+    private fun cardFiles(): List<DownloadState.SavedFile> {
+        val ui = DownloadState.ui.value
+        return if (ui.phase == DownloadState.Phase.DONE && ui.savedFiles.isNotEmpty())
+            ui.savedFiles
+        else
+            recent?.files.orEmpty()
     }
 
-    private fun shareFile(file: DownloadState.SavedFile) {
-        val intent = Intent(Intent.ACTION_SEND)
-            .setType(file.mime)
-            .putExtra(Intent.EXTRA_STREAM, android.net.Uri.parse(file.uri))
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        startActivity(Intent.createChooser(intent, file.name))
+    private fun cardLabel(): String {
+        val ui = DownloadState.ui.value
+        return if (ui.phase == DownloadState.Phase.DONE && ui.savedFiles.isNotEmpty())
+            ui.savedFiles.first().name
+        else
+            recent?.title.orEmpty()
     }
 
     // ── サイト判定バッジ ─────────────────────────────────────────
@@ -225,6 +260,7 @@ class MainActivity : AppCompatActivity() {
     private fun onUrlChanged() {
         val text = urlInput.text.toString().trim()
         detectedUrl = null
+        detectedSiteName = ""
         if (!pythonReady || text.isEmpty()) {
             siteBadge.visibility = View.GONE
             updateMainButton()
@@ -248,21 +284,22 @@ class MainActivity : AppCompatActivity() {
         siteBadge.visibility = View.VISIBLE
         when {
             json == null ->
-                siteBadge.text = "⚠ 判定エラー"
+                siteBadge.text = getString(R.string.main_badge_detect_error)
             json.optBoolean("needs_playwright") ->
-                siteBadge.text = "⚠ ハーメルンはアプリ版では非対応です"
+                siteBadge.text = getString(R.string.main_badge_hameln)
             !json.isNull("site") -> {
                 detectedUrl = json.optString("normalized_url", input).ifEmpty { input }
-                siteBadge.text = "◉ ${json.optString("display_name")}"
+                detectedSiteName = json.optString("display_name")
+                siteBadge.text = getString(R.string.main_badge_site, detectedSiteName)
             }
             Regex("""^https?://\S+$""").matches(input) &&
                     !input.contains("syosetu.org") -> {
                 // 短縮URLの可能性: 本体が実行時に展開するので許可する
                 detectedUrl = input
-                siteBadge.text = "🔗 サイト未判定（短縮URLなら実行時に展開されます）"
+                siteBadge.text = getString(R.string.main_badge_unknown)
             }
             else ->
-                siteBadge.text = "⚠ 未対応のURLです"
+                siteBadge.text = getString(R.string.main_badge_unsupported)
         }
     }
 
@@ -298,6 +335,7 @@ class MainActivity : AppCompatActivity() {
         val url = detectedUrl ?: return
         val intent = Intent(this, DownloadService::class.java)
             .putExtra(DownloadService.EXTRA_URL, url)
+            .putExtra(DownloadService.EXTRA_SITE_NAME, detectedSiteName)
         ContextCompat.startForegroundService(this, intent)
     }
 
@@ -305,12 +343,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun render(ui: DownloadState.Ui) {
         updateMainButton()
-        btnMain.text = if (ui.isRunning) "⏸ 中止" else "⬇ ダウンロード"
+        btnMain.text = getString(
+            if (ui.isRunning) R.string.main_btn_cancel else R.string.main_btn_download)
 
+        // 完了直後は「✅ 完了」、IDLE で履歴があれば「最近のダウンロード」を同じカードに出す
         val done = ui.phase == DownloadState.Phase.DONE && ui.savedFiles.isNotEmpty()
-        doneCard.visibility = if (done) View.VISIBLE else View.GONE
-        if (done) {
-            doneFile.text = ui.savedFiles.joinToString("\n") { it.name }
+        val showRecent = !done && ui.phase == DownloadState.Phase.IDLE && recent != null
+        doneCard.visibility = if (done || showRecent) View.VISIBLE else View.GONE
+        doneHeading.visibility = if (showRecent) View.VISIBLE else View.GONE
+        when {
+            done -> doneFile.text = ui.savedFiles.joinToString("\n") { it.name }
+            showRecent -> {
+                doneHeading.text = getString(R.string.main_recent_heading)
+                doneFile.text = recent!!.title
+            }
         }
 
         when (ui.phase) {
@@ -322,7 +368,7 @@ class MainActivity : AppCompatActivity() {
                 progressBar.visibility = View.VISIBLE
                 progressBar.isIndeterminate = true
                 progressText.visibility = View.GONE
-                statusLine.text = ui.statusLine
+                statusLine.text = statusText(ui.status, ui.statusArg)
             }
             DownloadState.Phase.DOWNLOADING -> {
                 progressBar.visibility = View.VISIBLE
@@ -330,20 +376,20 @@ class MainActivity : AppCompatActivity() {
                 progressBar.max = ui.total.coerceAtLeast(1)
                 progressBar.progress = ui.n
                 progressText.visibility = View.VISIBLE
-                progressText.text = "${ui.n} / ${ui.total} 話"
-                statusLine.text = ui.statusLine
+                progressText.text = getString(R.string.progress_episodes, ui.n, ui.total)
+                statusLine.text = statusText(ui.status, ui.statusArg)
             }
             DownloadState.Phase.DONE, DownloadState.Phase.CANCELLED -> {
                 progressBar.visibility = View.GONE
                 progressText.visibility = View.GONE
-                statusLine.text = ui.statusLine
+                statusLine.text = statusText(ui.status, ui.statusArg)
             }
             DownloadState.Phase.ERROR -> {
                 progressBar.visibility = View.GONE
                 progressText.visibility = View.GONE
-                statusLine.text = ui.statusLine
+                statusLine.text = statusText(ui.status, ui.statusArg)
                 logScroll.visibility = View.VISIBLE   // エラー時はログを自動展開
-                logToggle.text = "▾ 詳細ログ"
+                logToggle.text = getString(R.string.main_log_hide)
             }
         }
     }
