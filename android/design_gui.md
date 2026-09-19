@@ -217,6 +217,29 @@ interface DownloadListener {
 | Python 3.10 固定（Chaquopy 17 デフォルト） | 本体が将来 3.11+ 構文を使うと壊れる | 本体は 3.10+ 要件で現状一致。`version = "3.13"` への引き上げを M3 で検証 |
 | 「開く」で ePub を開けるリーダーが端末に無い | 完了後に行き止まり | `ACTION_VIEW` 失敗時は「ePubリーダーアプリをインストールしてください」トースト |
 
+## 11.5 エッジツーエッジ強制への暫定対応（2026-09-19）
+
+**症状**: Android 16 実機で、URL 入力欄と［貼り付け／クリア］行が ActionBar の上にはみ出し、
+画面上端が詰まって URL 入力が困難になる。Android 13 では発生しない。
+
+**原因**: `targetSdk = 35` のため **Android 15 (API 35) 以降ではエッジツーエッジ表示が強制される**。
+本アプリは AppCompat の ActionBar をそのまま使い、ウィンドウインセットを処理していないため、
+コンテンツがウィンドウ原点（y=0）から配置され、ステータスバーと ActionBar の裏に潜り込む。
+`activity_main.xml` の子要素の並び（1:URL欄 → 2:貼り付け/クリア → 3:サイトバッジ）に対し、
+実機では 3 が ActionBar 直下に来ていたことと、ステータスバー＋ActionBar の高さ（約 96dp）が一致する。
+
+**暫定対応**: `res/values-v35/themes.xml` で公式の移行用フラグを立て、強制を解除する。
+
+```xml
+<item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+```
+
+**恒久対応（未実施・将来課題）**: この属性は過渡期向けで将来の SDK では削除される。
+本来は Toolbar をレイアウトに置き、`enableEdgeToEdge()` ＋ `ViewCompat.setOnApplyWindowInsetsListener`
+でインセットを処理する形へ移行する。移行するまで `targetSdk` を上げる際は本節を確認すること。
+
+---
+
 ## 12. 決定事項サマリー
 
 - 本体に GUI 連携 API を実装（`main(argv)`・`ABORT_EVENT`/`AbortRequested`・終了コード130・`PROGRESS_CALLBACK`・`NOVEL_DL_COVER_FONT`）。未使用時不活性で CLI 挙動不変。Windows GUI とも共通利用
