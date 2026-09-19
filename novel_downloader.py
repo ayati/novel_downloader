@@ -449,8 +449,37 @@ def _sleep(seconds: float) -> None:
         raise AbortRequested()
 
 
+# ══════════════════════════════════════════
+#  GUI 連携イベント（--progress-json）
+# ══════════════════════════════════════════
+#
+# 詳細は design_progress_json.md。--progress-json 指定時のみ有効で、
+# 既定の挙動は一切変わらない。stdout は JSON Lines 専用になり、
+# 人間向けの出力は _main() が sys.stdout を stderr に差し替えて回す。
+
+_EVENT_OUT = None   # --progress-json 有効時に退避した本物の stdout
+
+
+def _emit_event(event: str, **fields) -> None:
+    """GUI 向けイベントを JSON 1 行で出力する（無効時は何もしない）。
+
+    イベント名とフィールド名は安定識別子であり翻訳しない
+    （design_i18n.md §3 Step 1 確定事項 7）。
+    """
+    if _EVENT_OUT is None:
+        return
+    try:
+        rec = {"schema": 1, "event": event}
+        rec.update(fields)
+        _EVENT_OUT.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        _EVENT_OUT.flush()
+    except Exception:
+        pass   # 通知の失敗でダウンロードを止めない
+
+
 def _progress(n: int, total: int, title: str) -> None:
     """PROGRESS_CALLBACK が登録されていれば話数進捗を通知する。"""
+    _emit_event("progress", n=n, total=total, title=title)
     if PROGRESS_CALLBACK is not None:
         try:
             PROGRESS_CALLBACK(n, total, title)
@@ -465,6 +494,7 @@ def _print_epub_start() -> None:
 
 def _print_text_done(txt_path, note: str = "") -> None:
     """テキスト出力完了を知らせる。note は補足（例: エンコーディング変換）。"""
+    _emit_event("output", kind="txt", path=str(txt_path))
     print(f"\n✅ テキスト出力完了: {txt_path}" + (f"  {note}" if note else ""))
 
 
@@ -476,6 +506,7 @@ def _print_epub_done(epub_path) -> None:
     Step P（--progress-json）のイベント発火点もここに置く。
     design_i18n.md §2.2 / §4 を参照。
     """
+    _emit_event("output", kind="epub", path=str(epub_path))
     print(f"✅ ePub出力完了: {epub_path}")
 
 
@@ -515,6 +546,7 @@ def _print_stage(n: int, label: str, *, total: int = 3,
     Windows GUI の進捗抽出は先頭空白を必須にしてこの見出しを意図的に弾いている
     （gui_v1_design.md §9.2）。本文の進捗行と混同しないよう字下げしない。
     """
+    _emit_event("stage", n=n, total=total, label=label)
     print(("\n" if blank_before else "") + f"[{n}/{total}] {label}")
 
 
@@ -11609,6 +11641,11 @@ def _build_arg_parser(lang: str = "ja") -> argparse.ArgumentParser:
                         help=H(
                             "Detect the site for a URL and print one JSON line, then exit (GUI helper; offline; no short-URL expansion)",
                             "URLのサイト種別を判定し JSON 1行で出力して終了（GUI用・読み取り専用・オフライン・短縮URL展開なし）"))
+    parser.add_argument("--progress-json", action="store_true",
+                        help=H("Emit machine-readable progress events as JSON Lines on stdout "
+                               "and send human-readable output to stderr (for the GUI).",
+                               "進捗を JSON Lines で stdout に出力し、人間向け出力は stderr へ回す"
+                               "（GUI 連携用）"))
     parser.add_argument("--list-sites", dest="list_sites", action="store_true",
                         help=H(
                             "Print the supported-site list as JSON and exit (GUI helper; read-only)",
@@ -11622,6 +11659,16 @@ def _main(argv=None):
     _UI_LANG = _resolve_ui_lang(argv)   # インプロセス利用では argv が正
     parser = _build_arg_parser(_UI_LANG)
     args = parser.parse_args(argv)
+
+    # ── --progress-json: stdout をイベント専用にし、人間向け出力は stderr へ ──
+    # 既存の print() を 1 つも書き換えずに済ませるため sys.stdout ごと差し替える。
+    # stdout に JSON を書く読み取り専用モードとは併用しない。
+    if (getattr(args, "progress_json", False)
+            and not getattr(args, "list_sites", False)
+            and not getattr(args, "detect_site", None)):
+        global _EVENT_OUT
+        _EVENT_OUT = sys.stdout
+        sys.stdout = sys.stderr
 
     # ── --list-sites: 対応サイト一覧（GUI用・読み取り専用・オフライン） ──
     if getattr(args, "list_sites", False):

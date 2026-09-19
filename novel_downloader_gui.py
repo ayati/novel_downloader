@@ -635,6 +635,8 @@ class NovelDownloaderApp(ctk.CTk):
         if s.get("font_path") and os.path.isfile(s["font_path"]):
             args += ["--font", s["font_path"]]
         args += ["--delay", str(s["delay"]), "--encoding", s["encoding"]]
+        # 進捗・完了は JSON イベントで受け取る（design_progress_json.md）
+        args.append("--progress-json")
         return args
 
     def _download_worker(self, url: str, s: dict):
@@ -653,18 +655,40 @@ class NovelDownloaderApp(ctk.CTk):
             self._queue.put(("aborted",))
             return
 
-        # 2) ダウンロード起動
+        # 2) ダウンロード起動（イベント方式）
+        cli = self._build_cli_args(target_url, s)
+        rc, got_events = self._run_engine(cli)
+        if rc is None:
+            return
+        # 版ずれ対策: 古いエンジンは --progress-json を知らず argparse エラー(2)で即死する。
+        # 1 度だけフラグ無しで再実行し、旧方式（stderr の正規表現）で拾う。
+        if rc == 2 and not got_events and "--progress-json" in cli:
+            self._queue.put(("rawlog",
+                             "[情報] エンジンが --progress-json 非対応のため旧方式で再実行します"))
+            rc, _ = self._run_engine([a for a in cli if a != "--progress-json"])
+            if rc is None:
+                return
+        self._queue.put(("finished", rc))
+
+    # ── エンジン起動と 2 ストリーム読み取り（design_progress_json.md §4） ──
+
+    def _run_engine(self, cli_args):
+        """エンジンを起動し (終了コード, イベントを受信したか) を返す。
+
+        stdout は JSON Lines のイベント、stderr は人間向けログ。
+        起動に失敗した場合は (None, False) を返し、呼び出し側は打ち切る。
+        """
         try:
             proc = subprocess.Popen(
-                engine_cmd(*self._build_cli_args(target_url, s)),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                engine_cmd(*cli_args),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env=_engine_env(), creationflags=_CREATE_NO_WINDOW,
                 bufsize=1, universal_newlines=True, encoding="utf-8", errors="replace",
             )
         except Exception as e:
             self._queue.put(("rawlog", f"[起動失敗] {e}"))
             self._queue.put(("finished", 1))
-            return
+            return None, False
         self._proc = proc
         # 起動と中止が競合した場合、起動直後でも止める
         if self._abort_event.is_set():
@@ -673,8 +697,42 @@ class NovelDownloaderApp(ctk.CTk):
             except Exception:
                 pass
 
-        # 3) stdout を1行ずつ読む（§9）
-        for line in proc.stdout:
+        t_err = threading.Thread(target=self._read_log, args=(proc.stderr,), daemon=True)
+        t_err.start()
+        got_events = self._read_events(proc.stdout)
+        rc = proc.wait()
+        t_err.join(timeout=5)
+        return rc, got_events
+
+    def _read_events(self, stream) -> bool:
+        """stdout の JSON Lines を読む。1 件でも受信したら True。"""
+        got = False
+        for line in stream:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                self._queue.put(("rawlog", line))   # 想定外の行はログへ流す
+                continue
+            got = True
+            kind = ev.get("event")
+            if kind == "progress":
+                self._queue.put(("progress", int(ev.get("n", 0)), int(ev.get("total", 0))))
+            elif kind == "output" and ev.get("kind") == "epub":
+                self._queue.put(("epub", str(ev.get("path", "")).strip()))
+            # stage や未知のイベントは無視する（人間向けの見出しは stderr に出る）
+        return got
+
+    def _read_log(self, stream):
+        """stderr の人間向けログを読む。
+
+        旧正規表現も残す。新エンジンでも人間向け出力はこちらに来るので
+        イベントと二重に拾うことになるが、値は同じで害がない。
+        古いエンジンへフォールバックしたときはこちらだけが頼りになる。
+        """
+        for line in stream:
             line = line.rstrip("\n")
             self._queue.put(("rawlog", line))
             m = _RE_PROGRESS.match(line)
@@ -684,8 +742,6 @@ class NovelDownloaderApp(ctk.CTk):
             md = _RE_EPUB_DONE.search(line)
             if md:
                 self._queue.put(("epub", md.group(1).strip()))
-        rc = proc.wait()
-        self._queue.put(("finished", rc))
 
     # ── キュー監視（UIスレッド・§6） ──────────────────────────
     def _poll_queue(self):
