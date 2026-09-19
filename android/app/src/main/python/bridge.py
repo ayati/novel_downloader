@@ -65,6 +65,31 @@ class _LineWriter(io.TextIOBase):
             pass  # リスナー側の例外でダウンロードを止めない
 
 
+def _emit_meta(url: str, listener) -> None:
+    """展開後の URL からサイトを判定して listener.onMeta() へ渡す。
+
+    Kotlin 側の detect() はオフライン即時判定のため、短縮URL（share.google 等）では
+    サイトが分からない。実際の展開は本体 main() が実行時に行うので、その結果が
+    アプリに戻らず履歴の配信元が空になる。ここで同じ展開を行って補う。
+
+    expand_short_url() は既知の短縮ホストでなければ通信せずそのまま返すため、
+    通常の URL では追加コストが無い。サイト名は補助情報なので失敗しても無視する。
+    """
+    on_meta = getattr(listener, "onMeta", None)
+    if on_meta is None:
+        return
+    try:
+        site = nd.detect_site(nd.expand_short_url(url))
+        if site in nd._SITE_DISPATCH:
+            on_meta(json.dumps({
+                "schema": 1,
+                "site": site,
+                "display_name": nd._SITE_DISPATCH[site][0],
+            }, ensure_ascii=False))
+    except Exception:
+        pass
+
+
 def run(url: str, options_json: str, listener) -> int:
     """ダウンロードを実行して終了コードを返す（0=成功 / 130=中止 / 他=エラー）。
 
@@ -105,6 +130,7 @@ def run(url: str, options_json: str, listener) -> int:
     nd.PROGRESS_CALLBACK = on_progress
     sys.stdout = sys.stderr = out
     try:
+        _emit_meta(url, listener)
         nd.main(argv)
         return 0
     except SystemExit as e:

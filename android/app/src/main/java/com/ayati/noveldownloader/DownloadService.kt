@@ -37,6 +37,9 @@ class DownloadService : Service() {
 
     @Volatile
     private var running = false
+    /** bridge.py が短縮URL展開後に判定したサイト名（detect 時点では未判定のことがある）。 */
+    @Volatile
+    private var resolvedSiteName = ""
     private var lastNotified = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -75,6 +78,7 @@ class DownloadService : Service() {
 
     private fun work(url: String, siteName: String) {
         DownloadState.reset()
+        resolvedSiteName = ""
         DownloadState.ui.value = DownloadState.Ui(
             phase = DownloadState.Phase.PREPARING, status = DownloadState.Status.PREPARING)
 
@@ -116,7 +120,7 @@ class DownloadService : Service() {
                         savedAt = System.currentTimeMillis(),
                         title = DownloadHistory.titleOf(saved.first().name),
                         sourceUrl = url,
-                        siteName = siteName,
+                        siteName = siteName.ifEmpty { resolvedSiteName },
                         episodeCount = DownloadState.ui.value.total,
                         files = saved,
                     ))
@@ -173,6 +177,20 @@ class DownloadService : Service() {
                 getSystemService(NotificationManager::class.java).notify(
                     NOTIF_ID_PROGRESS, buildProgressNotification(
                         getString(R.string.progress_episodes, n, total), n, total))
+            }
+        }
+
+        /**
+         * bridge.py が短縮URLを展開して判定したサイト名を受け取る。
+         * detect() はオフライン即時判定なので短縮URLではサイトが分からず、
+         * そのままだと履歴の配信元が空になる。
+         */
+        fun onMeta(json: String) {
+            try {
+                val name = JSONObject(json).optString("display_name")
+                if (name.isNotEmpty()) resolvedSiteName = name
+            } catch (e: Exception) {
+                // サイト名は補助情報。取れなくてもダウンロードには影響しない
             }
         }
 
