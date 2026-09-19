@@ -16,3 +16,5 @@ health_check_logs/
 # OS
 .DS_Store
 Thumbs.db
+
+android/.idea/

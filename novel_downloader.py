@@ -11112,19 +11112,60 @@ def run_watch(args) -> int:
     return 1 if has_error else 0
 
 
-def _build_arg_parser() -> argparse.ArgumentParser:
+def _resolve_ui_lang(argv=None) -> str:
+    """Return 'en' or 'ja' for CLI help text.
+
+    Priority: --lang / -L  >  NOVEL_DOWNLOADER_LANG  >  ja.
+    LANG / LC_ALL are ignored so an English locale does not change the default.
+    """
+    import os as _os
+    raw = list(sys.argv[1:] if argv is None else argv)
+    for i, a in enumerate(raw):
+        if a in ("--lang", "-L") and i + 1 < len(raw):
+            v = raw[i + 1].lower()
+            return "en" if v.startswith("en") else "ja"
+        if a.startswith("--lang="):
+            v = a.split("=", 1)[1].lower()
+            return "en" if v.startswith("en") else "ja"
+    env = (_os.environ.get("NOVEL_DOWNLOADER_LANG") or "").lower()
+    if env.startswith("en"):
+        return "en"
+    return "ja"
+
+def _build_arg_parser(lang: str = "ja") -> argparse.ArgumentParser:
     """CLI パーサを組み立てて返す。
 
     _main() のほか、_make_runner_args() が既定値の土台として使う。
+    lang='en' のときはヘルプ文面だけ英語にする（動作は同一）。
     """
+    en = (lang == "en")
+
+    def H(en_text: str, ja_text: str) -> str:
+        return en_text if en else ja_text
+
     parser = argparse.ArgumentParser(
-        description=(
+        description=H(
+            "Downloader for Japanese web-novel sites (Syosetu, Kakuyomu, Alphapolis, and others).\n"
+            "Detects the site from the URL and writes Aozora-style text (.txt)\n"
+            "plus a vertical-writing EPUB3 (.epub).",
             "小説家になろう・カクヨム・アルファポリス・エブリスタ・野いちご・ハーメルン 共通ダウンローダー\n"
             "指定URLのサイトを自動判別して全話を\n"
-            "青空文庫書式テキスト（.txt）と縦書きePub3（.epub）に出力します。"
+            "青空文庫書式テキスト（.txt）と縦書きePub3（.epub）に出力します。",
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
+        epilog=H(
+            "Examples:\n"
+            "  python novel_downloader.py https://ncode.syosetu.com/n0022gd/\n"
+            "  python novel_downloader.py https://kakuyomu.jp/works/16816700428110685787\n"
+            "  python novel_downloader.py https://www.alphapolis.co.jp/novel/243223524/173169133\n"
+            "  python novel_downloader.py https://estar.jp/novels/26384598\n"
+            "  python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --resume 51\n"
+            "  python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --no-epub\n"
+            "  python novel_downloader.py --from-file mynovel.txt\n"
+            "  python novel_downloader.py --from-file mynovel.txt --title \"Title\" --author \"Author\"\n"
+            "  python novel_downloader.py --from-file mynovel.txt --cover-bg \"#2d4073\"\n"
+            "  python novel_downloader.py --from-epub mynovel.epub\n"
+            "  python novel_downloader.py --from-epub mynovel.epub -o output\n",
             "例:\n"
             "  python novel_downloader.py https://ncode.syosetu.com/n0022gd/\n"
             "  python novel_downloader.py https://kakuyomu.jp/works/16816700428110685787\n"
@@ -11136,136 +11177,183 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "  python novel_downloader.py --from-file mynovel.txt --title \"タイトル\" --author \"著者名\"\n"
             "  python novel_downloader.py --from-file mynovel.txt --cover-bg \"#2d4073\"\n"
             "  python novel_downloader.py --from-epub mynovel.epub\n"
-            "  python novel_downloader.py --from-epub mynovel.epub -o output\n"
-        )
+            "  python novel_downloader.py --from-epub mynovel.epub -o output\n",
+        ),
     )
     parser.add_argument("--version", action="version",
                         version=f"novel_downloader {__version__}")
+    parser.add_argument("--lang", "-L", dest="lang", default=None,
+                        choices=["ja", "en"],
+                        help=H(
+                            "UI language for --help (ja or en). "
+                            "Also honours NOVEL_DOWNLOADER_LANG. "
+                            "Does not change downloaded novel text.",
+                            "ヘルプ等の表示言語（ja / en）。"
+                            "環境変数 NOVEL_DOWNLOADER_LANG でも指定可。"
+                            "作品本文の言語は変わりません。",
+                        ))
     parser.add_argument("url", nargs="?", default=None,
-                        help="作品のURL（小説家になろう・カクヨム・アルファポリス・エブリスタ）"
-                             "。--from-file 指定時は省略可")
+                        help=H(
+                            "Work URL. Optional when --from-file / --from-epub is used.",
+                            "作品のURL（小説家になろう・カクヨム・アルファポリス・エブリスタ）。--from-file 指定時は省略可",
+                        ))
     parser.add_argument("-o", "--output",
-                        help="出力ベース名（省略時は作品タイトルから自動生成）"
-                             " 例: -o mynovel → mynovel.txt / mynovel.epub")
+                        help=H(
+                            "Output basename (default: work title). Example: -o mynovel",
+                            "出力ベース名（省略時は作品タイトルから自動生成） 例: -o mynovel → mynovel.txt / mynovel.epub",
+                        ))
     parser.add_argument("--delay", type=float, default=1.5,
-                        help="リクエスト間隔（秒、デフォルト: 1.5）")
+                        help=H("Request interval in seconds (default: 1.5)",
+                               "リクエスト間隔（秒、デフォルト: 1.5）"))
     parser.add_argument("--resume", dest="resume", nargs="?", const=0, type=int,
                         default=None, metavar="N",
-                        help="続きからダウンロード。"
-                             "N を省略すると既存 .txt から話数を自動検出して再開。"
-                             "N を指定すると第 N 話から開始（なろうの従来動作も維持）")
+                        help=H(
+                            "Resume a download. Omit N to detect the last chapter from an existing .txt. With N, start from chapter N.",
+                            "続きからダウンロード。N を省略すると既存 .txt から話数を自動検出して再開。N を指定すると第 N 話から開始（なろうの従来動作も維持）"))
     parser.add_argument("--start", type=int, default=1, metavar="N",
-                        help="取得開始話数（デフォルト: 1）")
+                        help=H(
+                            "First chapter to fetch (default: 1)",
+                            "取得開始話数（デフォルト: 1）"))
     parser.add_argument("--end", type=int, default=None, metavar="N",
-                        help="取得終了話数（省略時は最終話まで）")
+                        help=H(
+                            "Last chapter to fetch (default: through the final chapter)",
+                            "取得終了話数（省略時は最終話まで）"))
     parser.add_argument("--encoding", default="utf-8",
                         choices=["utf-8", "utf-8-sig", "shift_jis", "cp932"],
-                        help="テキスト出力エンコーディング（デフォルト: utf-8）")
+                        help=H(
+                            "Text output encoding (default: utf-8)",
+                            "テキスト出力エンコーディング（デフォルト: utf-8）"))
     parser.add_argument("--newline", default="os",
                         choices=["os", "lf", "crlf"],
-                        help="テキスト出力の改行コード（デフォルト: os=実行環境標準）"
-                             "。lf=LF(Unix形式) / crlf=CRLF(Windows形式)")
+                        help=H(
+                            "Newline for text output (default: os = host default). lf = Unix LF / crlf = Windows CRLF",
+                            "テキスト出力の改行コード（デフォルト: os=実行環境標準）。lf=LF(Unix形式) / crlf=CRLF(Windows形式)"))
     parser.add_argument("--no-epub", dest="no_epub", action="store_true",
-                        help="ePub出力を省略してテキストのみ出力する")
+                        help=H(
+                            "Skip EPUB output; write text only",
+                            "ePub出力を省略してテキストのみ出力する"))
     parser.add_argument("--no-inline-images", dest="no_inline_images",
                         action="store_true",
-                        help="本文中の挿絵を取得せず ePub にも埋め込まない"
-                             "（表紙画像には影響しない）")
+                        help=H(
+                            "Do not fetch or embed inline illustrations (cover image is unaffected)",
+                            "本文中の挿絵を取得せず ePub にも埋め込まない（表紙画像には影響しない）"))
     parser.add_argument("--list-only", dest="list_only", action="store_true",
-                        help="ダウンロードせずエピソード一覧と話数のみ表示して終了する")
+                        help=H(
+                            "List episodes and chapter count, then exit without downloading",
+                            "ダウンロードせずエピソード一覧と話数のみ表示して終了する"))
     parser.add_argument("--cover-bg", dest="cover_bg", default=None, metavar="COLOR",
-                        help="表紙背景色（#RRGGBB形式。"
-                             "省略時はなろう: #18b7cd, カクヨム: #4BAAE0, "
-                             "ファイルモード: #16234b）")
+                        help=H(
+                            "Cover background colour as #RRGGBB (defaults: Syosetu #18b7cd, Kakuyomu #4BAAE0, file mode #16234b)",
+                            "表紙背景色（#RRGGBB形式。省略時はなろう: #18b7cd, カクヨム: #4BAAE0, ファイルモード: #16234b）"))
     parser.add_argument("--from-file", dest="from_file", default=None, metavar="FILE",
-                        help="ローカルテキストファイル（青空文庫書式）からePub3を生成する。"
-                             "指定時はURLは不要")
+                        help=H(
+                            "Build EPUB3 from a local Aozora-format text file. URL is not required.",
+                            "ローカルテキストファイル（青空文庫書式）からePub3を生成する。指定時はURLは不要"))
     parser.add_argument("--from-epub", dest="from_epub", default=None, metavar="FILE",
-                        help="ローカルePub3ファイル（このツールの出力）から"
-                             "青空文庫書式テキストを生成する。指定時はURLは不要")
+                        help=H(
+                            "Convert a local EPUB3 from this tool back to Aozora-format text. URL is not required.",
+                            "ローカルePub3ファイル（このツールの出力）から青空文庫書式テキストを生成する。指定時はURLは不要"))
     parser.add_argument("--title", dest="title_override", default=None, metavar="TITLE",
-                        help="タイトルを上書き（--from-file 使用時）")
+                        help=H(
+                            "Override title (with --from-file)",
+                            "タイトルを上書き（--from-file 使用時）"))
     parser.add_argument("--author", dest="author_override", default=None, metavar="AUTHOR",
-                        help="著者名を上書き（--from-file 使用時）")
+                        help=H(
+                            "Override author (with --from-file)",
+                            "著者名を上書き（--from-file 使用時）"))
     parser.add_argument("--cover-image", dest="cover_image", default=None, metavar="FILE",
-                        help="表紙に使用するローカル画像ファイル（JPEG/PNG）。"
-                             "指定するとPillowによる自動生成表紙の代わりに使用される。"
-                             "ファイルが存在しない・非対応形式の場合は自動生成にフォールバック")
+                        help=H(
+                            "Local JPEG/PNG cover. Used instead of the generated cover. Falls back to generation if missing or unsupported.",
+                            "表紙に使用するローカル画像ファイル（JPEG/PNG）。指定するとPillowによる自動生成表紙の代わりに使用される。ファイルが存在しない・非対応形式の場合は自動生成にフォールバック"))
     parser.add_argument("--use-site-cover", dest="use_site_cover", action="store_true",
-                        help="作品ページの公式サムネイル画像（og:image）を表紙として使用する。"
-                             "--cover-image が指定されている場合は --cover-image が優先される")
+                        help=H(
+                            "Use the work page og:image as the cover. --cover-image wins if both are set.",
+                            "作品ページの公式サムネイル画像（og:image）を表紙として使用する。--cover-image が指定されている場合は --cover-image が優先される"))
     parser.add_argument("--font", dest="font", default=None, metavar="FILE",
-                        help="ePub本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。"
-                             "指定したフォントを body のデフォルトフォントとして CSS に設定する")
+                        help=H(
+                            "Font file to embed in the EPUB body (.otf/.ttf/.woff/.woff2). Set as the CSS default for body.",
+                            "ePub本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。指定したフォントを body のデフォルトフォントとして CSS に設定する"))
     parser.add_argument("--toc-at-end", dest="toc_at_end", action="store_true",
-                        help="目次ページを本文の後（奥付の後）に配置する。"
-                             "デフォルトは表紙の直後・本文の前")
+                        help=H(
+                            "Place the table of contents after the colophon. Default is immediately after the cover.",
+                            "目次ページを本文の後（奥付の後）に配置する。デフォルトは表紙の直後・本文の前"))
     parser.add_argument("--output-dir", dest="output_dir", default=None, metavar="DIR",
-                        help="出力先ディレクトリを指定する（省略時はカレントディレクトリ）。"
-                             "指定したディレクトリが存在しない場合は自動作成する。"
-                             "ファイル名は従来通りタイトルから自動生成（-o と併用可）")
+                        help=H(
+                            "Output directory (default: current directory). Created if missing. File names still come from the title; may be combined with -o.",
+                            "出力先ディレクトリを指定する（省略時はカレントディレクトリ）。指定したディレクトリが存在しない場合は自動作成する。ファイル名は従来通りタイトルから自動生成（-o と併用可）"))
     parser.add_argument("--kobo", dest="kobo", action="store_true",
-                        help="Kobo端末向けにePubの拡張子を .kepub.epub にする。"
-                             "Kobo Clara / Kobo Sage 等のKobo専用リーダーで"
-                             "縦書きや目次を正しく処理させるために使用する")
+                        help=H(
+                            "Write .kepub.epub for Kobo devices so vertical text and the TOC work on Clara / Sage and similar.",
+                            "Kobo端末向けにePubの拡張子を .kepub.epub にする。Kobo Clara / Kobo Sage 等のKobo専用リーダーで縦書きや目次を正しく処理させるために使用する"))
     parser.add_argument("--horizontal", dest="horizontal", action="store_true",
-                        help="横書きePub3を生成する。縦中横（tcy）処理をスキップし、"
-                             "全ページを横組み（html.hltr）で出力する。"
-                             "page-progression-direction は ltr に設定される")
+                        help=H(
+                            "Build a horizontal EPUB3. Skips tate-chu-yoko and sets html.hltr plus page-progression-direction ltr.",
+                            "横書きePub3を生成する。縦中横（tcy）処理をスキップし、全ページを横組み（html.hltr）で出力する。page-progression-direction は ltr に設定される"))
     parser.add_argument("--append", dest="append_file", default=None, metavar="FILE",
-                        help="既存の青空文庫書式 .txt ファイルを指定し、続きのエピソードを追記する。"
-                             "ファイル内の「底本URL：」からサイトと URL を自動検出し、"
-                             "未取得エピソードをダウンロードして .txt に追加、"
-                             "ePub を新規生成（上書き）する。URL の指定は不要")
+                        help=H(
+                            "Append new episodes to an existing Aozora .txt. Detects the source URL from the 底本URL header, downloads missing chapters, and rebuilds the EPUB. No URL argument needed.",
+                            "既存の青空文庫書式 .txt ファイルを指定し、続きのエピソードを追記する。ファイル内の「底本URL：」からサイトと URL を自動検出し、未取得エピソードをダウンロードして .txt に追加、ePub を新規生成（上書き）する。URL の指定は不要"))
     parser.add_argument("--append-dir", dest="append_dir", default=None, metavar="DIR",
-                        help="ディレクトリ内の全 .txt ファイルを走査し、新着エピソードがある"
-                             "作品だけ差分ダウンロード・追記・ePub 再生成する。"
-                             "実行前に対象一覧を表示して確認を求める（--yes でスキップ可）")
+                        help=H(
+                            "Scan a directory of .txt files and append only works that have new episodes. Shows a list first; skip the prompt with --yes.",
+                            "ディレクトリ内の全 .txt ファイルを走査し、新着エピソードがある作品だけ差分ダウンロード・追記・ePub 再生成する。実行前に対象一覧を表示して確認を求める（--yes でスキップ可）"))
     parser.add_argument("--yes", dest="yes", action="store_true",
-                        help="--append-dir の確認プロンプトをスキップする（自動化用）")
+                        help=H(
+                            "Skip the --append-dir confirmation prompt (for automation)",
+                            "--append-dir の確認プロンプトをスキップする（自動化用）"))
     parser.add_argument("--check-update", dest="check_update_file", default=None, metavar="FILE",
-                        help="既存の .txt ファイルを指定し、サイトの最新話数と比較して"
-                             "新着エピソード数を表示する。ダウンロードは行わない。"
-                             "--append の前に更新確認したいときに使う")
+                        help=H(
+                            "Compare an existing .txt with the site chapter count and print new episodes. Does not download. Use before --append.",
+                            "既存の .txt ファイルを指定し、サイトの最新話数と比較して新着エピソード数を表示する。ダウンロードは行わない。--append の前に更新確認したいときに使う"))
     parser.add_argument("--check-update-dir", dest="check_update_dir", default=None, metavar="DIR",
-                        help="指定ディレクトリ内の全 .txt ファイルを走査し、"
-                             "各作品の新着エピソードを一括確認する。"
-                             "ダウンロードは行わない")
+                        help=H(
+                            "Scan a directory of .txt files and report new episodes for each work. Does not download.",
+                            "指定ディレクトリ内の全 .txt ファイルを走査し、各作品の新着エピソードを一括確認する。ダウンロードは行わない"))
     parser.add_argument("--dry-run", dest="dry_run", action="store_true",
-                        help="作品情報（タイトル・著者・総話数）を確認して終了する。"
-                             "ダウンロード・ファイル出力は一切行わない")
+                        help=H(
+                            "Print title, author, and chapter count, then exit. Does not download or write files.",
+                            "作品情報（タイトル・著者・総話数）を確認して終了する。ダウンロード・ファイル出力は一切行わない"))
     parser.add_argument("--watch", dest="watch", default=None, metavar="FILE",
-                        help="ウォッチリストファイル（URLリスト）を指定して新着を監視する。"
-                             "新着があれば通知し、auto=true のエントリは自動 DL する。"
-                             "キャッシュは --watch-cache で指定したファイルに保存される")
+                        help=H(
+                            "Watch a URL list file. Notify on new chapters; auto=true entries download automatically. Cache path is --watch-cache.",
+                            "ウォッチリストファイル（URLリスト）を指定して新着を監視する。新着があれば通知し、auto=true のエントリは自動 DL する。キャッシュは --watch-cache で指定したファイルに保存される"))
     parser.add_argument("--notify", dest="notify", default="stdout",
                         choices=["stdout", "webhook"],
-                        help="通知方法（stdout: 標準出力（デフォルト）/ webhook: Webhook POST）")
+                        help=H(
+                            "Notification method (stdout = print, default / webhook = HTTP POST)",
+                            "通知方法（stdout: 標準出力（デフォルト）/ webhook: Webhook POST）"))
     parser.add_argument("--webhook-url", dest="webhook_url", default=None, metavar="URL",
-                        help="Webhook 送信先 URL（--notify webhook 時に必須）。"
-                             "Discord / Slack の Incoming Webhook URL を指定する")
+                        help=H(
+                            "Webhook URL (required with --notify webhook). Discord or Slack incoming webhook.",
+                            "Webhook 送信先 URL（--notify webhook 時に必須）。Discord / Slack の Incoming Webhook URL を指定する"))
     parser.add_argument("--webhook-format", dest="webhook_format", default="discord",
                         choices=["discord", "slack"],
-                        help="Webhook ペイロード形式（discord: content フィールド（デフォルト）"
-                             " / slack: text フィールド）")
+                        help=H(
+                            "Webhook payload shape (discord uses content, default / slack uses text)",
+                            "Webhook ペイロード形式（discord: content フィールド（デフォルト） / slack: text フィールド）"))
     parser.add_argument("--watch-cache", dest="watch_cache",
                         default=".novel_watch_cache.json", metavar="FILE",
-                        help="ウォッチキャッシュファイルのパス"
-                             "（デフォルト: .novel_watch_cache.json）")
+                        help=H(
+                            "Watch-cache file path (default: .novel_watch_cache.json)",
+                            "ウォッチキャッシュファイルのパス（デフォルト: .novel_watch_cache.json）"))
     parser.add_argument("--watch-auto-default", dest="watch_auto_default", action="store_true",
-                        help="ウォッチリストで auto= を指定しなかったエントリに"
-                             "自動 DL を適用する（デフォルトは自動 DL なし）")
+                        help=H(
+                            "Treat watch-list entries without auto= as auto-download (default: no auto-download)",
+                            "ウォッチリストで auto= を指定しなかったエントリに自動 DL を適用する（デフォルトは自動 DL なし）"))
     parser.add_argument("--detect-site", dest="detect_site", default=None, metavar="URL",
-                        help="URLのサイト種別を判定し JSON 1行で出力して終了"
-                             "（GUI用・読み取り専用・オフライン・短縮URL展開なし）")
+                        help=H(
+                            "Detect the site for a URL and print one JSON line, then exit (GUI helper; offline; no short-URL expansion)",
+                            "URLのサイト種別を判定し JSON 1行で出力して終了（GUI用・読み取り専用・オフライン・短縮URL展開なし）"))
     parser.add_argument("--list-sites", dest="list_sites", action="store_true",
-                        help="対応サイト一覧を JSON で出力して終了（GUI用・読み取り専用）")
+                        help=H(
+                            "Print the supported-site list as JSON and exit (GUI helper; read-only)",
+                            "対応サイト一覧を JSON で出力して終了（GUI用・読み取り専用）"))
 
     return parser
 
 
 def _main(argv=None):
-    parser = _build_arg_parser()
+    parser = _build_arg_parser(_resolve_ui_lang(argv))
     args = parser.parse_args(argv)
 
     # ── --list-sites: 対応サイト一覧（GUI用・読み取り専用・オフライン） ──

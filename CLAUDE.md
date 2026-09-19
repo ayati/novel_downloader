@@ -78,8 +78,9 @@ python novel_downloader.py --from-file mynovel.txt
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
-| `url` | — | 作品 URL（`--from-file` 指定時は省略可） |
-| `-o FILE` | タイトルから自動生成 | 出力ベース名（例: `-o mynovel` → `mynovel.txt` / `mynovel.epub`） |
+| `url`                              | —                         | 作品 URL（`--from-file` 指定時は省略可）                                                                                                                                                                                                                                                                                                                          |
+| `--lang {ja,en}`, `-L`             | `ja`                      | ヘルプ等の表示言語。`--lang` / `-L` → 環境変数 `NOVEL_DOWNLOADER_LANG` → `ja`。`LANG` / `LC_ALL` は見ない。作品本文は変わらない                                                                                                                                                                                                                                              |
+| `-o FILE`                          | タイトルから自動生成                | 出力ベース名（例: `-o mynovel` → `mynovel.txt` / `mynovel.epub`）                                                                                                                                                                                                                                                                                               |
 | `--delay SEC` | `1.5` | リクエスト間隔（秒） |
 | `--resume [N]` | — | 続きからダウンロード。`N` 省略時は既存 `.txt` から話数を自動検出して再開。`N` 指定時は第 N 話から開始。全サイト対応 |
 | `--start N` | `1` | 取得開始話数（野いちご・ノベマ！・berry's cafe は章番号） |

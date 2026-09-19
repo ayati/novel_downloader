@@ -32,15 +32,18 @@ try:
     from tkinter import filedialog
 except Exception as e:  # pragma: no cover - 起動環境依存
     sys.stderr.write(
+        "customtkinter is required: pip install customtkinter\n"
         "customtkinter が必要です: pip install customtkinter\n"
-        f"  詳細: {e}\n"
+        f"  {e}\n"
     )
     raise
 
 # ══════════════════════════════════════════
 #  定数
 # ══════════════════════════════════════════
-APP_NAME      = "小説ePubダウンローダー"
+APP_NAME_JA    = "小説ePubダウンローダー"
+APP_NAME_EN    = "Novel EPUB Downloader"
+APP_NAME      = APP_NAME_JA
 APP_DIR_NAME  = "NovelDownloader"          # %APPDATA%\NovelDownloader
 ICON_FILENAME = "novel_downloader.ico"
 SETTINGS_SCHEMA = 1
@@ -55,6 +58,70 @@ _RE_PROGRESS = re.compile(r"^\s+\[\s*(\d+)\s*/\s*(\d+)\s*\]")
 _RE_EPUB_DONE = re.compile(r"✅\s*ePub出力完了:\s*(.+)$")
 
 ENCODING_CHOICES = ["utf-8", "utf-8-sig", "shift_jis", "cp932"]
+
+# User-facing GUI strings. Keys are stable; values are ja / en.
+UI = {
+    "title": ("小説ePubダウンローダー", "Novel EPUB Downloader"),
+    "paste_url": ("小説のURLを貼り付け", "Paste a novel URL"),
+    "url_ph": ("ここにURLを貼り付けてください…", "Paste a URL here…"),
+    "download": ("⬇ ダウンロード", "⬇ Download"),
+    "cancel": ("⏸ 中止", "⏸ Cancel"),
+    "retry": ("⬇ もう一度", "⬇ Try again"),
+    "open_folder": ("📂 フォルダを開く", "📂 Open folder"),
+    "sites": ("対応サイトを見る", "Supported sites"),
+    "show_log": ("詳細を表示", "Show details"),
+    "hide_log": ("詳細を隠す", "Hide log"),
+    "adv_closed": ("▸ 詳細設定（保存先・表紙などの変更）", "▸ Advanced (folder, cover, …)"),
+    "adv_open": ("▾ 詳細設定（保存先・表紙などの変更）", "▾ Advanced (folder, cover, …)"),
+    "save_prefix": ("保存先： ", "Save to: "),
+    "outdir": ("保存先", "Save folder"),
+    "change": ("変更", "Browse"),
+    "cover": ("表紙（ePubの“顔”）", "Cover (EPUB front)"),
+    "cover_auto": ("おまかせ（自動で作る）", "Auto-generate"),
+    "cover_site": ("サイトの公式表紙を使う", "Use the site cover"),
+    "cover_file": ("自分の画像を選ぶ…", "Choose my own image…"),
+    "cover_none": ("画像が未選択です", "No image selected"),
+    "pick_image": ("画像を選ぶ", "Choose image"),
+    "rarely": ("ここから下は普段は変更不要", "Rarely needed below"),
+    "horizontal": ("横書きにする", "Horizontal layout"),
+    "kobo": ("Kobo端末向け (.kepub.epub)", "For Kobo (.kepub.epub)"),
+    "toc_end": ("目次を本の最後に置く", "Put the table of contents at the end"),
+    "body_font": ("本文のフォント", "Body font"),
+    "font_default": ("標準（埋め込みなし）", "Default (not embedded)"),
+    "pick": ("選ぶ", "Choose"),
+    "font_reset": ("標準に戻す", "Reset"),
+    "delay": ("取得間隔（秒）", "Request interval (sec)"),
+    "encoding": ("文字コード", "Text encoding"),
+    "preparing": ("準備中…", "Preparing…"),
+    "progress": ("取得中…  第 {n} 話 / 全 {m} 話", "Downloading…  {n} / {m}"),
+    "done": ("✅ 完了しました！  「{name}」を保存しました", "✅ Finished. Saved “{name}”"),
+    "file_fallback": ("ファイル", "file"),
+    "aborted": ("中止しました。", "Cancelled."),
+    "err_unsupported": (
+        "⚠ このサイトには対応していません\nURLが正しいか、対応しているサイトかをご確認ください。",
+        "⚠ This site is not supported\nCheck the URL and the supported-site list.",
+    ),
+    "err_hameln": (
+        "⚠ ハーメルンには対応していません\n申し訳ありませんが、別のサイトのURLでお試しください。",
+        "⚠ Hameln is not supported in this GUI\nPlease use another site URL.",
+    ),
+    "err_failed": (
+        "⚠ うまくいきませんでした\n通信状態を確認して、もう一度お試しください。",
+        "⚠ The download failed\nCheck the network and try again.",
+    ),
+    "sites_title": ("対応サイト", "Supported sites"),
+    "sites_label": ("このアプリが対応しているサイト", "Sites this app can download"),
+    "sites_fail": ("一覧を取得できませんでした。", "Could not load the site list."),
+    "ft_image": ("画像ファイル", "Image files"),
+    "ft_font": ("フォントファイル", "Font files"),
+    "ft_all": ("すべて", "All files"),
+}
+
+
+def ui_text(key: str, lang: str, **kwargs) -> str:
+    pair = UI[key]
+    text = pair[1] if lang == "en" else pair[0]
+    return text.format(**kwargs) if kwargs else text
 
 
 # ══════════════════════════════════════════
@@ -127,6 +194,7 @@ def default_settings() -> dict:
         "font_path": "",
         "delay": 1.5,
         "encoding": "utf-8",
+        "ui_lang": "ja",
     }
 
 
@@ -157,6 +225,8 @@ def load_settings() -> dict:
         s["delay"] = 1.5
     if s.get("encoding") not in ENCODING_CHOICES:
         s["encoding"] = "utf-8"
+    if s.get("ui_lang") not in ("ja", "en"):
+        s["ui_lang"] = "ja"
     return s
 
 
@@ -235,6 +305,7 @@ class NovelDownloaderApp(ctk.CTk):
         ctk.set_appearance_mode("system")
         self._build_widgets()
         self._apply_settings_to_widgets()
+        self._apply_ui_lang()
         self._set_state_idle()
 
         # 起動時クリップボード自動入力（別スレッドで判定・§7.2）
@@ -257,6 +328,12 @@ class NovelDownloaderApp(ctk.CTk):
                                     placeholder_text="ここにURLを貼り付けてください…")
         self.ent_url.grid(row=1, column=0, sticky="ew", padx=20)
         self.var_url.trace_add("write", lambda *_: self._update_download_enabled())
+
+        self.seg_lang = ctk.CTkSegmentedButton(
+            self, values=["日本語", "English"],
+            command=self._on_ui_lang)
+        self.seg_lang.grid(row=0, column=0, sticky="e", padx=20, pady=(18, 2))
+        self.seg_lang.set("English" if self.settings.get("ui_lang") == "en" else "日本語")
 
         # 大ボタン（ダウンロード / 中止）
         self.btn_main = ctk.CTkButton(self, text="⬇ ダウンロード", height=44,
@@ -306,37 +383,44 @@ class NovelDownloaderApp(ctk.CTk):
         # 生ログ（§10.1 トグル先）
         self.txt_log = ctk.CTkTextbox(self, height=120)
 
+    def _lang(self) -> str:
+        return "en" if self.settings.get("ui_lang") == "en" else "ja"
+
+    def _t(self, key: str, **kwargs) -> str:
+        return ui_text(key, self._lang(), **kwargs)
+
     def _build_detail_panel(self):
         self.frm_detail = ctk.CTkFrame(self)
         self.frm_detail.grid_columnconfigure(0, weight=1)
 
-        # 保存先
-        ctk.CTkLabel(self.frm_detail, text="保存先", anchor="w").grid(
-            row=0, column=0, sticky="ew", padx=12, pady=(10, 0))
+        self.lbl_save = ctk.CTkLabel(self.frm_detail, text="保存先", anchor="w")
+        self.lbl_save.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 0))
         row = ctk.CTkFrame(self.frm_detail, fg_color="transparent")
         row.grid(row=1, column=0, sticky="ew", padx=12)
         row.grid_columnconfigure(0, weight=1)
         self.var_outdir = ctk.StringVar()
         self.ent_outdir = ctk.CTkEntry(row, textvariable=self.var_outdir)
         self.ent_outdir.grid(row=0, column=0, sticky="ew")
-        ctk.CTkButton(row, text="変更", width=60,
-                      command=self._pick_output_dir).grid(row=0, column=1, padx=(8, 0))
+        self.btn_outdir = ctk.CTkButton(row, text="変更", width=60,
+                                        command=self._pick_output_dir)
+        self.btn_outdir.grid(row=0, column=1, padx=(8, 0))
 
-        # 表紙（排他ラジオ・§10.2）
-        ctk.CTkLabel(self.frm_detail, text="表紙（ePubの“顔”）", anchor="w").grid(
-            row=2, column=0, sticky="ew", padx=12, pady=(12, 0))
+        self.lbl_cover = ctk.CTkLabel(self.frm_detail, text="表紙（ePubの“顔”）", anchor="w")
+        self.lbl_cover.grid(row=2, column=0, sticky="ew", padx=12, pady=(12, 0))
         self.var_cover = ctk.StringVar(value="auto")
-        for i, (val, label) in enumerate([
-            ("auto", "おまかせ（自動で作る）"),
-            ("site", "サイトの公式表紙を使う"),
-            ("file", "自分の画像を選ぶ…"),
-        ]):
-            ctk.CTkRadioButton(self.frm_detail, text=label, value=val,
-                               variable=self.var_cover,
-                               command=self._on_cover_change).grid(
-                row=3 + i, column=0, sticky="w", padx=24, pady=1)
+        self.rad_cover_auto = ctk.CTkRadioButton(
+            self.frm_detail, text="おまかせ（自動で作る）", value="auto",
+            variable=self.var_cover, command=self._on_cover_change)
+        self.rad_cover_site = ctk.CTkRadioButton(
+            self.frm_detail, text="サイトの公式表紙を使う", value="site",
+            variable=self.var_cover, command=self._on_cover_change)
+        self.rad_cover_file = ctk.CTkRadioButton(
+            self.frm_detail, text="自分の画像を選ぶ…", value="file",
+            variable=self.var_cover, command=self._on_cover_change)
+        self.rad_cover_auto.grid(row=3, column=0, sticky="w", padx=24, pady=1)
+        self.rad_cover_site.grid(row=4, column=0, sticky="w", padx=24, pady=1)
+        self.rad_cover_file.grid(row=5, column=0, sticky="w", padx=24, pady=1)
 
-        # 画像選択行
         self.frm_cover_file = ctk.CTkFrame(self.frm_detail, fg_color="transparent")
         self.frm_cover_file.grid(row=6, column=0, sticky="ew", padx=24)
         self.frm_cover_file.grid_columnconfigure(0, weight=1)
@@ -350,45 +434,50 @@ class NovelDownloaderApp(ctk.CTk):
         self.btn_cover_pick.grid(row=0, column=1, padx=(8, 0))
         self._cover_image_path = ""
 
-        # 区切り線
         sep = ctk.CTkFrame(self.frm_detail, height=1, fg_color="gray70")
         sep.grid(row=7, column=0, sticky="ew", padx=12, pady=10)
-        ctk.CTkLabel(self.frm_detail, text="ここから下は普段は変更不要",
-                     text_color="gray", font=ctk.CTkFont(size=11)).grid(
-            row=8, column=0, sticky="w", padx=12)
+        self.lbl_rarely = ctk.CTkLabel(self.frm_detail, text="ここから下は普段は変更不要",
+                                       text_color="gray", font=ctk.CTkFont(size=11))
+        self.lbl_rarely.grid(row=8, column=0, sticky="w", padx=12)
 
-        # 下段オプション
         opt = ctk.CTkFrame(self.frm_detail, fg_color="transparent")
         opt.grid(row=9, column=0, sticky="ew", padx=12, pady=(2, 12))
         self.var_horizontal = ctk.BooleanVar(value=False)
         self.var_kobo = ctk.BooleanVar(value=False)
         self.var_toc_at_end = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(opt, text="横書きにする", variable=self.var_horizontal,
-                        command=self._persist).grid(row=0, column=0, sticky="w", pady=2)
-        ctk.CTkCheckBox(opt, text="Kobo端末向け (.kepub.epub)", variable=self.var_kobo,
-                        command=self._persist).grid(row=0, column=1, sticky="w", padx=(16, 0), pady=2)
-        ctk.CTkCheckBox(opt, text="目次を本の最後に置く", variable=self.var_toc_at_end,
-                        command=self._persist).grid(row=1, column=0, columnspan=2,
-                                                    sticky="w", pady=2)
+        self.chk_horizontal = ctk.CTkCheckBox(opt, text="横書きにする",
+                                              variable=self.var_horizontal,
+                                              command=self._persist)
+        self.chk_kobo = ctk.CTkCheckBox(opt, text="Kobo端末向け (.kepub.epub)",
+                                        variable=self.var_kobo, command=self._persist)
+        self.chk_toc = ctk.CTkCheckBox(opt, text="目次を本の最後に置く",
+                                      variable=self.var_toc_at_end, command=self._persist)
+        self.chk_horizontal.grid(row=0, column=0, sticky="w", pady=2)
+        self.chk_kobo.grid(row=0, column=1, sticky="w", padx=(16, 0), pady=2)
+        self.chk_toc.grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
 
-        # 本文フォント（ePub に埋め込むフォント・見た目に直結）
-        ctk.CTkLabel(opt, text="本文のフォント").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.lbl_font = ctk.CTkLabel(opt, text="本文のフォント")
+        self.lbl_font.grid(row=2, column=0, sticky="w", pady=(6, 0))
         fontbox = ctk.CTkFrame(opt, fg_color="transparent")
         fontbox.grid(row=2, column=1, sticky="w", padx=(16, 0), pady=(6, 0))
         self._font_path = ""
         self.var_font_name = ctk.StringVar(value="標準（埋め込みなし）")
         ctk.CTkLabel(fontbox, textvariable=self.var_font_name,
                      text_color="gray").pack(side="left")
-        ctk.CTkButton(fontbox, text="選ぶ", width=56,
-                      command=self._pick_font).pack(side="left", padx=(8, 0))
-        ctk.CTkButton(fontbox, text="標準に戻す", width=84, fg_color="gray40",
-                      command=self._clear_font).pack(side="left", padx=(6, 0))
+        self.btn_font_pick = ctk.CTkButton(fontbox, text="選ぶ", width=56,
+                                           command=self._pick_font)
+        self.btn_font_pick.pack(side="left", padx=(8, 0))
+        self.btn_font_clear = ctk.CTkButton(fontbox, text="標準に戻す", width=84,
+                                            fg_color="gray40", command=self._clear_font)
+        self.btn_font_clear.pack(side="left", padx=(6, 0))
 
-        ctk.CTkLabel(opt, text="取得間隔（秒）").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        self.lbl_delay = ctk.CTkLabel(opt, text="取得間隔（秒）")
+        self.lbl_delay.grid(row=3, column=0, sticky="w", pady=(6, 0))
         self.var_delay = ctk.StringVar(value="1.5")
         ctk.CTkEntry(opt, textvariable=self.var_delay, width=70).grid(
             row=3, column=1, sticky="w", padx=(16, 0), pady=(6, 0))
-        ctk.CTkLabel(opt, text="文字コード").grid(row=4, column=0, sticky="w", pady=(6, 0))
+        self.lbl_encoding = ctk.CTkLabel(opt, text="文字コード")
+        self.lbl_encoding.grid(row=4, column=0, sticky="w", pady=(6, 0))
         self.var_encoding = ctk.StringVar(value="utf-8")
         ctk.CTkOptionMenu(opt, values=ENCODING_CHOICES, variable=self.var_encoding,
                           width=130, command=lambda *_: self._persist()).grid(
@@ -406,11 +495,13 @@ class NovelDownloaderApp(ctk.CTk):
         self.var_kobo.set(bool(s["kobo"]))
         self.var_toc_at_end.set(bool(s.get("toc_at_end", False)))
         self._font_path = s.get("font_path", "")
-        self.var_font_name.set(os.path.basename(self._font_path)
-                               if self._font_path else "標準（埋め込みなし）")
+        if self._font_path:
+            self.var_font_name.set(os.path.basename(self._font_path))
+        else:
+            self.var_font_name.set(self._t("font_default"))
         self.var_delay.set(str(s["delay"]))
         self.var_encoding.set(s["encoding"])
-        self.lbl_outdir.configure(text=f"保存先： {s['output_dir']}")
+        self.lbl_outdir.configure(text=self._t("save_prefix") + s["output_dir"])
         self._on_cover_change()
 
     def _collect_settings(self) -> dict:
@@ -429,11 +520,12 @@ class NovelDownloaderApp(ctk.CTk):
             "font_path": self._font_path,
             "delay": delay,
             "encoding": self.var_encoding.get(),
+            "ui_lang": self.settings.get("ui_lang", "ja"),
         }
 
     def _persist(self):
         self.settings = self._collect_settings()
-        self.lbl_outdir.configure(text=f"保存先： {self.settings['output_dir']}")
+        self.lbl_outdir.configure(text=self._t("save_prefix") + self.settings["output_dir"])
         save_settings(self.settings)
 
     # ── 状態遷移（§4） ───────────────────────────────────────
@@ -443,7 +535,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.frm_aux.grid_remove()   # 空のフレームが高さを占有しないよう隠す
 
     def _set_state_idle(self):
-        self.btn_main.configure(text="⬇ ダウンロード", state="normal")
+        self.btn_main.configure(text=self._t("download"), state="normal")
         self.lbl_status.configure(text="", text_color=("gray10", "gray90"))
         self.bar.grid_remove()
         self.bar.stop()
@@ -452,22 +544,22 @@ class NovelDownloaderApp(ctk.CTk):
         self._update_download_enabled()
 
     def _set_state_running(self):
-        self.btn_main.configure(text="⏸ 中止", state="normal")
+        self.btn_main.configure(text=self._t("cancel"), state="normal")
         self.ent_url.configure(state="disabled")
-        self.lbl_status.configure(text="準備中…", text_color=("gray10", "gray90"))
+        self.lbl_status.configure(text=self._t("preparing"), text_color=("gray10", "gray90"))
         self.bar.grid()
         self.bar.configure(mode="indeterminate")
         self.bar.start()
         self._hide_aux()
 
     def _set_state_done(self):
-        self.btn_main.configure(text="⬇ ダウンロード", state="normal")
+        self.btn_main.configure(text=self._t("download"), state="normal")
         self.ent_url.configure(state="normal")
         self.bar.stop()
         self.bar.configure(mode="determinate")
         self.bar.set(1)
-        name = os.path.basename(self._epub_path) if self._epub_path else "ファイル"
-        self.lbl_status.configure(text=f"✅ 完了しました！  「{name}」を保存しました",
+        name = os.path.basename(self._epub_path) if self._epub_path else self._t("file_fallback")
+        self.lbl_status.configure(text=self._t("done", name=name),
                                   text_color=("#1a7f37", "#3fb950"))
         self._hide_aux()
         self.frm_aux.grid()
@@ -475,22 +567,19 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _set_state_error(self, kind: str):
         """kind: 'unsupported' | 'hameln' | 'failed'"""
-        self.btn_main.configure(text="⬇ もう一度", state="normal")
+        self.btn_main.configure(text=self._t("retry"), state="normal")
         self.ent_url.configure(state="normal")
         self.bar.stop()
         self.bar.grid_remove()
         self._hide_aux()
         if kind == "unsupported":
-            msg = ("⚠ このサイトには対応していません\n"
-                   "URLが正しいか、対応しているサイトかをご確認ください。")
+            msg = self._t("err_unsupported")
             self.frm_aux.grid()
             self.btn_sites.grid(row=0, column=0, padx=(0, 8))
         elif kind == "hameln":
-            msg = ("⚠ ハーメルンには対応していません\n"
-                   "申し訳ありませんが、別のサイトのURLでお試しください。")
+            msg = self._t("err_hameln")
         else:
-            msg = ("⚠ うまくいきませんでした\n"
-                   "通信状態を確認して、もう一度お試しください。")
+            msg = self._t("err_failed")
             self.frm_aux.grid()
             self.btn_log.grid(row=0, column=0, padx=(0, 8))
         self.lbl_status.configure(text=msg, text_color=("#b3261e", "#f2b8b5"))
@@ -620,7 +709,7 @@ class NovelDownloaderApp(ctk.CTk):
                 self.bar.stop()
                 self.bar.configure(mode="determinate")
             self.bar.set(n / m if m else 0)
-            self.lbl_status.configure(text=f"取得中…  第 {n} 話 / 全 {m} 話")
+            self.lbl_status.configure(text=self._t("progress", n=n, m=m))
         elif kind == "epub":
             self._epub_path = msg[1]
         elif kind == "rawlog":
@@ -634,13 +723,13 @@ class NovelDownloaderApp(ctk.CTk):
         elif kind == "aborted":
             self._proc = None
             self._set_state_idle()
-            self.lbl_status.configure(text="中止しました。")
+            self.lbl_status.configure(text=self._t("aborted"))
         elif kind == "finished":
             rc = msg[1]
             self._proc = None
             if self._abort_event.is_set():   # 中止後の終了は「中止」として扱う
                 self._set_state_idle()
-                self.lbl_status.configure(text="中止しました。")
+                self.lbl_status.configure(text=self._t("aborted"))
                 return
             if rc == 0:
                 self._fallback_epub_path()
@@ -679,13 +768,13 @@ class NovelDownloaderApp(ctk.CTk):
     def _show_sites(self):
         sites = list_sites()
         win = ctk.CTkToplevel(self)
-        win.title("対応サイト")
+        win.title(self._t("sites_title"))
         win.geometry("320x420")
         win.transient(self)
-        frm = ctk.CTkScrollableFrame(win, label_text="このアプリが対応しているサイト")
+        frm = ctk.CTkScrollableFrame(win, label_text=self._t("sites_label"))
         frm.pack(fill="both", expand=True, padx=10, pady=10)
         if not sites:
-            ctk.CTkLabel(frm, text="一覧を取得できませんでした。").pack(anchor="w")
+            ctk.CTkLabel(frm, text=self._t("sites_fail")).pack(anchor="w")
         for s in sites:
             ctk.CTkLabel(frm, text="・" + s.get("display_name", ""),
                          anchor="w").pack(fill="x", anchor="w", pady=1)
@@ -693,24 +782,24 @@ class NovelDownloaderApp(ctk.CTk):
     def _toggle_detail(self):
         self._detail_open = not self._detail_open
         if self._detail_open:
-            self.btn_detail.configure(text="▾ 詳細設定（保存先・表紙などの変更）")
+            self.btn_detail.configure(text=self._t("adv_open"))
             self.frm_detail.grid(row=8, column=0, sticky="ew", padx=16, pady=(2, 10))
             self.geometry("560x720")
         else:
-            self.btn_detail.configure(text="▸ 詳細設定（保存先・表紙などの変更）")
+            self.btn_detail.configure(text=self._t("adv_closed"))
             self.frm_detail.grid_forget()
             self.geometry("560x420")
 
     def _toggle_log(self):
         self._log_open = not self._log_open
         if self._log_open:
-            self.btn_log.configure(text="詳細を隠す")
+            self.btn_log.configure(text=self._t("hide_log"))
             self.txt_log.grid(row=9, column=0, sticky="ew", padx=20, pady=(2, 10))
             self.txt_log.delete("1.0", "end")
             self.txt_log.insert("end", "\n".join(self._raw_log) + "\n")
             self.txt_log.see("end")
         else:
-            self.btn_log.configure(text="詳細を表示")
+            self.btn_log.configure(text=self._t("show_log"))
             self.txt_log.grid_forget()
 
     def _on_cover_change(self):
@@ -728,7 +817,8 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _pick_cover_image(self):
         f = filedialog.askopenfilename(
-            filetypes=[("画像ファイル", "*.jpg *.jpeg *.png"), ("すべて", "*.*")])
+            filetypes=[(self._t("ft_image"), "*.jpg *.jpeg *.png"),
+                        (self._t("ft_all"), "*.*")])
         if f:
             self._cover_image_path = f
             self.var_cover_file.set(os.path.basename(f))
@@ -736,7 +826,8 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _pick_font(self):
         f = filedialog.askopenfilename(
-            filetypes=[("フォントファイル", "*.otf *.ttf *.woff *.woff2"), ("すべて", "*.*")])
+            filetypes=[(self._t("ft_font"), "*.otf *.ttf *.woff *.woff2"),
+                        (self._t("ft_all"), "*.*")])
         if f:
             self._font_path = f
             self.var_font_name.set(os.path.basename(f))
@@ -744,7 +835,7 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _clear_font(self):
         self._font_path = ""
-        self.var_font_name.set("標準（埋め込みなし）")
+        self.var_font_name.set(self._t("font_default"))
         self._persist()
 
     # ── 起動時クリップボード自動入力（§7.2） ───────────────────
@@ -763,6 +854,44 @@ class NovelDownloaderApp(ctk.CTk):
         info = detect_site(url)
         if info and info.get("site") and not info.get("needs_playwright"):
             self._queue.put(("autofill", url))
+
+    def _on_ui_lang(self, value: str):
+        self.settings["ui_lang"] = "en" if value == "English" else "ja"
+        self._apply_ui_lang()
+        self._persist()
+
+    def _apply_ui_lang(self):
+        self.title(self._t("title"))
+        self.lbl_url.configure(text=self._t("paste_url"))
+        self.ent_url.configure(placeholder_text=self._t("url_ph"))
+        if self._proc is None:
+            self.btn_main.configure(text=self._t("download"))
+        self.btn_open.configure(text=self._t("open_folder"))
+        self.btn_sites.configure(text=self._t("sites"))
+        self.btn_log.configure(text=self._t("hide_log" if self._log_open else "show_log"))
+        self.btn_detail.configure(text=self._t("adv_open" if self._detail_open else "adv_closed"))
+        self.lbl_outdir.configure(
+            text=self._t("save_prefix") + str(self.settings.get("output_dir", "")))
+        self.lbl_save.configure(text=self._t("outdir"))
+        self.btn_outdir.configure(text=self._t("change"))
+        self.lbl_cover.configure(text=self._t("cover"))
+        self.rad_cover_auto.configure(text=self._t("cover_auto"))
+        self.rad_cover_site.configure(text=self._t("cover_site"))
+        self.rad_cover_file.configure(text=self._t("cover_file"))
+        if not self._cover_image_path:
+            self.var_cover_file.set(self._t("cover_none"))
+        self.btn_cover_pick.configure(text=self._t("pick_image"))
+        self.lbl_rarely.configure(text=self._t("rarely"))
+        self.chk_horizontal.configure(text=self._t("horizontal"))
+        self.chk_kobo.configure(text=self._t("kobo"))
+        self.chk_toc.configure(text=self._t("toc_end"))
+        self.lbl_font.configure(text=self._t("body_font"))
+        if not self._font_path:
+            self.var_font_name.set(self._t("font_default"))
+        self.btn_font_pick.configure(text=self._t("pick"))
+        self.btn_font_clear.configure(text=self._t("font_reset"))
+        self.lbl_delay.configure(text=self._t("delay"))
+        self.lbl_encoding.configure(text=self._t("encoding"))
 
     # ── 終了 ─────────────────────────────────────────────────
     def _on_close(self):
