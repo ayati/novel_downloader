@@ -497,6 +497,29 @@ def _print_field(label: str, value: str, *, indent: int = 0, width: int = 8,
           + ("\n" if blank_after else ""))
 
 
+def _print_normalized(before: str, after: str, what: str = "話数ページURL",
+                      to: str = "作品トップページ") -> None:
+    """URL を正規化したことを知らせる 3 行を出力する。
+
+    normalize_url() の各分岐が同じ 3 行をそれぞれ書いていたため集約した。
+    """
+    print(f"[情報] {what}を{to}に正規化しました。")
+    print(f"       指定URL : {before}")
+    print(f"       正規化後: {after}")
+
+
+def _print_stage(n: int, label: str, *, total: int = 3,
+                 blank_before: bool = False) -> None:
+    """「[n/3] …」の段階見出しを出力する。
+
+    Windows GUI の進捗抽出は先頭空白を必須にしてこの見出しを意図的に弾いている
+    （gui_v1_design.md §9.2）。本文の進捗行と混同しないよう字下げしない。
+    """
+    print(("\n" if blank_before else "") + f"[{n}/{total}] {label}")
+
+
+
+
 
 
 # ══════════════════════════════════════════
@@ -4672,7 +4695,7 @@ def run_kakuyomu(args):
     session  = requests.Session()
     session.headers.update(_KKY_HEADERS)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup  = kky_fetch(session, work_url)
     next_data = kky_extract_next_data(top_soup)
     if next_data:
@@ -4686,7 +4709,7 @@ def run_kakuyomu(args):
     if info["author"]:
         _print_field("著者", f"{info['author']}", indent=6, width=8)
 
-    print("[2/3] エピソード一覧を取得中...")
+    _print_stage(2, "エピソード一覧を取得中...")
     episode_list = kky_get_episode_urls(next_data, work_url)
     if episode_list:
         print(f"      __NEXT_DATA__ から {len(episode_list)} 話を検出しました。")
@@ -4723,7 +4746,7 @@ def run_kakuyomu(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print("[3/3] 各エピソードを取得中...")
+    _print_stage(3, "各エピソードを取得中...")
     episodes_data = []
 
     for i, ep in enumerate(episode_list, 1):
@@ -5127,7 +5150,7 @@ def run_alphapolis(args):
     session  = requests.Session()
     session.headers.update(_ALP_HEADERS)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup = alp_fetch(session, work_url)
     info     = alp_get_work_info(top_soup)
     if info["title"]:
@@ -5135,7 +5158,7 @@ def run_alphapolis(args):
     if info["author"]:
         _print_field("著者", f"{info['author']}", indent=6, width=8)
 
-    print("[2/3] エピソード一覧を取得中...")
+    _print_stage(2, "エピソード一覧を取得中...")
     episode_list = alp_get_episode_list(top_soup)
     if not episode_list:
         print(T("エラー: エピソードが見つかりませんでした。"))
@@ -5163,7 +5186,7 @@ def run_alphapolis(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print("[3/3] 各エピソードを取得中...")
+    _print_stage(3, "各エピソードを取得中...")
     episodes_data = []
     alp_images    = _inline_images_dict(args)
     alp_img_seen  = {}
@@ -5432,7 +5455,7 @@ def run_estar(args):
     session = requests.Session()
     session.headers.update(_EST_HEADERS)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup, top_html = est_fetch(session, work_url)
     info = est_get_work_info(top_soup, top_html, work_id)
     if info["title"]:
@@ -5468,7 +5491,7 @@ def run_estar(args):
                            [all_titles[p] for p in sorted(all_titles)
                             if start_page <= p <= end_page])
 
-    print(f"[2/3] エピソードを取得中（{len(target_pages)} ページ / 全 {total_pages} ページ）...")
+    _print_stage(2, f"エピソードを取得中（{len(target_pages)} ページ / 全 {total_pages} ページ）...")
 
     all_bodies = {}   # {pageNo: body_str}
     batch_size = 15   # ブラウザ実装（nextNovelPages）と同じ 1 リクエストあたりのページ数
@@ -5495,7 +5518,7 @@ def run_estar(args):
             _sleep(args.delay)
 
     # 青空文庫テキスト組み立て
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "エブリスタ")
@@ -5736,7 +5759,7 @@ def run_hameln(args):
     work_id = wid_m.group(1)
     top_url = f"{_HAM_BASE}/novel/{work_id}/"
 
-    print(f"\n[1/3] 作品情報を取得中: {top_url}")
+    _print_stage(1, f"作品情報を取得中: {top_url}", blank_before=True)
     # トップページはCloudflare保護なし → requestsで取得
     rq_sess = requests.Session()
     rq_sess.headers.update({"User-Agent": _HAM_UA, "Accept-Language": "ja,en;q=0.9"})
@@ -5776,7 +5799,7 @@ def run_hameln(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print(f"[2/3] エピソードを取得中（{len(target)} 話）...")
+    _print_stage(2, f"エピソードを取得中（{len(target)} 話）...")
     print(f"      ※ Cloudflare対策のため1話あたり約{_HAM_CF_WAIT}秒の待機が発生します")
 
     got           = 0
@@ -5860,7 +5883,7 @@ def run_hameln(args):
 
         browser.close()
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -6097,7 +6120,7 @@ def run_neopage(args):
         sys.exit(1)
     book_id = wid_m.group(1)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     book_html = _neopage_fetch(work_url)
     info = neopage_get_work_info(book_html, book_id)
 
@@ -6120,7 +6143,7 @@ def run_neopage(args):
     start_arg = max(1, getattr(args, "start", None) or 1)
     max_chain = end_arg if end_arg else (info["total_chapter"] or 9999) + 50
 
-    print("[2/3] 章リストを構築中...")
+    _print_stage(2, "章リストを構築中...")
     chapters       = []  # [(chapter_id, chapter_title, volume_name), ...]
     content_cache  = {}  # {chapter_id: content_html}  ← 本文キャッシュ
     cur_id         = info["first_chapter_id"]
@@ -6173,7 +6196,7 @@ def run_neopage(args):
         return
 
     # ── 本文組み立て（キャッシュ済みコンテンツを使用） ───────────────────────
-    print(f"[3/3] テキスト・ePub を生成中（{len(target)} 話）...")
+    _print_stage(3, f"テキスト・ePub を生成中（{len(target)} 話）...")
     got           = 0
 
     for ep_i, (ch_id, ch_title, ch_volume) in enumerate(target, 1):
@@ -6415,7 +6438,7 @@ def run_solispia(args):
         print(T("エラー: ソリスピアの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup = _solispia_fetch(work_url)
 
     info = solispia_get_work_info(top_soup)
@@ -6453,7 +6476,7 @@ def run_solispia(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print(f"[2/3] エピソードを取得中（{len(target)} 話）...")
+    _print_stage(2, f"エピソードを取得中（{len(target)} 話）...")
     got           = 0
 
     for ep_i, (ep_url, ep_title, ep_chapter) in enumerate(target, 1):
@@ -6475,7 +6498,7 @@ def run_solispia(args):
         if ep_i < len(target):
             _sleep(args.delay)
 
-    print(f"[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon,
                args.encoding, getattr(args, "newline", "os"))
 
@@ -6654,7 +6677,7 @@ def run_noichigo(args):
     session = requests.Session()
     session.headers.update(_NIC_HEADERS)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup, _ = noichigo_fetch(session, work_url)
     info = noichigo_get_work_info(top_soup)
     if info["title"]:
@@ -6714,7 +6737,7 @@ def run_noichigo(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print(f"[2/3] チャプターを取得中（{len(target_chapters)} チャプター）...")
+    _print_stage(2, f"チャプターを取得中（{len(target_chapters)} チャプター）...")
 
     got_chapters  = 0
 
@@ -6753,7 +6776,7 @@ def run_noichigo(args):
         if ch_i < len(target_chapters):
             _sleep(args.delay)
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -6860,7 +6883,7 @@ def run_berrys(args):
     session = requests.Session()
     session.headers.update(_BERRYS_HEADERS)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup = berrys_fetch(session, work_url)
     info = berrys_get_work_info(top_soup)
     if not info["title"]:
@@ -6922,7 +6945,7 @@ def run_berrys(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print(f"[2/3] チャプターを取得中（{len(target_chapters)} チャプター）...")
+    _print_stage(2, f"チャプターを取得中（{len(target_chapters)} チャプター）...")
 
     got_chapters  = 0
 
@@ -6954,7 +6977,7 @@ def run_berrys(args):
         if ch_i < len(target_chapters):
             _sleep(args.delay)
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -7057,7 +7080,7 @@ def run_monogatary(args):
     session = requests.Session()
     session.headers.update(_MONOGATARY_HEADERS)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
 
     story_id    = None
     story_title = ""
@@ -7143,7 +7166,7 @@ def run_monogatary(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print(f"[2/3] エピソードを取得中（{len(target)} 話）...")
+    _print_stage(2, f"エピソードを取得中（{len(target)} 話）...")
 
     got           = 0
 
@@ -7170,7 +7193,7 @@ def run_monogatary(args):
         if ep_i < len(target):
             _sleep(args.delay)
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -7327,7 +7350,7 @@ def run_novema(args):
     session = requests.Session()
     session.headers.update(_NOVEMA_HEADERS)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup, _ = novema_fetch(session, work_url)
     info = novema_get_work_info(top_soup)
     if info["title"]:
@@ -7386,7 +7409,7 @@ def run_novema(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
+    _print_stage(2, f"エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
     got_eps       = 0
 
@@ -7425,7 +7448,7 @@ def run_novema(args):
         if ep_i < len(target_eps):
             _sleep(args.delay)
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -7618,7 +7641,7 @@ def run_novelup(args):
     session = requests.Session()
     session.headers.update(_NOVELUP_HEADERS)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup, _ = novelup_fetch(session, work_url)
     info = novelup_get_work_info(top_soup)
     if info["title"]:
@@ -7651,7 +7674,7 @@ def run_novelup(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
+    _print_stage(2, f"エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
     got_eps       = 0
     nup_images    = _inline_images_dict(args)
@@ -7678,7 +7701,7 @@ def run_novelup(args):
         if ep_i < len(target_eps):
             _sleep(args.delay)
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -7844,7 +7867,7 @@ def run_sutekibungei(args):
     session = requests.Session()
     session.headers.update(_SUTEKI_HEADERS)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup, _ = suteki_fetch(session, work_url)
     info = suteki_get_work_info(top_soup)
     if info["title"]:
@@ -7877,7 +7900,7 @@ def run_sutekibungei(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
+    _print_stage(2, f"エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
     got_eps       = 0
 
@@ -7900,7 +7923,7 @@ def run_sutekibungei(args):
         if ep_i < len(target_eps):
             _sleep(args.delay)
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -8154,7 +8177,7 @@ def run_days(args):
         print(T("エラー: NOVEL DAYSの作品URLとして認識できません: {work_url}").format(work_url=work_url))
         sys.exit(1)
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     top_soup, _ = days_fetch(session, work_url)
     info = days_get_work_info(top_soup)
     if info["title"]:
@@ -8187,7 +8210,7 @@ def run_days(args):
         print("\n[情報] 新規エピソードがありません。ファイルは上書きしません。")
         return
 
-    print(f"[2/3] エピソードを取得中（{len(target_eps)} / {total_eps}）...")
+    _print_stage(2, f"エピソードを取得中（{len(target_eps)} / {total_eps}）...")
 
     got_eps       = 0
     days_images   = _inline_images_dict(args)
@@ -8211,7 +8234,7 @@ def run_days(args):
         if ep_i < len(target_eps):
             _sleep(args.delay)
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     write_file(txt_path, header, sections, colophon, args.encoding, getattr(args, "newline", "os"))
 
     full_len = (len(header)
@@ -8455,7 +8478,7 @@ def run_genpaku(args):
 
     work_url = args.url
 
-    print(f"\n[1/3] 作品ページを取得中: {work_url}")
+    _print_stage(1, f"作品ページを取得中: {work_url}", blank_before=True)
     try:
         soup = genpaku_fetch(work_url)
     except RuntimeError as e:
@@ -8472,7 +8495,7 @@ def run_genpaku(args):
     if info["description"]:
         _print_field("原題", f"{info['description']}", indent=6, width=8)
 
-    print("[2/3] 本文を解析中...")
+    _print_stage(2, "本文を解析中...")
     episodes = genpaku_extract_chapters(soup, info["title"])
 
     if not episodes:
@@ -8485,7 +8508,7 @@ def run_genpaku(args):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episodes])
     _dry_run_exit(args)
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "プロジェクト杉田玄白")
@@ -8796,7 +8819,7 @@ def run_hyuki(args):
         print("  例: https://www.hyuki.com/trans/leaf")
         sys.exit(1)
 
-    print(f"\n[1/3] 作品ページを取得中: {work_url}")
+    _print_stage(1, f"作品ページを取得中: {work_url}", blank_before=True)
     try:
         soup = hyuki_fetch(work_url)
     except RuntimeError as e:
@@ -8811,7 +8834,7 @@ def run_hyuki(args):
     _print_field("タイトル", f"{info['title']}", indent=6, width=8)
     _print_field("著者", f"{info['author']}", indent=6, width=8)
 
-    print("[2/3] 本文を解析中...")
+    _print_stage(2, "本文を解析中...")
     episodes = hyuki_extract_episodes(soup, info["title"])
 
     if not episodes:
@@ -8824,7 +8847,7 @@ def run_hyuki(args):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episodes])
     _dry_run_exit(args)
 
-    print("[3/3] テキスト・ePub を生成中...")
+    _print_stage(3, "テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
     colophon = aozora_colophon(info["title"], work_url, "結城浩翻訳の部屋")
@@ -9401,7 +9424,7 @@ def run_aozora(args):
     """青空文庫（aozora.gr.jp / aozora-renewal.cloud）のダウンロード処理。"""
     work_url = args.url
 
-    print(f"\n[1/3] 作品情報を取得中: {work_url}")
+    _print_stage(1, f"作品情報を取得中: {work_url}", blank_before=True)
     try:
         card_html = aozora_fetch_html(work_url)
     except Exception as e:
@@ -9419,7 +9442,7 @@ def run_aozora(args):
         print(T("エラー: ZIP ファイルのリンクが見つかりません。"))
         sys.exit(1)
 
-    print(f"[2/3] ZIP をダウンロード中: {zip_url}")
+    _print_stage(2, f"ZIP をダウンロード中: {zip_url}")
     try:
         txt_filename, txt_bytes, images = aozora_download_extract(zip_url)
     except Exception as e:
@@ -9448,7 +9471,7 @@ def run_aozora(args):
     _print_text_done(txt_path, note=f"（{enc} → UTF-8 変換済み）")
 
     if not getattr(args, "no_epub", False):
-        print("[3/3] ePub を生成中...")
+        _print_stage(3, "ePub を生成中...")
         ep_title, ep_author, episodes = aozora_text_to_episodes(text)
         title  = ep_title  or info.get("title",  "（タイトル不明）")
         author = ep_author or info.get("author", "（著者不明）")
@@ -10619,9 +10642,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1).rstrip("/") + "/"
-            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url)
             return top_url
 
     elif site == "kakuyomu":
@@ -10632,9 +10653,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url)
             return top_url
 
     elif site == "alphapolis":
@@ -10645,9 +10664,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url)
             return top_url
 
     elif site == "estar":
@@ -10658,9 +10675,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            print(f"[情報] 作品ページのURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url, what="作品ページのURL")
             return top_url
 
     elif site == "noichigo":
@@ -10671,9 +10686,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url)
             return top_url
 
     elif site == "berrys":
@@ -10684,9 +10697,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url)
             return top_url
 
     elif site == "hameln":
@@ -10697,9 +10708,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1) + "/"
-            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url)
             return top_url
 
     elif site == "novema":
@@ -10710,9 +10719,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url)
             return top_url
 
     elif site == "novelup":
@@ -10723,9 +10730,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url)
             return top_url
 
     elif site == "sutekibungei":
@@ -10736,9 +10741,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            print(f"[情報] 話数ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url)
             return top_url
 
     # NOVEL DAYS はエピソードURLと作品URLで ID が異なるため run_days 内で解決する
@@ -10751,9 +10754,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = f"{m.group(1)}/book/{m.group(2)}"
-            print(f"[情報] 章ページURLを作品トップページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url, what="章ページURL")
             return top_url
 
     elif site == "monogatary":
@@ -10768,9 +10769,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = f"{m.group(1)}/card{m.group(2)}.html"
-            print(f"[情報] テキストページURLを図書カードページに正規化しました。")
-            print(f"       指定URL : {url}")
-            print(f"       正規化後: {top_url}")
+            _print_normalized(url, top_url, what="テキストページURL", to="図書カードページ")
             return top_url
 
     return url
