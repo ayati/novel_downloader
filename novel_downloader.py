@@ -150,7 +150,8 @@ except ImportError:
         "           [Ubuntu/Debian] sudo apt install python3-pillow\n"
         "           [その他]        pip install Pillow\n"
         "       Pillow がない場合は SVG フォールバックで表紙を生成しますが、\n"
-        "       多くの ePub リーダーで SVG 表紙は正しく表示されない場合があります。"
+        "       多くの ePub リーダーで SVG 表紙は正しく表示されない場合があります。",
+        file=sys.stderr,   # stdout に出すと --detect-site / --list-sites の JSON を壊す
     )
 
 
