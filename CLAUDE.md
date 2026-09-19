@@ -78,9 +78,9 @@ python novel_downloader.py --from-file mynovel.txt
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
-| `url`                              | —                         | 作品 URL（`--from-file` 指定時は省略可）                                                                                                                                                                                                                                                                                                                          |
-| `--lang {ja,en}`, `-L`             | `ja`                      | ヘルプ等の表示言語。`--lang` / `-L` → 環境変数 `NOVEL_DOWNLOADER_LANG` → `ja`。`LANG` / `LC_ALL` は見ない。作品本文は変わらない                                                                                                                                                                                                                                              |
-| `-o FILE`                          | タイトルから自動生成                | 出力ベース名（例: `-o mynovel` → `mynovel.txt` / `mynovel.epub`）                                                                                                                                                                                                                                                                                               |
+| `url` | — | 作品 URL（`--from-file` 指定時は省略可） |
+| `--lang {ja,en}`, `-L` | `ja` | ヘルプ等の表示言語。`--lang` / `-L` → 環境変数 `NOVEL_DOWNLOADER_LANG` → `ja`。`LANG` / `LC_ALL` は見ない。作品本文は変わらない |
+| `-o FILE` | タイトルから自動生成 | 出力ベース名（例: `-o mynovel` → `mynovel.txt` / `mynovel.epub`） |
 | `--delay SEC` | `1.5` | リクエスト間隔（秒） |
 | `--resume [N]` | — | 続きからダウンロード。`N` 省略時は既存 `.txt` から話数を自動検出して再開。`N` 指定時は第 N 話から開始。全サイト対応 |
 | `--start N` | `1` | 取得開始話数（野いちご・ノベマ！・berry's cafe は章番号） |
@@ -309,7 +309,9 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
 
 ### 対応する層（表示文言）
 
-**エラーメッセージと CLI ヘルプは英語に対応すべき。** うまく動かないときにメッセージを検索できないと、非日本語話者は手も足も出ない。対象は `print` / `stderr.write` の日本語出力（約310か所）、`_build_arg_parser()` のヘルプ文字列、`README.en.md`。
+**エラーメッセージと CLI ヘルプは英語に対応すべき。** うまく動かないときにメッセージを検索できないと、非日本語話者は手も足も出ない。
+
+**CLI ヘルプと `README.en.md` は実装済み**（PR #1・`--lang {ja,en}` / `-L` / 環境変数 `NOVEL_DOWNLOADER_LANG`）。**残るはエラーメッセージ**で、`print` / `stderr.write` の日本語出力 471 箇所のうち P0 エラー・警告 95 文言が対象（`design_i18n.md`）。
 
 - **日本語をデフォルトとして維持する。** 切り替えは明示指定（`--lang` 相当）と専用環境変数のみで行い、**`LANG` / `LC_ALL` によるロケール自動判定はしない**。`LANG=en_US.UTF-8` は WSL・Windows Python の一般的な既定値であり、既存ユーザーの表示が無断で変わる
 - **やるなら全部訳す。** 一部のオプションだけ英語にすると日英混在ヘルプになり、全日本語より分かりにくい
