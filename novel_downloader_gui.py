@@ -591,6 +591,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._hide_aux()
         self.frm_aux.grid()
         self.btn_open.grid(row=0, column=0, padx=(0, 8))
+        self.btn_log.grid(row=0, column=1, padx=(0, 8))
 
     def _set_state_error(self, kind: str):
         """kind: 'unsupported' | 'hameln' | 'failed'"""
@@ -628,6 +629,8 @@ class NovelDownloaderApp(ctk.CTk):
         self._persist()
         self._epub_path = None
         self._raw_log = []
+        if self._log_open:      # 前回分は破棄されるうえ、実行中は開閉ボタンが出ない
+            self._toggle_log()
         self._abort_event.clear()
         self._set_state_running()
         self._proc = "starting"           # 二重起動防止のプレースホルダ
