@@ -31,7 +31,7 @@ from pathlib import Path
 try:
     import customtkinter as ctk
     import tkinter as tk
-    from tkinter import filedialog
+    from tkinter import filedialog, messagebox
 except Exception as e:  # pragma: no cover - 起動環境依存
     sys.stderr.write(
         "customtkinter is required: pip install customtkinter\n"
@@ -118,9 +118,14 @@ UI = {
     "title": ("小説ePubダウンローダー", "Novel EPUB Downloader"),
     "paste_url": ("小説のURLを貼り付け", "Paste a novel URL"),
     "url_ph": ("ここにURLを貼り付けてください…", "Paste a URL here…"),
-    "download": ("⬇ ダウンロード", "⬇ Download"),
-    "cancel": ("⏸ 中止", "⏸ Cancel"),
-    "retry": ("⬇ もう一度", "⬇ Try again"),
+    # 大ボタンは CTkFont(size=16, weight="bold")。**太字だと Tk の
+    # フォントフォールバックが絵文字フォントに落ちず、⬇(U+2B07) や ⏸(U+23F8) が
+    # 豆腐になる**（Windows 実機で確認）。一覧の ⏳ や補助ボタンの 📂 は
+    # 通常ウェイトなので描画できている。大ボタンだけ基本フォントにある
+    # 矢印(U+2193)・四角(U+25A0)に替える
+    "download": ("↓ ダウンロード", "↓ Download"),
+    "cancel": ("■ 中止", "■ Cancel"),
+    "retry": ("↓ もう一度", "↓ Try again"),
     "open_folder": ("📂 フォルダを開く", "📂 Open folder"),
     "sites": ("対応サイトを見る", "Supported sites"),
     "show_log": ("詳細を表示", "Show details"),
@@ -176,7 +181,7 @@ UI = {
     "ctx_selectall": ("すべて選択", "Select All"),
     "ctx_clear": ("クリア", "Clear"),
     "tip_paste": ("クリップボードのURLを貼り付け", "Paste the URL from the clipboard"),
-    "paste_dl": ("📋⬇ 貼り付けてダウンロード", "📋⬇ Paste & Download"),
+    "paste_dl": ("↓ 貼り付けてダウンロード", "↓ Paste & Download"),
     "clip_empty": ("クリップボードにURLがありません", "No URL in the clipboard"),
     "detecting": ("判定中…", "Checking…"),
     "site_ok": ("✓ {name}", "✓ {name}"),
@@ -212,11 +217,15 @@ UI = {
     "q_skipped": ("未対応のサイト", "Unsupported site"),
     "q_aborted": ("中止", "Cancelled"),
     "q_progress": ("第 {n} 話 / 全 {m} 話", "{n} / {m}"),
-    "resume": ("⬇ 再開", "⬇ Resume"),
+    "resume": ("↓ 再開", "↓ Resume"),
     "queue_running": ("[{i}/{n}] {label}", "[{i}/{n}] {label}"),
     "queue_summary": ("{total} 件中 {ok} 件完了 / {ng} 件失敗",
                       "{ok} of {total} done / {ng} failed"),
     "queue_all_ok": ("✅ {total} 件すべて完了しました", "✅ All {total} finished"),
+    "retry_failed": ("↻ 失敗した {n} 件を再試行", "↻ Retry {n} failed"),
+    "close_title": ("確認", "Confirm"),
+    "confirm_close": ("ダウンロードが {n} 件残っています。終了しますか？",
+                      "{n} download(s) still pending. Quit anyway?"),
 }
 
 
@@ -701,6 +710,8 @@ class NovelDownloaderApp(ctk.CTk):
         self.btn_savelog = ctk.CTkButton(self.frm_aux, text="📄 ログを保存",
                                          width=110, fg_color="gray30",
                                          command=self._save_log)
+        self.btn_retry = ctk.CTkButton(self.frm_aux, text="", width=150,
+                                       command=self._retry_failed)
 
         # 保存先表示（小）＋ エンジン版数（右端）
         self.lbl_outdir = ctk.CTkLabel(self, text="", anchor="w",
@@ -898,7 +909,8 @@ class NovelDownloaderApp(ctk.CTk):
         save_settings(self.settings)
 
     # ── 状態遷移（§4） ───────────────────────────────────────
-    _AUX_BUTTONS = ("btn_open_epub", "btn_open", "btn_sites", "btn_log", "btn_savelog")
+    _AUX_BUTTONS = ("btn_retry", "btn_open_epub", "btn_open", "btn_sites",
+                    "btn_log", "btn_savelog")
 
     def _hide_aux(self):
         for name in self._AUX_BUTTONS:
@@ -1056,7 +1068,11 @@ class NovelDownloaderApp(ctk.CTk):
             "kind": kind,          # "download"（§8 で "append" が増える）
             "target": target,      # URL、または kind="append" の .txt パス
             "label": target,
-            "site_name": "",
+            # **info を渡されたら site_name もここで埋める。**
+            # 入力欄のバッジで判定済みの URL は判定スレッドに投げない
+            # （_add_urls の使い回し経路）ので _apply_job_info を通らない。
+            # ここで埋めないと、その行だけサイト名が出ない
+            "site_name": (info or {}).get("display_name") or "",
             "info": info,          # --detect-site の結果。実行時に使い回す
             "status": "waiting",   # waiting/running/done/error/skipped/aborted
             "detail": "",
@@ -1329,11 +1345,31 @@ class NovelDownloaderApp(ctk.CTk):
         # 最後に成功したジョブの成果物を「開く」対象にする
         last_ok = [j for j in self._jobs if j["status"] == "done" and j.get("epub")]
         self._epub_path = last_ok[-1]["epub"] if last_ok else None
-        aux = [self.btn_open_epub] if (self._epub_path
-                                       and os.path.isfile(self._epub_path)) else []
+        aux = []
+        # 再試行は error だけを対象にする。skipped（未対応サイト）は
+        # 何度やっても結果が変わらないので混ぜない
+        n_err = sum(1 for j in self._jobs if j["status"] == "error")
+        if n_err:
+            self.btn_retry.configure(text=self._t("retry_failed", n=n_err))
+            aux.append(self.btn_retry)
+        if self._epub_path and os.path.isfile(self._epub_path):
+            aux.append(self.btn_open_epub)
         aux += [self.btn_open, self.btn_log, self.btn_savelog]
         self._show_aux(*aux)
         self._update_download_enabled()
+
+    def _retry_failed(self):
+        """失敗した分だけ待機に戻して流し直す（§7.7）。"""
+        n = 0
+        for job in self._jobs:
+            if job["status"] == "error":
+                job.update(status="waiting", detail="", n=0, total=0, epub=None)
+                n += 1
+        if not n:
+            return
+        self._refresh_queue_list()
+        self._sync_queue_visibility()
+        self._queue_start()
 
     def _current_job(self):
         """実行中のジョブ。走っていなければ None。"""
@@ -2163,6 +2199,9 @@ class NovelDownloaderApp(ctk.CTk):
         self.btn_add.configure(text=self._t("add"))
         self.lbl_queue_title.configure(text=self._t("queue_title"))
         self.btn_queue_clear.configure(text=self._t("queue_clear"))
+        n_err = sum(1 for j in self._jobs if j["status"] == "error")
+        if n_err:
+            self.btn_retry.configure(text=self._t("retry_failed", n=n_err))
         if self._jobs:
             self._refresh_queue_list()
         self.chk_auto_paste.configure(text=self._t("auto_paste"))
@@ -2174,7 +2213,20 @@ class NovelDownloaderApp(ctk.CTk):
             self._apply_site_info(self._detect_seq, self._site_info_url, self._site_info)
 
     # ── 終了 ─────────────────────────────────────────────────
+    def _unfinished_count(self) -> int:
+        return sum(1 for j in self._jobs if j["status"] in ("waiting", "running"))
+
     def _on_close(self):
+        # 未完了のキューがあるなら確認する（§7.12）。キューは保存しないので、
+        # ここで黙って閉じると積んだものが消える
+        n = self._unfinished_count()
+        if n and not self._closing:
+            try:
+                if not messagebox.askokcancel(self._t("close_title"),
+                                              self._t("confirm_close", n=n)):
+                    return
+            except Exception:
+                pass    # ダイアログを出せない環境では止めない
         # 予約済みの after を止めてから閉じる。残っていると destroy 後に発火して
         # 「invalid command name」のトレースが stderr に出る
         self._closing = True
