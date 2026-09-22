@@ -222,6 +222,10 @@ UI = {
     "queue_summary": ("{total} 件中 {ok} 件完了 / {ng} 件失敗",
                       "{ok} of {total} done / {ng} failed"),
     "queue_all_ok": ("✅ {total} 件すべて完了しました", "✅ All {total} finished"),
+    # 3 つ全部出す。ok と rest だけだと、失敗が混ざったとき合計が total に
+    # ならず「1 件完了 / 1 件未処理」＝全 3 件、と数が合わなくなる
+    "queue_stopped": ("■ 中止しました（完了 {ok} / 失敗 {ng} / 未処理 {rest}）",
+                      "■ Stopped (done {ok} / failed {ng} / pending {rest})"),
     "retry_failed": ("↻ 失敗した {n} 件を再試行", "↻ Retry {n} failed"),
     "close_title": ("確認", "Confirm"),
     "confirm_close": ("ダウンロードが {n} 件残っています。終了しますか？",
@@ -560,6 +564,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._prog_t0 = None           # 残り時間推定の基準時刻（§6）
         self._prog_n0 = 0
         self._engine_ver = ""
+        self._resize_debt = 0          # 画面上限で切り詰められた高さ
         self._grip_y = None            # ログ欄グリップのドラッグ開始位置
         self._grip_h = 0
         self._closing = False          # 終了処理中（予約済み after を走らせない）
@@ -691,6 +696,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.frm_queue_list.grid_columnconfigure(1, weight=1)
         self._queue_rows = []          # 行ウィジェット（ジョブと同じ並び）
         self._queue_shown = False
+        self._queue_staged = False     # ＋ / まとめ貼り付けで積んだバッチか
 
         # 補助ボタン行（ePubを開く / フォルダを開く / 対応サイト / 詳細 / ログ保存）
         self.frm_aux = ctk.CTkFrame(self, fg_color="transparent")
@@ -1041,13 +1047,16 @@ class NovelDownloaderApp(ctk.CTk):
         text = self.var_url.get().strip()
         urls = self._extract_urls(text) or ([text] if text else [])
         if not urls:
-            # 「📋⬇ 貼り付けてダウンロード」状態（§5.3）
+            # **待機中があるならクリップボードは見ない。** ボタンは「再開」に
+            # なっており、押した人は積んだものを流すつもりでいる。ここで
+            # クリップボードを拾うと、途中でコピーした無関係な URL が
+            # 黙ってキューに足されてダウンロードされる
+            if any(j["status"] == "waiting" for j in self._jobs):
+                self._queue_start()
+                return
+            # 「貼り付けてダウンロード」状態（§5.3）
             urls = self._extract_urls(self._clipboard_text())
             if not urls:
-                # 待機中だけが残っている（入力欄は空）なら、そのまま流す
-                if any(j["status"] == "waiting" for j in self._jobs):
-                    self._queue_start()
-                    return
                 self.lbl_site.configure(text=self._t("clip_empty"), text_color="gray")
                 return
             if len(urls) == 1:
@@ -1111,13 +1120,20 @@ class NovelDownloaderApp(ctk.CTk):
                 return j
         return None
 
-    def _add_urls(self, urls, info=None) -> tuple:
-        """URL を一覧に積む。戻り値は (追加した数, 重複で弾いた数)。"""
+    def _add_urls(self, urls, info=None, staged=False) -> tuple:
+        """URL を一覧に積む。戻り値は (追加した数, 重複で弾いた数)。
+
+        staged=True は「ユーザーが明示的に積んだ」印（＋ / まとめ貼り付け）。
+        """
         # 前のバッチが完全に終わっているなら作り直す。そうしないと
         # 1 本ずつ落とすたびに済んだ行が溜まり、一覧が出っぱなしになる
         if self._jobs and self._proc is None and not any(
                 j["status"] in ("waiting", "running") for j in self._jobs):
             self._jobs = []
+            self._queue_staged = False
+            self._reset_result_view()
+        if staged:
+            self._queue_staged = True
         added = dup = 0
         for u in urls:
             u = (u or "").strip()
@@ -1148,28 +1164,50 @@ class NovelDownloaderApp(ctk.CTk):
         if not urls:
             self.lbl_site.configure(text=self._t("clip_empty"), text_color="gray")
             return
-        added, dup = self._add_urls(urls, info=self._site_info)
+        added, dup = self._add_urls(urls, info=self._site_info, staged=True)
         if added:
             self.var_url.set("")
             self.lbl_site.configure(text=self._t("queue_added", n=added), text_color="gray")
         elif dup:
             self.lbl_site.configure(text=self._t("queue_dup"), text_color="gray")
 
+    def _reset_result_view(self):
+        """前のバッチの結果表示を消す。
+
+        新しいバッチを積むと一覧は作り直されるが、**ステータス行・補助ボタン・
+        進捗バーは前のバッチのまま残る**。「4 件すべて完了しました」の下に
+        「0 / 3 件 待機中」が並ぶ、という食い違いが実機で出た。
+        「ログを保存」も前のバッチのログを出すので、見た目だけの問題ではない。
+        """
+        self.lbl_status.configure(text="", text_color=("gray10", "gray90"))
+        self.bar.stop()
+        self.bar.grid_remove()
+        self._hide_aux()
+        self._epub_path = None
+
     def _clear_queue(self):
         """一覧を空にする。実行中のジョブだけは残す。"""
         running = [j for j in self._jobs if j["status"] == "running"]
         self._jobs = running
         self._job_i = 0 if running else -1
+        if not running:
+            self._queue_staged = False
+            self._reset_result_view()
         self._refresh_queue_list()
         self._sync_queue_visibility()
         self._update_download_enabled()
 
     # ── 一覧の描画（§7.3）──────────────────────────────────
     def _queue_should_show(self) -> bool:
-        # 1 本だけ落とすときは v1 と同じ見た目にする。待機中があるなら、
-        # 積んだものが画面から消えたように見えないよう必ず出す
-        return (len(self._jobs) >= 2
-                or any(j["status"] == "waiting" for j in self._jobs))
+        """一覧を出すか。
+
+        1 本だけ落とすときは v1 と同じ見た目にする。
+        **ユーザーが明示的に積んだ（＋ / まとめ貼り付け）ものは常に出す。**
+        「待機中があるなら出す」だけにすると、1 件積んだ直後に未対応と判明した
+        瞬間に waiting → skipped となって一覧ごと消え、入力欄も空なので
+        **その URL が画面から完全に消えて何が起きたか分からなくなる**。
+        """
+        return len(self._jobs) >= 2 or (self._queue_staged and bool(self._jobs))
 
     def _sync_queue_visibility(self):
         show = self._queue_should_show()
@@ -1330,12 +1368,20 @@ class NovelDownloaderApp(ctk.CTk):
         total = len(self._jobs)
         ok = sum(1 for j in self._jobs if j["status"] == "done")
         ng = sum(1 for j in self._jobs if j["status"] in ("error", "skipped"))
+        # **中止・未処理を数え落とさない。** §7.6 のとおり中止すると残りは
+        # waiting のまま残るので、done でも error でもないジョブが出る。
+        # これを無視すると「1 件も落とせていないのに緑で全件完了」と出る
+        rest = total - ok - ng
         self.btn_main.configure(text=self._t("download"), state="normal")
         self._set_url_entry_enabled(True)
         self.bar.stop()
         self.bar.grid_remove()
         self._update_queue_count()
-        if ng == 0:
+        if rest:
+            self.lbl_status.configure(
+                text=self._t("queue_stopped", ok=ok, ng=ng, rest=rest),
+                text_color=("#8a6d00", "#e3b341"))
+        elif ng == 0:
             self.lbl_status.configure(text=self._t("queue_all_ok", total=total),
                                       text_color=("#1a7f37", "#3fb950"))
         else:
@@ -1848,10 +1894,22 @@ class NovelDownloaderApp(ctk.CTk):
             return 2000
 
     def _resize_height(self, delta: int):
-        """現在の高さを delta だけ増減する（画面内に収める）。"""
+        """現在の高さを delta だけ増減する（画面内に収める）。
+
+        画面上限でクランプされた分を覚えておき、縮めるときに差し引く。
+        そうしないと「広げる→上限で頭打ち→縮める」で元より小さくなる
+        （実測: 2030 → +170 で 2080 に頭打ち → -170 で 1910）。
+        """
         w, h = self._logical_size()
-        h = max(MIN_HEIGHT_PX, min(h + delta, self._max_logical_height()))
-        self.geometry(f"{w}x{h}")
+        want = h + delta
+        if delta < 0 and self._resize_debt:
+            give = min(self._resize_debt, -delta)
+            want += give
+            self._resize_debt -= give
+        capped = max(MIN_HEIGHT_PX, min(want, self._max_logical_height()))
+        if delta > 0:
+            self._resize_debt += max(0, want - capped)
+        self.geometry(f"{w}x{capped}")
 
     def _toggle_detail(self):
         """詳細設定の開閉。
@@ -2035,7 +2093,7 @@ class NovelDownloaderApp(ctk.CTk):
     def _paste_url(self):
         urls = self._extract_urls(self._clipboard_text())
         if len(urls) > 1:              # まとめてコピーされていたら一覧へ（§7.2）
-            added, dup = self._add_urls(urls, info=self._site_info)
+            added, dup = self._add_urls(urls, info=self._site_info, staged=True)
             if added:
                 # 一覧へ移したものが入力欄にも残っていると、どちらが対象か分からない。
                 # ＋ ボタン（_add_from_entry）と挙動を揃える
@@ -2251,6 +2309,8 @@ class NovelDownloaderApp(ctk.CTk):
                 h -= DETAIL_DELTA_PX
             if self._log_open:
                 h -= LOG_DELTA_PX
+            if self._queue_shown:
+                h -= QUEUE_DELTA_PX
             geo = "%dx%d" % (w, max(MIN_HEIGHT_PX, h))
             m = re.search(r"([+-]\d+[+-]\d+)$", self.geometry())
             if m:
