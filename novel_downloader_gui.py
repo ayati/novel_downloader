@@ -67,6 +67,17 @@ DETAIL_DELTA_PX = 300
 # 詳細ログを開いたときに窓を広げる高さ。ログ行は weight=1 で余りを吸うので、
 # ここを広げた分がそのままログの見える量になる。
 LOG_DELTA_PX    = 190
+# キュー一覧を出したときに窓を広げる高さ
+QUEUE_DELTA_PX  = 170
+QUEUE_LIST_PX   = 150          # 一覧そのものの高さ（これを超えたらスクロール）
+
+# ジョブ状態 → 行頭の記号（design_gui_v2 §7.3）
+_JOB_ICON = {
+    "waiting": "⏳", "checking": "…", "running": "⏬",
+    "done": "✅", "error": "⚠", "skipped": "✕", "aborted": "⏹",
+}
+# URL の取り出し（複数 URL の一括投入・§7.2）
+_RE_URL = re.compile(r"""https?://[^\s\u3000"'<>]+""")
 MIN_HEIGHT_PX   = 360
 # ウィンドウ位置・サイズの妥当性チェック（壊れた設定で画面外に飛ばさない）
 _RE_GEOMETRY = re.compile(r"^\d{2,5}x\d{2,5}(?:[+-]\d{1,5}[+-]\d{1,5})?$")
@@ -78,12 +89,13 @@ ROW_SITE       = 2
 ROW_MAIN_BTN   = 3
 ROW_STATUS     = 4
 ROW_BAR        = 5
-ROW_AUX        = 6
-ROW_OUTDIR     = 7
-ROW_DETAIL_BTN = 8
-ROW_DETAIL     = 9
-ROW_LOG        = 10
-ROW_GRIP       = 11
+ROW_QUEUE      = 6
+ROW_AUX        = 7
+ROW_OUTDIR     = 8
+ROW_DETAIL_BTN = 9
+ROW_DETAIL     = 10
+ROW_LOG        = 11
+ROW_GRIP       = 12
 
 # ePub として開いてよい拡張子（_open_epub の実行ゲート）
 _EPUB_EXTS = (".epub", ".kepub.epub")
@@ -184,6 +196,27 @@ UI = {
     "behavior": ("動作", "Behavior"),
     "engine_ver": ("エンジン {ver}", "engine {ver}"),
     "ft_text": ("テキストファイル", "Text files"),
+    # ── v1.3: キュー（design_gui_v2 §7.14） ──
+    "add": ("＋", "+"),
+    "tip_add": ("一覧に追加する（すぐには始めない）", "Add to the list (don't start yet)"),
+    "queue_title": ("ダウンロード一覧", "Download list"),
+    "queue_count": ("{done} / {total} 件", "{done} / {total}"),
+    "queue_clear": ("✕ 消す", "✕ Clear"),
+    "queue_dup": ("すでに一覧にあります", "Already in the list"),
+    "queue_added": ("{n} 件を一覧に追加しました", "Added {n} to the list"),
+    "q_waiting": ("待機中", "Waiting"),
+    "q_checking": ("確認中…", "Checking…"),
+    "q_running": ("取得中", "Downloading"),
+    "q_done": ("完了", "Done"),
+    "q_error": ("失敗", "Failed"),
+    "q_skipped": ("未対応のサイト", "Unsupported site"),
+    "q_aborted": ("中止", "Cancelled"),
+    "q_progress": ("第 {n} 話 / 全 {m} 話", "{n} / {m}"),
+    "resume": ("⬇ 再開", "⬇ Resume"),
+    "queue_running": ("[{i}/{n}] {label}", "[{i}/{n}] {label}"),
+    "queue_summary": ("{total} 件中 {ok} 件完了 / {ng} 件失敗",
+                      "{ok} of {total} done / {ng} failed"),
+    "queue_all_ok": ("✅ {total} 件すべて完了しました", "✅ All {total} finished"),
 }
 
 
@@ -545,6 +578,8 @@ class NovelDownloaderApp(ctk.CTk):
         self._apply_ui_lang()
         self._set_state_idle()
 
+        # サイト判定を直列化する専用スレッド（§7.9）
+        self._start_detect_thread()
         # ウィンドウ全体のキー操作（§5.2）
         self.bind("<Escape>", self._on_escape, add="+")
         # ウィンドウがフォーカスを得るたびにクリップボードを見直す（§5.4）
@@ -583,6 +618,13 @@ class NovelDownloaderApp(ctk.CTk):
         self.btn_paste.grid(row=0, column=1, padx=(6, 0))
         _Tooltip(self.btn_paste, lambda: self._t("tip_paste"))
 
+        # 一覧に積むだけのボタン（§7.3）。実行中は大ボタンが「中止」になるので、
+        # 追加手段はこれしかない
+        self.btn_add = ctk.CTkButton(self.frm_url, text="＋", width=38,
+                                     fg_color="gray40", command=self._add_from_entry)
+        self.btn_add.grid(row=0, column=2, padx=(4, 0))
+        _Tooltip(self.btn_add, lambda: self._t("tip_add"))
+
         # 右クリックメニュー・キー操作（§5.1 / §5.2）
         self._attach_context_menu(self.ent_url)
         self.ent_url.bind("<Return>", self._on_return, add="+")
@@ -618,6 +660,28 @@ class NovelDownloaderApp(ctk.CTk):
         self.bar.grid(row=ROW_BAR, column=0, sticky="ew", padx=20, pady=(4, 2))
         self.bar.set(0)
         self.bar.grid_remove()
+
+        # キュー一覧（§7.3）。2 件以上、または待機中があるときだけ出す
+        self.frm_queue = ctk.CTkFrame(self, fg_color="transparent")
+        self.frm_queue.grid_columnconfigure(0, weight=1)
+        qhead = ctk.CTkFrame(self.frm_queue, fg_color="transparent")
+        qhead.grid(row=0, column=0, sticky="ew")
+        qhead.grid_columnconfigure(1, weight=1)
+        self.lbl_queue_title = ctk.CTkLabel(qhead, text="ダウンロード一覧", anchor="w",
+                                            font=ctk.CTkFont(size=12, weight="bold"))
+        self.lbl_queue_title.grid(row=0, column=0, sticky="w")
+        self.lbl_queue_count = ctk.CTkLabel(qhead, text="", anchor="w",
+                                            text_color="gray", font=ctk.CTkFont(size=11))
+        self.lbl_queue_count.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.btn_queue_clear = ctk.CTkButton(qhead, text="✕ 消す", width=72, height=24,
+                                             fg_color="gray40",
+                                             command=self._clear_queue)
+        self.btn_queue_clear.grid(row=0, column=2, sticky="e")
+        self.frm_queue_list = ctk.CTkScrollableFrame(self.frm_queue, height=QUEUE_LIST_PX)
+        self.frm_queue_list.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.frm_queue_list.grid_columnconfigure(1, weight=1)
+        self._queue_rows = []          # 行ウィジェット（ジョブと同じ並び）
+        self._queue_shown = False
 
         # 補助ボタン行（ePubを開く / フォルダを開く / 対応サイト / 詳細 / ログ保存）
         self.frm_aux = ctk.CTkFrame(self, fg_color="transparent")
@@ -936,6 +1000,14 @@ class NovelDownloaderApp(ctk.CTk):
         """
         if self._proc is not None:
             return
+        # 一覧に待機中があれば、入力欄が空でも流せる（§7.3）
+        if any(j["status"] == "waiting" for j in self._jobs):
+            finished = any(j["status"] in ("done", "error", "skipped", "aborted")
+                           for j in self._jobs)
+            self.btn_main.configure(
+                text=self._t("resume") if finished else self._t("download"),
+                state="normal")
+            return
         url = self.var_url.get().strip()
         if not url:
             if self._clipboard_url():
@@ -954,15 +1026,28 @@ class NovelDownloaderApp(ctk.CTk):
         if self._proc is not None:        # 実行中 → 中止
             self._abort()
             return
-        url = self.var_url.get().strip()
-        if not url:
+        text = self.var_url.get().strip()
+        urls = self._extract_urls(text) or ([text] if text else [])
+        if not urls:
             # 「📋⬇ 貼り付けてダウンロード」状態（§5.3）
-            url = self._clipboard_url()
-            if not url:
+            urls = self._extract_urls(self._clipboard_text())
+            if not urls:
+                # 待機中だけが残っている（入力欄は空）なら、そのまま流す
+                if any(j["status"] == "waiting" for j in self._jobs):
+                    self._queue_start()
+                    return
                 self.lbl_site.configure(text=self._t("clip_empty"), text_color="gray")
                 return
-            self.var_url.set(url)
-        self._start_download(url)
+            if len(urls) == 1:
+                self.var_url.set(urls[0])
+        added, dup = self._add_urls(urls, info=self._site_info)
+        if len(urls) > 1:
+            self.var_url.set("")       # まとめ投入時は入力欄を空ける
+        if not any(j["status"] == "waiting" for j in self._jobs):
+            if dup and not added:
+                self.lbl_site.configure(text=self._t("queue_dup"), text_color="gray")
+            return
+        self._queue_start()
 
     # ── ジョブキュー（design_gui_v2 §7）──────────────────────
     def _make_job(self, target: str, kind: str = "download", info=None) -> dict:
@@ -979,12 +1064,205 @@ class NovelDownloaderApp(ctk.CTk):
             "n": 0, "total": 0,
         }
 
+    # ── キューへの投入（§7.2 / §7.8）────────────────────────
+    @staticmethod
+    def _extract_urls(text: str) -> list:
+        """テキストから URL を順序を保って取り出す（重複は畳む）。
+
+        クリップボードは「URL 1 本」とは限らない。X やブログからのコピーは
+        本文混じりだし、メモに溜めた複数行を一度に投げたいこともある（§7.2）。
+        """
+        out = []
+        for u in _RE_URL.findall(text or ""):
+            u = u.rstrip("、。，．)）]】>＞")   # 文中の URL に付きやすい後続記号を落とす
+            if u not in out:
+                out.append(u)
+        return out
+
+    def _job_index(self, job) -> int:
+        """同値ではなく**同一性**で探す（内容が同じ別ジョブと取り違えないため）。"""
+        for i, j in enumerate(self._jobs):
+            if j is job:
+                return i
+        return -1
+
+    def _find_job(self, url: str):
+        for j in self._jobs:
+            if j["target"] == url:
+                return j
+            info = j.get("info") or {}
+            if info.get("normalized_url") and info["normalized_url"] == url:
+                return j
+        return None
+
+    def _add_urls(self, urls, info=None) -> tuple:
+        """URL を一覧に積む。戻り値は (追加した数, 重複で弾いた数)。"""
+        # 前のバッチが完全に終わっているなら作り直す。そうしないと
+        # 1 本ずつ落とすたびに済んだ行が溜まり、一覧が出っぱなしになる
+        if self._jobs and self._proc is None and not any(
+                j["status"] in ("waiting", "running") for j in self._jobs):
+            self._jobs = []
+        added = dup = 0
+        for u in urls:
+            u = (u or "").strip()
+            if not u:
+                continue
+            if self._find_job(u) is not None:
+                dup += 1
+                continue
+            # 入力欄で済ませた判定があれば使い回す（§5.5）。exe の起動 1 回分を省く
+            reuse = info if (info is not None and u == self._site_info_url) else None
+            job = self._make_job(u, info=reuse)
+            self._jobs.append(job)
+            if reuse is None:
+                self._enqueue_detect(job)
+            added += 1
+        if added or dup:
+            self._refresh_queue_list()
+            self._sync_queue_visibility()
+            self._update_download_enabled()
+        return added, dup
+
+    def _add_from_entry(self):
+        """＋ ボタン。積むだけで実行はしない。"""
+        text = self.var_url.get().strip()
+        urls = self._extract_urls(text) or ([text] if text else [])
+        if not urls:
+            urls = self._extract_urls(self._clipboard_text())
+        if not urls:
+            self.lbl_site.configure(text=self._t("clip_empty"), text_color="gray")
+            return
+        added, dup = self._add_urls(urls, info=self._site_info)
+        if added:
+            self.var_url.set("")
+            self.lbl_site.configure(text=self._t("queue_added", n=added), text_color="gray")
+        elif dup:
+            self.lbl_site.configure(text=self._t("queue_dup"), text_color="gray")
+
+    def _clear_queue(self):
+        """一覧を空にする。実行中のジョブだけは残す。"""
+        running = [j for j in self._jobs if j["status"] == "running"]
+        self._jobs = running
+        self._job_i = 0 if running else -1
+        self._refresh_queue_list()
+        self._sync_queue_visibility()
+        self._update_download_enabled()
+
+    # ── 一覧の描画（§7.3）──────────────────────────────────
+    def _queue_should_show(self) -> bool:
+        # 1 本だけ落とすときは v1 と同じ見た目にする。待機中があるなら、
+        # 積んだものが画面から消えたように見えないよう必ず出す
+        return (len(self._jobs) >= 2
+                or any(j["status"] == "waiting" for j in self._jobs))
+
+    def _sync_queue_visibility(self):
+        show = self._queue_should_show()
+        if show == self._queue_shown:
+            return
+        self._queue_shown = show
+        if show:
+            self.frm_queue.grid(row=ROW_QUEUE, column=0, sticky="ew",
+                                padx=20, pady=(6, 2))
+            self._resize_height(QUEUE_DELTA_PX)
+        else:
+            self.frm_queue.grid_forget()
+            self._resize_height(-QUEUE_DELTA_PX)
+
+    def _refresh_queue_list(self):
+        for w in self.frm_queue_list.winfo_children():
+            w.destroy()
+        self._queue_rows = []
+        for i, _job in enumerate(self._jobs):
+            icon = ctk.CTkLabel(self.frm_queue_list, text="", width=20, anchor="w")
+            icon.grid(row=i, column=0, sticky="w", padx=(2, 4), pady=1)
+            lab = ctk.CTkLabel(self.frm_queue_list, text="", anchor="w",
+                               font=ctk.CTkFont(size=11))
+            lab.grid(row=i, column=1, sticky="ew", pady=1)
+            sta = ctk.CTkLabel(self.frm_queue_list, text="", anchor="e",
+                               text_color="gray", font=ctk.CTkFont(size=11))
+            sta.grid(row=i, column=2, sticky="e", padx=(6, 2), pady=1)
+            self._queue_rows.append({"icon": icon, "label": lab, "status": sta})
+            self._update_queue_row(i)
+        self._update_queue_count()
+
+    @staticmethod
+    def _ellipsis(text: str, limit: int = 38) -> str:
+        text = (text or "").replace("\n", " ")
+        return text if len(text) <= limit else text[:limit - 1] + "…"
+
+    def _job_status_text(self, job) -> str:
+        s = job["status"]
+        if s == "waiting" and job.get("info") is None:
+            return self._t("q_checking")
+        if s == "running" and job.get("total"):
+            return self._t("q_progress", n=job["n"], m=job["total"])
+        if s in ("error", "skipped") and job.get("detail"):
+            return self._ellipsis(job["detail"], 34)
+        key = "q_" + s
+        return self._t(key) if key in UI else s
+
+    def _update_queue_row(self, i: int):
+        if not (0 <= i < len(self._queue_rows) and i < len(self._jobs)):
+            return
+        job, row = self._jobs[i], self._queue_rows[i]
+        row["icon"].configure(text=_JOB_ICON.get(job["status"], "・"))
+        label = job.get("label") or job["target"]
+        if job.get("site_name"):
+            label = "%s  [%s]" % (self._ellipsis(label, 30), job["site_name"])
+        else:
+            label = self._ellipsis(label)
+        row["label"].configure(text=label)
+        row["status"].configure(text=self._job_status_text(job))
+
+    def _update_queue_count(self):
+        done = sum(1 for j in self._jobs
+                   if j["status"] in ("done", "error", "skipped", "aborted"))
+        self.lbl_queue_count.configure(
+            text=self._t("queue_count", done=done, total=len(self._jobs)))
+
+    # ── サイト判定を 1 本のスレッドで直列化する（§7.9）────────
+    def _start_detect_thread(self):
+        self._detect_jobs_q = queue.Queue()
+        threading.Thread(target=self._queue_detect_worker, daemon=True).start()
+
+    def _queue_detect_worker(self):
+        """積まれた順に 1 件ずつ判定する。
+
+        積むたびにスレッドを立てると 5 本で 5 プロセスが同時に上がる。
+        --detect-site はオフライン・即時だが exe の起動コストはある。
+        """
+        while True:
+            job = self._detect_jobs_q.get()
+            if job is None:
+                return
+            try:
+                info = detect_site(job["target"])
+            except Exception:
+                info = None
+            self._queue.put(("jobinfo", job, info))
+
+    def _enqueue_detect(self, job):
+        if job.get("info") is None:
+            self._detect_jobs_q.put(job)
+
+    def _apply_job_info(self, job, info):
+        i = self._job_index(job)
+        if i < 0 or job["status"] != "waiting":
+            return          # 一覧から消された / すでに走り出している
+        job["info"] = info or {}
+        if not info or info.get("site") is None:
+            job["status"] = "skipped"
+            job["detail"] = self._t("q_skipped")
+        else:
+            job["site_name"] = info.get("display_name") or ""
+        self._update_queue_row(i)
+        self._update_queue_count()
+        self._sync_queue_visibility()
+        self._update_download_enabled()
+
     def _start_download(self, url: str):
-        """URL 1 本を「1 件のキュー」として流す（§7.13 Step 1）。"""
-        # 入力中に済ませたサイト判定を使い回す（§5.5）。exe の起動 1 回分を省く
-        info = self._site_info if self._site_info_url == url else None
-        self._jobs = [self._make_job(url, info=info)]
-        self._job_i = -1
+        """URL 1 本を積んでキューを流す（従来の単発ダウンロード経路）。"""
+        self._add_urls([url], info=self._site_info)
         self._queue_start()
 
     def _queue_start(self):
@@ -1018,12 +1296,44 @@ class NovelDownloaderApp(ctk.CTk):
         # §3.2: この時刻より古い .epub は「今回の成果物」ではない
         self._started_at = time.time()
         self._set_state_running()
+        self._update_queue_row(i)
+        self._update_queue_count()
+        if len(self._jobs) > 1:
+            self.lbl_status.configure(text=self._t(
+                "queue_running", i=i + 1, n=len(self._jobs),
+                label=self._ellipsis(job.get("label") or job["target"], 28)))
         self._proc = "starting"           # 二重起動防止のプレースホルダ
         self._worker = threading.Thread(
             target=self._download_worker,
             args=(job, self._queue_settings or self._collect_settings()),
             daemon=True)
         self._worker.start()
+
+    def _queue_done_summary(self):
+        """複数件を流し終えたときのまとめ表示（§7.7）。"""
+        total = len(self._jobs)
+        ok = sum(1 for j in self._jobs if j["status"] == "done")
+        ng = sum(1 for j in self._jobs if j["status"] in ("error", "skipped"))
+        self.btn_main.configure(text=self._t("download"), state="normal")
+        self._set_url_entry_enabled(True)
+        self.bar.stop()
+        self.bar.grid_remove()
+        self._update_queue_count()
+        if ng == 0:
+            self.lbl_status.configure(text=self._t("queue_all_ok", total=total),
+                                      text_color=("#1a7f37", "#3fb950"))
+        else:
+            self.lbl_status.configure(
+                text=self._t("queue_summary", total=total, ok=ok, ng=ng),
+                text_color=("#8a6d00", "#e3b341"))
+        # 最後に成功したジョブの成果物を「開く」対象にする
+        last_ok = [j for j in self._jobs if j["status"] == "done" and j.get("epub")]
+        self._epub_path = last_ok[-1]["epub"] if last_ok else None
+        aux = [self.btn_open_epub] if (self._epub_path
+                                       and os.path.isfile(self._epub_path)) else []
+        aux += [self.btn_open, self.btn_log, self.btn_savelog]
+        self._show_aux(*aux)
+        self._update_download_enabled()
 
     def _current_job(self):
         """実行中のジョブ。走っていなければ None。"""
@@ -1043,7 +1353,9 @@ class NovelDownloaderApp(ctk.CTk):
             job["epub"] = self._epub_path
             job["err_kind"] = err_kind or ("hameln" if self._needs_playwright else "")
             if status in ("error", "skipped"):
-                job["detail"] = self._error_detail()
+                job["detail"] = self._error_detail() or self._t("q_" + status)
+            self._update_queue_row(self._job_i)
+            self._update_queue_count()
         if status == "aborted":
             self._queue_done()            # 中止はキュー全体を止める（§7.6）
             return
@@ -1053,12 +1365,15 @@ class NovelDownloaderApp(ctk.CTk):
         """キューが終わったときの表示。
 
         1 件だけのときは v1.2 とまったく同じ画面遷移にする（§7.3）。
-        複数件のサマリーは Step 4 で足す。
         """
         self._job_i = -1
+        self._sync_queue_visibility()
         job = self._jobs[-1] if self._jobs else None
         if job is None:
             self._set_state_idle()
+            return
+        if len(self._jobs) > 1:
+            self._queue_done_summary()
             return
         status = job["status"]
         if status == "aborted":
@@ -1276,6 +1591,9 @@ class NovelDownloaderApp(ctk.CTk):
         # 中止後にパイプへ残っていた分で表示が進まないようにする
         if kind in ("progress", "epub", "stage") and self._abort_event.is_set():
             return
+        if kind == "jobinfo":
+            self._apply_job_info(msg[1], msg[2])
+            return
         if kind == "workinfo":
             # 作品情報をジョブに控える（§7.4 の label / §7.3 の一覧表示に使う）。
             # エンジンが作品情報を取り終えた時点で 1 回だけ届く
@@ -1287,6 +1605,7 @@ class NovelDownloaderApp(ctk.CTk):
                 job["author"] = info["author"]
                 job["total_known"] = info["total"]
                 job["unit"] = info["unit"]
+                self._update_queue_row(self._job_i)
         elif kind == "stage":
             key = "stage%d" % msg[1]
             if key in UI:
@@ -1298,8 +1617,14 @@ class NovelDownloaderApp(ctk.CTk):
                 self.bar.stop()
                 self.bar.configure(mode="determinate")
             self.bar.set(n / m if m else 0)
-            self.lbl_status.configure(text=self._t("progress", n=n, m=m) + self._eta(n, m),
-                                      text_color=("gray10", "gray90"))
+            job = self._current_job()
+            if job is not None:
+                job["n"], job["total"] = n, m
+                self._update_queue_row(self._job_i)
+            text = self._t("progress", n=n, m=m) + self._eta(n, m)
+            if len(self._jobs) > 1:
+                text = "[%d/%d] %s" % (self._job_i + 1, len(self._jobs), text)
+            self.lbl_status.configure(text=text, text_color=("gray10", "gray90"))
         elif kind == "epub":
             self._epub_path = msg[1]
         elif kind == "rawlog":
@@ -1672,7 +1997,18 @@ class NovelDownloaderApp(ctk.CTk):
         return text.split()[0]
 
     def _paste_url(self):
-        url = self._clipboard_url()
+        urls = self._extract_urls(self._clipboard_text())
+        if len(urls) > 1:              # まとめてコピーされていたら一覧へ（§7.2）
+            added, dup = self._add_urls(urls, info=self._site_info)
+            if added:
+                # 一覧へ移したものが入力欄にも残っていると、どちらが対象か分からない。
+                # ＋ ボタン（_add_from_entry）と挙動を揃える
+                self.var_url.set("")
+            self.lbl_site.configure(
+                text=self._t("queue_added", n=added) if added else self._t("queue_dup"),
+                text_color="gray")
+            return
+        url = urls[0] if urls else ""
         if not url:
             self.lbl_site.configure(text=self._t("clip_empty"), text_color="gray")
             return
@@ -1824,6 +2160,11 @@ class NovelDownloaderApp(ctk.CTk):
         self.lbl_delay.configure(text=self._t("delay"))
         self.lbl_encoding.configure(text=self._t("encoding"))
         self.lbl_behavior.configure(text=self._t("behavior"))
+        self.btn_add.configure(text=self._t("add"))
+        self.lbl_queue_title.configure(text=self._t("queue_title"))
+        self.btn_queue_clear.configure(text=self._t("queue_clear"))
+        if self._jobs:
+            self._refresh_queue_list()
         self.chk_auto_paste.configure(text=self._t("auto_paste"))
         self.chk_open_on_done.configure(text=self._t("open_on_done"))
         if self._engine_ver:
@@ -1837,6 +2178,10 @@ class NovelDownloaderApp(ctk.CTk):
         # 予約済みの after を止めてから閉じる。残っていると destroy 後に発火して
         # 「invalid command name」のトレースが stderr に出る
         self._closing = True
+        try:
+            self._detect_jobs_q.put(None)      # 判定スレッドを終わらせる
+        except Exception:
+            pass
         for attr in ("_poll_after", "_detect_after"):
             aid = getattr(self, attr, None)
             if aid is not None:
