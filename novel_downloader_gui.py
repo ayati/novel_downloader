@@ -61,14 +61,11 @@ _RE_EPUB_DONE = re.compile(r"✅\s*ePub出力完了:\s*(.+)$")
 
 ENCODING_CHOICES = ["utf-8", "utf-8-sig", "shift_jis", "cp932"]
 
-# 詳細設定パネルの開閉でウィンドウ高さをこの分だけ増減する（design_gui_v2 §6）。
-# 絶対値で geometry を指定するとユーザーがリサイズした幅・高さを毎回捨ててしまう。
-DETAIL_DELTA_PX = 300
-# 詳細ログを開いたときに窓を広げる高さ。ログ行は weight=1 で余りを吸うので、
-# ここを広げた分がそのままログの見える量になる。
-LOG_DELTA_PX    = 190
-# キュー一覧を出したときに窓を広げる高さ
-QUEUE_DELTA_PX  = 170
+# パネル（詳細設定・ログ・一覧）の開閉でウィンドウ高さを**固定値で増減しては
+# いけない**。v1 は詳細設定を +300px としていたが、その後パネルに項目を足した
+# ため実際には収まらなくなり、開いても中身が全部見えずスクロールもできない
+# 状態になっていた（実測: 詳細設定だけで 80px、一覧＋詳細で 162px はみ出す）。
+# 内容が必要とする高さ（winfo_reqheight）に合わせる ＝ _fit_window() を使う。
 QUEUE_LIST_PX   = 150          # 一覧そのものの高さ（これを超えたらスクロール）
 
 # ジョブ状態 → 行頭の記号（design_gui_v2 §7.3）
@@ -78,7 +75,10 @@ _JOB_ICON = {
 }
 # URL の取り出し（複数 URL の一括投入・§7.2）
 _RE_URL = re.compile(r"""https?://[^\s\u3000"'<>]+""")
-MIN_HEIGHT_PX   = 360
+MIN_HEIGHT_PX   = 360          # minsize（ユーザーは手でここまで縮められる）
+# パネルを閉じたときにここより小さくはしない。内容だけに合わせると 360 まで
+# 縮んでしまい、開閉のたびに窓が初期サイズより小さくなって落ち着かない
+BASE_HEIGHT_PX  = 420
 # ウィンドウ位置・サイズの妥当性チェック（壊れた設定で画面外に飛ばさない）
 _RE_GEOMETRY = re.compile(r"^\d{2,5}x\d{2,5}(?:[+-]\d{1,5}[+-]\d{1,5})?$")
 # メイン画面のグリッド行。_build_widgets と _toggle_detail / _toggle_log の
@@ -564,7 +564,11 @@ class NovelDownloaderApp(ctk.CTk):
         self._prog_t0 = None           # 残り時間推定の基準時刻（§6）
         self._prog_n0 = 0
         self._engine_ver = ""
-        self._resize_debt = 0          # 画面上限で切り詰められた高さ
+        self._base_height = 0          # パネルを開いていないときの高さ（終了時に保存）
+        # 各パネルを開く直前の高さ。閉じるときに戻す（手で広げた分を失わない）
+        self._h_before_detail = 0
+        self._h_before_log = 0
+        self._h_before_queue = 0
         self._grip_y = None            # ログ欄グリップのドラッグ開始位置
         self._grip_h = 0
         self._closing = False          # 終了処理中（予約済み after を走らせない）
@@ -591,6 +595,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._apply_settings_to_widgets()
         self._apply_ui_lang()
         self._set_state_idle()
+        self.after(0, self._remember_base_height)
 
         # サイト判定を直列化する専用スレッド（§7.9）
         self._start_detect_thread()
@@ -739,7 +744,10 @@ class NovelDownloaderApp(ctk.CTk):
         self._build_detail_panel()
 
         # 生ログ（§10.1 トグル先）と、その高さを変えるグリップ
-        self.txt_log = ctk.CTkTextbox(self, height=120)
+        # 既定の高さ。内容フィット方式では**この値がそのままログの見える量**に
+        # なる（120 だと初期ウィンドウの余白に収まってしまい、開いても
+        # 窓が広がらず以前より狭くなる）。足りなければ下端のグリップで伸ばせる
+        self.txt_log = ctk.CTkTextbox(self, height=180)
         self.grip_log = ctk.CTkFrame(self, height=8, corner_radius=4,
                                      fg_color=("gray78", "gray32"),
                                      cursor="sb_v_double_arrow")
@@ -1215,12 +1223,13 @@ class NovelDownloaderApp(ctk.CTk):
             return
         self._queue_shown = show
         if show:
+            self._h_before_queue = self._logical_size()[1]
             self.frm_queue.grid(row=ROW_QUEUE, column=0, sticky="ew",
                                 padx=20, pady=(6, 2))
-            self._resize_height(QUEUE_DELTA_PX)
+            self._fit_window(grow_only=True)
         else:
             self.frm_queue.grid_forget()
-            self._resize_height(-QUEUE_DELTA_PX)
+            self._fit_window(restore_to=self._h_before_queue)
 
     def _refresh_queue_list(self):
         for w in self.frm_queue_list.winfo_children():
@@ -1893,23 +1902,51 @@ class NovelDownloaderApp(ctk.CTk):
         except Exception:
             return 2000
 
-    def _resize_height(self, delta: int):
-        """現在の高さを delta だけ増減する（画面内に収める）。
+    def _content_height(self) -> int:
+        """内容が必要とする高さ（geometry と同じ論理単位）。
 
-        画面上限でクランプされた分を覚えておき、縮めるときに差し引く。
-        そうしないと「広げる→上限で頭打ち→縮める」で元より小さくなる
-        （実測: 2030 → +170 で 2080 に頭打ち → -170 で 1910）。
+        `winfo_reqheight()` は**実ピクセル**を返すので倍率で割る（§6.1）。
         """
+        self.update_idletasks()
+        return int(self.winfo_reqheight() / self._window_scale() + 0.999)
+
+    def _fit_window(self, grow_only: bool = False, restore_to: int = 0):
+        """内容が収まる高さにウィンドウを合わせる。
+
+        固定値で増減する方式はやめた。パネルに項目を足すたびに値が合わなくなり、
+        **開いても中身が全部見えない**のにスクロールもできない状態になる。
+
+        grow_only=True は「広げるだけ」。パネルを開くときに使い、
+        ユーザーが手で広げた分を勝手に縮めない。
+        restore_to は「閉じるときに戻したい高さ」。開く直前の高さを渡すことで、
+        **ユーザーが手で設定した大きさを開閉で失わない**。内容に足りなければ
+        内容側が優先される（＝どちらにせよはみ出さない）。
+        """
+        try:
+            need = self._content_height()
+        except Exception:
+            return
         w, h = self._logical_size()
-        want = h + delta
-        if delta < 0 and self._resize_debt:
-            give = min(self._resize_debt, -delta)
-            want += give
-            self._resize_debt -= give
-        capped = max(MIN_HEIGHT_PX, min(want, self._max_logical_height()))
-        if delta > 0:
-            self._resize_debt += max(0, want - capped)
-        self.geometry(f"{w}x{capped}")
+        if grow_only:
+            target = max(h, need)
+        else:
+            target = max(need, restore_to or 0)
+        target = max(BASE_HEIGHT_PX, min(target, self._max_logical_height()))
+        if target != h:
+            self.geometry(f"{w}x{target}")
+        # **geometry() で読み直さない。** 設定した直後は WM が反映するまで
+        # 古い値が返るため、基準高さが 1 世代ずれる
+        self._remember_base_height(target)
+
+    def _remember_base_height(self, height: int = None):
+        """パネルを何も開いていないときの高さを覚える。
+
+        終了時に保存する高さはこれ。固定値を引き算する方式だと、
+        値がずれた瞬間に「次回は縦に間延びした窓で開く」が復活する。
+        """
+        if self._detail_open or self._log_open or self._queue_shown:
+            return
+        self._base_height = height if height is not None else self._logical_size()[1]
 
     def _toggle_detail(self):
         """詳細設定の開閉。
@@ -1920,17 +1957,19 @@ class NovelDownloaderApp(ctk.CTk):
         """
         self._detail_open = not self._detail_open
         if self._detail_open:
+            self._h_before_detail = self._logical_size()[1]
             self.btn_detail.configure(text=self._t("adv_open"))
             self.frm_detail.grid(row=ROW_DETAIL, column=0, sticky="ew", padx=16, pady=(2, 10))
-            self._resize_height(DETAIL_DELTA_PX)
+            self._fit_window(grow_only=True)
         else:
             self.btn_detail.configure(text=self._t("adv_closed"))
             self.frm_detail.grid_forget()
-            self._resize_height(-DETAIL_DELTA_PX)
+            self._fit_window(restore_to=self._h_before_detail)
 
     def _toggle_log(self):
         self._log_open = not self._log_open
         if self._log_open:
+            self._h_before_log = self._logical_size()[1]
             self.btn_log.configure(text=self._t("hide_log"))
             # sticky="nsew" ＋ weight=1 で、ウィンドウの余った高さをログ欄が吸う。
             # これが無いと窓をいくら大きくしてもログ欄は 120px のままだった
@@ -1940,13 +1979,13 @@ class NovelDownloaderApp(ctk.CTk):
             self.txt_log.delete("1.0", "end")
             self.txt_log.insert("end", "\n".join(self._raw_log) + "\n")
             self.txt_log.see("end")
-            self._resize_height(LOG_DELTA_PX)
+            self._fit_window(grow_only=True)
         else:
             self.btn_log.configure(text=self._t("show_log"))
             self.txt_log.grid_forget()
             self.grip_log.grid_forget()
             self.grid_rowconfigure(ROW_LOG, weight=0)
-            self._resize_height(-LOG_DELTA_PX)
+            self._fit_window(restore_to=self._h_before_log)
 
     # ── ログ欄のサイズ変更グリップ ────────────────────────────
     def _grip_press(self, event):
@@ -2305,12 +2344,12 @@ class NovelDownloaderApp(ctk.CTk):
         # 縦に間延びした窓で開いてしまうので、開いている分を差し引いてから保存する
         try:
             w, h = self._logical_size()
-            if self._detail_open:
-                h -= DETAIL_DELTA_PX
-            if self._log_open:
-                h -= LOG_DELTA_PX
-            if self._queue_shown:
-                h -= QUEUE_DELTA_PX
+            # パネルを開いたままの高さを覚えると、次回は閉じた状態なのに
+            # 縦に間延びした窓で開く。**固定値を引く方式はやめた**
+            # （パネルに項目を足すと値がずれて破綻する）。
+            # 何も開いていないときに記録しておいた高さを使う
+            if self._detail_open or self._log_open or self._queue_shown:
+                h = self._base_height or h
             geo = "%dx%d" % (w, max(MIN_HEIGHT_PX, h))
             m = re.search(r"([+-]\d+[+-]\d+)$", self.geometry())
             if m:
