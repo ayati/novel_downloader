@@ -45,12 +45,36 @@ i18n で進捗表示を訳せないのも、Step 0 で出力完了の書式を�
 | `stage` | `n`, `total`, `label` | `_print_stage()` |
 | `progress` | `n`, `total`, `title` | `_progress()` |
 | `output` | `kind`（`txt` / `epub`）, `path` | `_print_text_done()` / `_print_epub_done()` |
+| `workinfo` | `title`, `author`, `total`（任意）, `unit` | `_dry_run_exit()` |
 
 ```json
 {"schema":1,"event":"stage","n":1,"total":3,"label":"作品情報を取得中: https://…"}
 {"schema":1,"event":"progress","n":5,"total":123,"title":"第5話 …"}
 {"schema":1,"event":"output","kind":"epub","path":"/…/作品.epub"}
 ```
+
+### 3.1 `workinfo`（v2.12.0+ / design_gui_v2.md §10）
+
+作品情報（題名・著者・総数）を 1 回だけ通知する。`--dry-run` と併用すると
+**ダウンロードせずに作品情報だけ**取れるので、GUI の受信箱（design_gui_v2 §8.1）が
+「出先で投げた URL が何の作品なのか」を取得前に表示するのに使う。
+
+```json
+{"schema":1,"event":"workinfo","title":"水属性の魔法使い","author":"久宝　忠","total":935,"unit":"episode"}
+```
+
+- 発火点は `_dry_run_exit()`。**全スクレイパーが「作品情報を取得し終えた直後」に
+  必ず通る唯一の地点**なので、ここに置けば 17 サイト分が 1 箇所で賄える
+  （`--dry-run` 指定の有無にかかわらず発火する。ヘルパー名と役割がずれているが、
+  17 箇所を改名する churn に見合わないため据え置き）
+- `unit` は `total` の単位。サイトによって数える単位が違うため明示する:
+  `"episode"` 話数 / `"page"` ページ数（エブリスタ・野いちご・ノベマ！・berry's）
+  / `"chapter"` 章数（ネオページ・杉田玄白・結城浩）
+- 青空文庫は ZIP 1 本でこの時点では話数が確定しないので **`total` を送らない**
+  （受け手は `total` が無い場合を必ず扱うこと）
+
+**これがある理由**: 無いと GUI は `--dry-run` の人間向け表示を正規表現で読むことになり、
+§1 で戒めた「表示文言をプロセス間の契約にする」の再発になる。
 
 **発火点が 3 つで済むのは Step 0 で集約したから。** 集約前は進捗 13 箇所・出力完了 36 箇所・
 段階見出し 48 箇所を個別に触る必要があった。

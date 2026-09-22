@@ -1025,13 +1025,19 @@ class NovelDownloaderApp(ctk.CTk):
             daemon=True)
         self._worker.start()
 
+    def _current_job(self):
+        """実行中のジョブ。走っていなければ None。"""
+        if 0 <= self._job_i < len(self._jobs):
+            return self._jobs[self._job_i]
+        return None
+
     def _job_finished(self, status: str, err_kind: str = ""):
         """**ダウンロードの唯一の出口**（§7.5）。
 
         終端は precheck / aborted / finished の 3 経路あり、それぞれに
         「次へ進む」を書くと必ず取りこぼす。すべてここを通す。
         """
-        job = self._jobs[self._job_i] if 0 <= self._job_i < len(self._jobs) else None
+        job = self._current_job()
         if job is not None:
             job["status"] = status
             job["epub"] = self._epub_path
@@ -1197,6 +1203,13 @@ class NovelDownloaderApp(ctk.CTk):
                                      int(ev.get("n", 0)), int(ev.get("total", 0))))
                 elif kind == "output" and ev.get("kind") == "epub":
                     self._queue.put(("epub", str(ev.get("path", "")).strip()))
+                elif kind == "workinfo":
+                    self._queue.put(("workinfo", {
+                        "title": str(ev.get("title") or ""),
+                        "author": str(ev.get("author") or ""),
+                        "total": ev.get("total"),
+                        "unit": str(ev.get("unit") or "episode"),
+                    }))
                 elif kind == "stage":
                     # label は使わない。_print_stage() の呼び出し側は日本語ハードコードで
                     # i18n されていないため、英語 UI に日本語が出る（design_gui_v2 §5.7）。
@@ -1263,7 +1276,18 @@ class NovelDownloaderApp(ctk.CTk):
         # 中止後にパイプへ残っていた分で表示が進まないようにする
         if kind in ("progress", "epub", "stage") and self._abort_event.is_set():
             return
-        if kind == "stage":
+        if kind == "workinfo":
+            # 作品情報をジョブに控える（§7.4 の label / §7.3 の一覧表示に使う）。
+            # エンジンが作品情報を取り終えた時点で 1 回だけ届く
+            job = self._current_job()
+            if job is not None:
+                info = msg[1]
+                if info["title"]:
+                    job["label"] = info["title"]
+                job["author"] = info["author"]
+                job["total_known"] = info["total"]
+                job["unit"] = info["unit"]
+        elif kind == "stage":
             key = "stage%d" % msg[1]
             if key in UI:
                 self.lbl_status.configure(text=self._t(key),

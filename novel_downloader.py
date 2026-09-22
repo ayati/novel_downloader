@@ -1160,8 +1160,31 @@ def _show_episode_list(title: str, author: str, ep_titles: list[str]) -> None:
     sys.exit(0)
 
 
-def _dry_run_exit(args):
-    """--dry-run 指定時にメッセージを表示してダウンロードをスキップする。"""
+def _dry_run_exit(args, title=None, author=None, total=None, unit="episode"):
+    """作品情報が揃った直後の共通フック。
+
+    (1) GUI 向けに `workinfo` イベントを出す（`--progress-json` 指定時のみ）
+    (2) `--dry-run` ならダウンロードせずに終了する
+
+    **全スクレイパーが「作品情報を取得し終えた直後」に必ず呼ぶ唯一の地点**なので、
+    ここを作品情報の通知点にしている（design_gui_v2.md §10）。GUI 側が
+    `--dry-run` の人間向け表示を正規表現で読む案は採らない。表示文言を
+    プロセス間の契約にすると文言を変えた瞬間に黙って壊れる
+    （design_progress_json.md §1 が戒めたのと同じ失敗）。
+
+    `total` の単位はサイトによって違うので `unit` で明示する:
+      "episode" 話数 / "page" ページ数（エブリスタ・野いちご・ノベマ！・berry's）
+      / "chapter" 章数（ネオページ・杉田玄白・結城浩）
+    青空文庫は ZIP 1 本でこの時点では確定しないため `total` を送らない。
+
+    **既定の挙動は変えない。** `_emit_event` は `--progress-json` 未指定なら
+    何もしないので、人間向け出力は 1 バイトも変わらない。
+    """
+    if title or author or total is not None:
+        fields = {"title": title or "", "author": author or "", "unit": unit}
+        if total is not None:
+            fields["total"] = int(total)
+        _emit_event("workinfo", **fields)
     if getattr(args, "dry_run", False):
         print("\n[dry-run] ダウンロードは行いません。")
         sys.exit(0)
@@ -3878,7 +3901,7 @@ def run_narou(args):
 
     if args.list_only:
         _show_episode_list(title, author, [ep[1] for ep in target])
-    _dry_run_exit(args)
+    _dry_run_exit(args, title, author, len(episodes))
 
     # 再開処理
     resume_arg = getattr(args, "resume", None)
@@ -4765,7 +4788,7 @@ def run_kakuyomu(args):
 
     if args.list_only:
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episode_list])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_all)
 
     header   = aozora_header(info["title"], info["author"], info.get("description", ""),
                              source_url=work_url, meta=info)
@@ -5205,7 +5228,7 @@ def run_alphapolis(args):
 
     if args.list_only:
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episode_list])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_all)
 
     header   = aozora_header(info["title"], info["author"], info.get("description", ""),
                              source_url=work_url, meta=info)
@@ -5500,7 +5523,7 @@ def run_estar(args):
         print(T("エラー: 総ページ数を取得できませんでした。"))
         sys.exit(1)
     _print_field("総ページ数", f"{total_pages}", indent=6, width=10)
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_pages, unit="page")
 
     start_page   = max(1, args.start or 1)
     end_page     = min(total_pages, args.end or total_pages)
@@ -5818,7 +5841,7 @@ def run_hameln(args):
 
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep[2] for ep in target])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_eps)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
@@ -6213,7 +6236,7 @@ def run_neopage(args):
 
     if args.list_only:
         _show_episode_list(info["title"], info["author"], [ch[1] for ch in target])  # ch[1]=title
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_chapters, unit="chapter")
 
     header   = aozora_header(info["title"], info["author"],
                              info["synopsis"], source_url=work_url, meta=info)
@@ -6494,7 +6517,7 @@ def run_solispia(args):
 
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep[1] for ep in target])  # ep[1]=title
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_eps)
 
     header   = aozora_header(info["title"], info["author"],
                              info["description"], source_url=work_url, meta=info)
@@ -6756,7 +6779,7 @@ def run_noichigo(args):
 
     if args.list_only:
         _show_episode_list(info["title"], info["author"], [ch[2] for ch in target_chapters])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_pages, unit="page")
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
@@ -6964,7 +6987,7 @@ def run_berrys(args):
 
     if args.list_only:
         _show_episode_list(info["title"], info["author"], [ch[2] for ch in target_chapters])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_pages, unit="page")
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
@@ -7185,7 +7208,7 @@ def run_monogatary(args):
         _show_episode_list(story_title, author,
                            [ep.get("episodeTitle", f"第{i}話")
                             for i, ep in enumerate(target, start_ep)])
-    _dry_run_exit(args)
+    _dry_run_exit(args, story_title, author, total_episodes)
 
     header   = aozora_header(story_title, author, synopsis,
                              source_url=story_url, meta=meta)
@@ -7428,7 +7451,7 @@ def run_novema(args):
     target_eps = ep_ranges[start_ep - 1:end_ep]
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep[2] for ep in target_eps])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_pages, unit="page")
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
@@ -7693,7 +7716,7 @@ def run_novelup(args):
     target_eps = episodes[start_ep - 1:end_ep]
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep[1] for ep in target_eps])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_eps)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
@@ -7919,7 +7942,7 @@ def run_sutekibungei(args):
     target_eps = episodes[start_ep - 1:end_ep]
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in target_eps])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_eps)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
@@ -8229,7 +8252,7 @@ def run_days(args):
     target_eps = episodes[start_ep - 1:end_ep]
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in target_eps])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], total_eps)
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
@@ -8538,7 +8561,7 @@ def run_genpaku(args):
 
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episodes])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], len(episodes), unit="chapter")
 
     _print_stage(3, "テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
@@ -8877,7 +8900,7 @@ def run_hyuki(args):
 
     if getattr(args, "list_only", False):
         _show_episode_list(info["title"], info["author"], [ep["title"] for ep in episodes])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info["title"], info["author"], len(episodes), unit="chapter")
 
     _print_stage(3, "テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
@@ -9492,7 +9515,7 @@ def run_aozora(args):
         title  = ep_title  or info.get("title",  "（タイトル不明）")
         author = ep_author or info.get("author", "（著者不明）")
         _show_episode_list(title, author, [ep["title"] for ep in episodes])
-    _dry_run_exit(args)
+    _dry_run_exit(args, info.get("title"), info.get("author"))
 
     # テキストファイルを UTF-8 に変換して保存
     # テキストは ZIP 内ファイル名ベース（または -o 指定）を使用

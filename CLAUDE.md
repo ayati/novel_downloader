@@ -116,6 +116,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `--watch-auto-default` | — | ウォッチリストで `auto=` 未指定のエントリに自動 DL を適用する |
 | `--detect-site URL` | — | GUI 用の読み取り専用モード。URL のサイト種別を判定し JSON 1行（`{"schema":1,"site","display_name","needs_playwright","normalized_url"}`）を stdout に出力して終了。オフライン・即時・**短縮URL展開なし**。未対応サイトは `site:null`、ハーメルンは `needs_playwright:true`。`detect_site()`/`normalize_url()`/`_SITE_DISPATCH` を流用 |
 | `--list-sites` | — | GUI 用の読み取り専用モード。対応サイト一覧（`[{"site","display_name"}]`）を JSON で stdout に出力して終了。`_SITE_DISPATCH` を挿入順に列挙 |
+| `--progress-json` | — | GUI 連携用。**stdout を JSON Lines のイベント専用にし、人間向け出力は stderr へ回す**（`_main()` 冒頭で `sys.stdout` を差し替えるので既存の `print()` は無改修）。イベントは `stage` / `progress` / `output` / `workinfo` の4種。**指定しなければ挙動は一切変わらない**。仕様は `design_progress_json.md` |
 
 ## 依存ライブラリ
 
@@ -351,7 +352,7 @@ GUI（Android アプリ・将来の組み込み利用）から本モジュール
 | `PROGRESS_CALLBACK` | `fn(n: int, total: int, title: str)` を代入すると話数進捗の print と同じタイミングで呼ばれる（print 出力は従来どおり維持）。呼び出しは `_progress()` ヘルパー経由でフック側の例外は握りつぶす。なろうの `total` は `--end` 指定時も全話数を返す点に注意 |
 | 環境変数 `NOVEL_DL_COVER_FONT` | 表紙用フォントファイルのパスを明示指定。`_find_cjk_fonts()` が最優先で採用し、fc-list 等の探索をスキップする（Android では同梱 TTF を指定） |
 
-新しいスクレイパーを追加する際は、(1) `*_fetch()` 関数の入口に `_check_abort()` を置く、(2) リクエスト間隔の待機に `time.sleep` ではなく `_sleep` を使う、(3) 話数進捗 print の直後に `_progress(n, len(list), タイトル)` を呼ぶ。
+新しいスクレイパーを追加する際は、(1) `*_fetch()` 関数の入口に `_check_abort()` を置く、(2) リクエスト間隔の待機に `time.sleep` ではなく `_sleep` を使う、(3) 話数進捗 print の直後に `_progress(n, len(list), タイトル)` を呼ぶ、(4) **`_dry_run_exit(args, title, author, total, unit=…)` に作品情報を渡す**（`workinfo` イベントの発火点。渡し忘れると GUI の受信箱でその作品だけ題名が出ない）。`unit` は `total` の単位で、`"episode"`（既定）/ `"page"`（エブリスタ・野いちご・ノベマ！・berry's）/ `"chapter"`（ネオページ・杉田玄白・結城浩）。総数が確定しないなら `total` を省く（青空文庫がそれ）。
 
 ## 動作確認
 
