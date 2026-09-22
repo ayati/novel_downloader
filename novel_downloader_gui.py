@@ -67,6 +67,17 @@ ENCODING_CHOICES = ["utf-8", "utf-8-sig", "shift_jis", "cp932"]
 # 状態になっていた（実測: 詳細設定だけで 80px、一覧＋詳細で 162px はみ出す）。
 # 内容が必要とする高さ（winfo_reqheight）に合わせる ＝ _fit_window() を使う。
 QUEUE_LIST_PX   = 150          # 一覧そのものの高さ（これを超えたらスクロール）
+# 詳細設定パネルの見える高さの**絶対下限**と、画面端に残す余白。
+# 中身が全部入るならその高さ、画面に収まらないなら詰めてスクロールさせる。
+# 下限は「これ以上小さいとパネルとして使えない」値であって、
+# **利用できる高さより優先してはいけない**（優先すると画面からはみ出す）
+# 「快適な下限」と「絶対最小」の 2 段構え。前者を使える高さより優先すると
+# 画面からはみ出すので、入らないときは後者まで詰めて分け合う
+DETAIL_MIN_PX   = 120
+DETAIL_FLOOR_PX = 60
+QUEUE_MIN_PX    = 90           # 一覧も詰められる（詰めた分は中でスクロール）
+QUEUE_FLOOR_PX  = 40
+FIT_MARGIN_PX   = 24
 
 # ジョブ状態 → 行頭の記号（design_gui_v2 §7.3）
 _JOB_ICON = {
@@ -762,7 +773,11 @@ class NovelDownloaderApp(ctk.CTk):
         return ui_text(key, self._lang(), **kwargs)
 
     def _build_detail_panel(self):
-        self.frm_detail = ctk.CTkFrame(self)
+        # **スクロール可能にする。** 固定フレームだと、画面の高さが足りないときに
+        # 下の項目（横書き・Kobo・フォント・取得間隔・文字コード）へ到達できない。
+        # 内容フィット（§6.1b）でウィンドウは広がるが、画面の高さが上限なので
+        # そこで頭打ちになり、はみ出した分は見る手段が無くなる。
+        self.frm_detail = ctk.CTkScrollableFrame(self, height=DETAIL_MIN_PX)
         self.frm_detail.grid_columnconfigure(0, weight=1)
 
         self.lbl_save = ctk.CTkLabel(self.frm_detail, text="保存先", anchor="w")
@@ -1910,6 +1925,49 @@ class NovelDownloaderApp(ctk.CTk):
         self.update_idletasks()
         return int(self.winfo_reqheight() / self._window_scale() + 0.999)
 
+    def _fit_flexible_panels(self):
+        """伸縮する 2 つのパネル（詳細設定・一覧）の**見える**高さを決める。
+
+        どちらも中身が全部入るならその高さ。画面に収まらないなら詰めて、
+        足りない分はパネル内でスクロールさせる。
+        **両方開くと画面に入らない**ことがあるので、まとめて配分する
+        （片方ずつ決めると、もう片方の存在を無視して画面からはみ出す）。
+        """
+        d_open, q_open = self._detail_open, self._queue_shown
+        if not (d_open or q_open):
+            return
+        scale = self._window_scale()
+        self.update_idletasks()
+        # 中身の自然な高さ。CTkScrollableFrame 自身が内側の内容フレームなので、
+        # winfo_reqheight() が中身の高さを返す（見える高さは configure(height=) 側）
+        d_want = int(self.frm_detail.winfo_reqheight() / scale + 0.999) if d_open else 0
+        q_want = QUEUE_LIST_PX if q_open else 0
+        # 両方 1px に潰して「パネル以外に要る高さ」を測る
+        if d_open:
+            self.frm_detail.configure(height=1)
+        if q_open:
+            self.frm_queue_list.configure(height=1)
+        self.update_idletasks()
+        base = int(self.winfo_reqheight() / scale + 0.999)
+        avail = self._max_logical_height() - base - FIT_MARGIN_PX
+
+        q_h = min(q_want, max(QUEUE_MIN_PX, avail - DETAIL_MIN_PX)) if q_open else 0
+        d_h = min(d_want, max(DETAIL_MIN_PX, avail - q_h)) if d_open else 0
+        if d_h + q_h > avail:
+            # 快適な下限の合計すら入らない（1366x768 のノート等）。
+            # 絶対最小まで詰めて分け合う。中身はどちらもスクロールで届く
+            if d_open and q_open:
+                q_h = max(QUEUE_FLOOR_PX, min(q_h, avail - DETAIL_FLOOR_PX))
+                d_h = max(DETAIL_FLOOR_PX, avail - q_h)
+            elif d_open:
+                d_h = max(DETAIL_FLOOR_PX, avail)
+            else:
+                q_h = max(QUEUE_FLOOR_PX, avail)
+        if d_open:
+            self.frm_detail.configure(height=d_h)
+        if q_open:
+            self.frm_queue_list.configure(height=q_h)
+
     def _fit_window(self, grow_only: bool = False, restore_to: int = 0):
         """内容が収まる高さにウィンドウを合わせる。
 
@@ -1923,6 +1981,8 @@ class NovelDownloaderApp(ctk.CTk):
         内容側が優先される（＝どちらにせよはみ出さない）。
         """
         try:
+            # 一覧やログの開閉で使える高さが変わるので、毎回計り直す
+            self._fit_flexible_panels()
             need = self._content_height()
         except Exception:
             return
