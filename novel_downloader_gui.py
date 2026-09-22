@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import json
+import time
 import queue
 import threading
 import subprocess
@@ -29,6 +30,7 @@ from pathlib import Path
 
 try:
     import customtkinter as ctk
+    import tkinter as tk
     from tkinter import filedialog
 except Exception as e:  # pragma: no cover - 起動環境依存
     sys.stderr.write(
@@ -58,6 +60,46 @@ _RE_PROGRESS = re.compile(r"^\s+\[\s*(\d+)\s*/\s*(\d+)\s*\]")
 _RE_EPUB_DONE = re.compile(r"✅\s*ePub出力完了:\s*(.+)$")
 
 ENCODING_CHOICES = ["utf-8", "utf-8-sig", "shift_jis", "cp932"]
+
+# 詳細設定パネルの開閉でウィンドウ高さをこの分だけ増減する（design_gui_v2 §6）。
+# 絶対値で geometry を指定するとユーザーがリサイズした幅・高さを毎回捨ててしまう。
+DETAIL_DELTA_PX = 300
+# 詳細ログを開いたときに窓を広げる高さ。ログ行は weight=1 で余りを吸うので、
+# ここを広げた分がそのままログの見える量になる。
+LOG_DELTA_PX    = 190
+MIN_HEIGHT_PX   = 360
+# ウィンドウ位置・サイズの妥当性チェック（壊れた設定で画面外に飛ばさない）
+_RE_GEOMETRY = re.compile(r"^\d{2,5}x\d{2,5}(?:[+-]\d{1,5}[+-]\d{1,5})?$")
+# メイン画面のグリッド行。_build_widgets と _toggle_detail / _toggle_log の
+# 3 箇所から参照するため定数にする（行を 1 つ挿すたびに追従漏れを起こす）
+ROW_URL_LABEL  = 0
+ROW_URL        = 1
+ROW_SITE       = 2
+ROW_MAIN_BTN   = 3
+ROW_STATUS     = 4
+ROW_BAR        = 5
+ROW_AUX        = 6
+ROW_OUTDIR     = 7
+ROW_DETAIL_BTN = 8
+ROW_DETAIL     = 9
+ROW_LOG        = 10
+ROW_GRIP       = 11
+
+# ePub として開いてよい拡張子（_open_epub の実行ゲート）
+_EPUB_EXTS = (".epub", ".kepub.epub")
+
+# エラー要約として拾う行の目印（design_gui_v2 §3.3）。
+# **絵文字ではない。** エンジンの失敗出力は「エラー:」「[エラー]」で、
+# ❌ は novel_downloader.py に 1 箇所も無い（実測）。
+_ERR_MARKS  = ("エラー:", "[エラー]", "Error:", "error:")
+# 未捕捉例外の最終行（例: urllib.error.HTTPError: HTTP Error 404: Not Found）。
+# 「Traceback (most recent call last):」を拾っても情報量がゼロなので、
+# 例外そのものの行を採る
+_RE_EXC_LINE = re.compile(r"^[\w.]+(?:Error|Exception|Interrupt|Timeout)\b[^:]*:")
+# 非致命の警告。致命的なエラーが 1 件も無いときだけ使う。
+# エンジンの ⚠ は青空文庫外字注記の警告（全4箇所）で、これを失敗理由として
+# 見せるとかえって誤解を招く
+_WARN_MARKS = ("[警告]", "⚠")
 
 # User-facing GUI strings. Keys are stable; values are ja / en.
 UI = {
@@ -102,8 +144,8 @@ UI = {
         "⚠ This site is not supported\nCheck the URL and the supported-site list.",
     ),
     "err_hameln": (
-        "⚠ ハーメルンには対応していません\n申し訳ありませんが、別のサイトのURLでお試しください。",
-        "⚠ Hameln is not supported in this GUI\nPlease use another site URL.",
+        "⚠ 取得できませんでした\nこのサイトの取得には playwright の導入が必要です。",
+        "⚠ Download failed\nThis site needs playwright to be installed.",
     ),
     "err_failed": (
         "⚠ うまくいきませんでした\n通信状態を確認して、もう一度お試しください。",
@@ -115,6 +157,33 @@ UI = {
     "ft_image": ("画像ファイル", "Image files"),
     "ft_font": ("フォントファイル", "Font files"),
     "ft_all": ("すべて", "All files"),
+    # ── v1.1: 入力まわり（design_gui_v2 §5.8） ──
+    "ctx_cut": ("切り取り", "Cut"),
+    "ctx_copy": ("コピー", "Copy"),
+    "ctx_paste": ("貼り付け", "Paste"),
+    "ctx_selectall": ("すべて選択", "Select All"),
+    "ctx_clear": ("クリア", "Clear"),
+    "tip_paste": ("クリップボードのURLを貼り付け", "Paste the URL from the clipboard"),
+    "paste_dl": ("📋⬇ 貼り付けてダウンロード", "📋⬇ Paste & Download"),
+    "clip_empty": ("クリップボードにURLがありません", "No URL in the clipboard"),
+    "detecting": ("判定中…", "Checking…"),
+    "site_ok": ("✓ {name}", "✓ {name}"),
+    "site_ng": ("✗ このサイトには対応していません", "✗ This site is not supported"),
+    "site_pw": ("⚠ {name}（playwright が必要・時間がかかります）",
+                "⚠ {name} (needs playwright; this will be slow)"),
+    "stage1": ("作品情報を取得中…", "Fetching work info…"),
+    "stage2": ("エピソード一覧を取得中…", "Fetching episode list…"),
+    "stage3": ("本文を取得中…", "Downloading episodes…"),
+    # ── v1.2: 結果まわり（design_gui_v2 §6） ──
+    "open_epub": ("📖 ePubを開く", "📖 Open EPUB"),
+    "save_log": ("📄 ログを保存", "📄 Save log"),
+    "log_saved": ("ログを保存しました", "Log saved"),
+    "eta": ("  （残り約 {min} 分）", "  (about {min} min left)"),
+    "auto_paste": ("URLを自動で貼り付ける", "Auto-paste URLs from the clipboard"),
+    "open_on_done": ("完了したらフォルダを開く", "Open the folder when finished"),
+    "behavior": ("動作", "Behavior"),
+    "engine_ver": ("エンジン {ver}", "engine {ver}"),
+    "ft_text": ("テキストファイル", "Text files"),
 }
 
 
@@ -222,19 +291,43 @@ def default_settings() -> dict:
         "delay": 1.5,
         "encoding": "utf-8",
         "ui_lang": "ja",
+        # design_gui_v2 §5.9。キーを足すだけなら SETTINGS_SCHEMA は据え置いてよい
+        # （欠損キーは既定で補完されるため）。
+        "auto_paste": True,            # クリップボードの URL を自動で入れる（§5.4）
+        "open_folder_on_done": True,   # 完了時にフォルダを開く（§6）
+        "window_geometry": "",         # ウィンドウ位置・サイズの記憶（§6）
     }
 
 
+# 読み込んだ設定が「この版より新しい schema」だったことを覚えておく。
+# 新しい版が足した設定を古い版が読めないまま上書き保存して消すのを防ぐ（design_gui_v2 §3.1）。
+_SETTINGS_FROM_FUTURE = False
+
+
 def load_settings() -> dict:
-    """壊れていても既定で起動。欠損キーは既定で補完（§13.3）。"""
+    """壊れていても既定で起動。欠損キーは既定で補完（§13.3）。
+
+    schema は **完全一致で見てはいけない**（design_gui_v2 §3.1）。
+    v1 は `data.get("schema") == SETTINGS_SCHEMA` だったため、SETTINGS_SCHEMA を
+    上げた瞬間に既存ユーザーの settings.json が丸ごと無視され、保存先もフォントも
+    無言で初期化される作りになっていた。古い schema は読んで補完し、
+    新しい schema は読まずに既定で起動する（そして上書き保存もしない）。
+    """
+    global _SETTINGS_FROM_FUTURE
+    _SETTINGS_FROM_FUTURE = False
     s = default_settings()
     try:
         with open(settings_path(), "r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, dict) and data.get("schema") == SETTINGS_SCHEMA:
-            for k in s:
-                if k in data:
-                    s[k] = data[k]
+        if isinstance(data, dict):
+            found = data.get("schema", 0)
+            found = found if isinstance(found, int) else 0
+            if found <= SETTINGS_SCHEMA:
+                for k in s:
+                    if k in data:
+                        s[k] = data[k]
+            else:
+                _SETTINGS_FROM_FUTURE = True   # 未来の版の設定 → 触らない
     except Exception:
         pass  # 無い／壊れている → 既定のまま
     # 妥当性
@@ -254,11 +347,17 @@ def load_settings() -> dict:
         s["encoding"] = "utf-8"
     if s.get("ui_lang") not in ("ja", "en"):
         s["ui_lang"] = "ja"
+    for k in ("auto_paste", "open_folder_on_done"):
+        s[k] = bool(s.get(k, True))
+    geo = s.get("window_geometry") or ""
+    s["window_geometry"] = geo if _RE_GEOMETRY.match(str(geo)) else ""
     return s
 
 
 def save_settings(s: dict) -> None:
     """アトミック書き込み（tempfile + os.replace, §13.3）。"""
+    if _SETTINGS_FROM_FUTURE:
+        return          # 新しい版が書いた設定を、読めていないまま潰さない
     try:
         p = settings_path()
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -303,6 +402,95 @@ def list_sites():
         return []
 
 
+def engine_version() -> str:
+    """エンジンの版を返す（`novel_downloader 2.11.2` → `2.11.2`）。失敗時は ""。
+
+    GUI 側に版数を持たないのは意図的。版数の単一ソースは novel_downloader.py の
+    `__version__` であり（CLAUDE.md「リリース手順」）、GUI に2つ目の版数を置くと
+    release.sh が更新しないまま食い違う。実際に動いているエンジンの版を名乗らせる。
+    """
+    try:
+        out = _run_capture(["--version"], timeout=20).strip()
+        return out.split()[-1] if out else ""
+    except Exception:
+        return ""
+
+
+# ══════════════════════════════════════════
+#  入力欄の補助部品（design_gui_v2 §5.1 / §5.3）
+# ══════════════════════════════════════════
+def _menu_colors() -> dict:
+    """tkinter.Menu は CustomTkinter の外なので、配色を手で合わせる（§5.1）。"""
+    if ctk.get_appearance_mode() == "Dark":
+        return dict(bg="#2b2b2b", fg="#dce4ee", activebackground="#1f6aa5",
+                    activeforeground="#ffffff", disabledforeground="#6e6e6e",
+                    relief="flat", borderwidth=0)
+    return dict(bg="#fbfbfb", fg="#1a1a1a", activebackground="#3b8ed0",
+                activeforeground="#ffffff", disabledforeground="#a0a0a0",
+                relief="flat", borderwidth=0)
+
+
+def _inner_entry(widget):
+    """CTkEntry の中身の tkinter.Entry を返す。
+
+    select_range / selection_present のような Tk 由来の操作は CTkEntry が
+    転送するとは限らない（customtkinter の版で差がある）ため、中身を直接触る。
+    """
+    return getattr(widget, "_entry", widget)
+
+
+class _Tooltip:
+    """CustomTkinter にツールチップが無いので最小実装（アイコンボタンの説明用）。"""
+
+    def __init__(self, widget, text_fn):
+        self._widget = widget
+        self._text_fn = text_fn      # 言語切替に追従させるため呼び出し時に評価する
+        self._win = None
+        self._after = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<Button-1>", self._hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self._after = self._widget.after(500, self._show)
+
+    def _cancel(self):
+        if self._after is not None:
+            try:
+                self._widget.after_cancel(self._after)
+            except Exception:
+                pass
+            self._after = None
+
+    def _show(self):
+        self._after = None
+        if self._win is not None:
+            return
+        try:
+            text = self._text_fn()
+            x = self._widget.winfo_rootx()
+            y = self._widget.winfo_rooty() + self._widget.winfo_height() + 6
+            win = tk.Toplevel(self._widget)
+            win.wm_overrideredirect(True)
+            win.wm_geometry(f"+{x}+{y}")
+            c = _menu_colors()
+            tk.Label(win, text=text, bg=c["bg"], fg=c["fg"], padx=8, pady=4,
+                     relief="solid", borderwidth=1).pack()
+            self._win = win
+        except Exception:
+            self._win = None        # ツールチップの失敗で操作を止めない
+
+    def _hide(self, _event=None):
+        self._cancel()
+        if self._win is not None:
+            try:
+                self._win.destroy()
+            except Exception:
+                pass
+            self._win = None
+
+
 # ══════════════════════════════════════════
 #  メインアプリ
 # ══════════════════════════════════════════
@@ -318,10 +506,26 @@ class NovelDownloaderApp(ctk.CTk):
         self._raw_log = []             # 生ログ（詳細表示用）
         self._detail_open = False
         self._log_open = False
+        # ── v1.1 追加分 ──
+        self._started_at = 0.0         # DL 開始時刻（§3.2 の ePub 取り違え防止）
+        self._needs_playwright = False # 今回の対象が playwright 必須サイトか（§3.4）
+        self._last_clip = ""           # 直近に見たクリップボード（§5.4 の連打防止）
+        self._last_url = ""            # 直前にダウンロードした URL（§5.4 の上書き判定）
+        self._detect_after = None      # サイト判定のデバウンス予約（§5.5）
+        self._detect_seq = 0           # サイト判定の世代カウンタ（§5.5）
+        self._site_info = None         # 直近の --detect-site 結果
+        self._site_info_url = ""       # その結果がどの URL のものか
+        self._prog_t0 = None           # 残り時間推定の基準時刻（§6）
+        self._prog_n0 = 0
+        self._engine_ver = ""
+        self._grip_y = None            # ログ欄グリップのドラッグ開始位置
+        self._grip_h = 0
+        self._closing = False          # 終了処理中（予約済み after を走らせない）
+        self._poll_after = None
 
         self.title(APP_NAME)
-        self.geometry("560x420")
-        self.minsize(520, 360)
+        self.geometry(self.settings.get("window_geometry") or "560x420")
+        self.minsize(520, MIN_HEIGHT_PX)
         try:
             ico = _resource_path(ICON_FILENAME)
             if IS_WINDOWS and os.path.isfile(ico):
@@ -335,10 +539,17 @@ class NovelDownloaderApp(ctk.CTk):
         self._apply_ui_lang()
         self._set_state_idle()
 
+        # ウィンドウ全体のキー操作（§5.2）
+        self.bind("<Escape>", self._on_escape, add="+")
+        # ウィンドウがフォーカスを得るたびにクリップボードを見直す（§5.4）
+        self.bind("<FocusIn>", self._on_focus_in, add="+")
+
         # 起動時クリップボード自動入力（別スレッドで判定・§7.2）
-        self._start_clipboard_autofill()
+        self._maybe_autofill_from_clipboard()
+        # エンジンの版を名乗らせる（exe 起動を伴うので別スレッド・§6）
+        threading.Thread(target=self._load_engine_version, daemon=True).start()
         # キュー監視
-        self.after(100, self._poll_queue)
+        self._poll_after = self.after(100, self._poll_queue)
         # 終了時に設定保存
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -346,55 +557,88 @@ class NovelDownloaderApp(ctk.CTk):
     def _build_widgets(self):
         self.grid_columnconfigure(0, weight=1)
 
-        # URL 欄
+        # URL 欄（row0: 見出し＋言語切替 / row1: 入力＋貼り付け / row2: 判定バッジ）
         self.lbl_url = ctk.CTkLabel(self, text="小説のURLを貼り付け", anchor="w")
-        self.lbl_url.grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 2))
+        self.lbl_url.grid(row=ROW_URL_LABEL, column=0, sticky="ew", padx=20, pady=(18, 2))
+
+        self.frm_url = ctk.CTkFrame(self, fg_color="transparent")
+        self.frm_url.grid(row=ROW_URL, column=0, sticky="ew", padx=20)
+        self.frm_url.grid_columnconfigure(0, weight=1)
 
         self.var_url = ctk.StringVar()
-        self.ent_url = ctk.CTkEntry(self, textvariable=self.var_url,
+        self.ent_url = ctk.CTkEntry(self.frm_url, textvariable=self.var_url,
                                     placeholder_text="ここにURLを貼り付けてください…")
-        self.ent_url.grid(row=1, column=0, sticky="ew", padx=20)
-        self.var_url.trace_add("write", lambda *_: self._update_download_enabled())
+        self.ent_url.grid(row=0, column=0, sticky="ew")
+        self.var_url.trace_add("write", lambda *_: self._on_url_changed())
+
+        # 貼り付けボタン（§5.3）。アイコンのみだと用途が伝わらないのでツールチップを付ける
+        self.btn_paste = ctk.CTkButton(self.frm_url, text="📋", width=38,
+                                       command=self._paste_url)
+        self.btn_paste.grid(row=0, column=1, padx=(6, 0))
+        _Tooltip(self.btn_paste, lambda: self._t("tip_paste"))
+
+        # 右クリックメニュー・キー操作（§5.1 / §5.2）
+        self._attach_context_menu(self.ent_url)
+        self.ent_url.bind("<Return>", self._on_return, add="+")
+        # 貼り付け直後にもサイト判定を走らせる（Tk が貼り終わるのを待つため after 越し）
+        self.ent_url.bind("<<Paste>>", lambda e: self.after(20, self._request_detect),
+                          add="+")
 
         self.seg_lang = ctk.CTkSegmentedButton(
             self, values=["日本語", "English"],
             command=self._on_ui_lang)
-        self.seg_lang.grid(row=0, column=0, sticky="e", padx=20, pady=(18, 2))
+        self.seg_lang.grid(row=ROW_URL_LABEL, column=0, sticky="e", padx=20, pady=(18, 2))
         self.seg_lang.set("English" if self.settings.get("ui_lang") == "en" else "日本語")
+
+        # サイト判定バッジ（§5.5）
+        self.lbl_site = ctk.CTkLabel(self, text="", anchor="w",
+                                     font=ctk.CTkFont(size=11), text_color="gray")
+        self.lbl_site.grid(row=ROW_SITE, column=0, sticky="ew", padx=22, pady=(3, 0))
 
         # 大ボタン（ダウンロード / 中止）
         self.btn_main = ctk.CTkButton(self, text="⬇ ダウンロード", height=44,
                                       font=ctk.CTkFont(size=16, weight="bold"),
                                       command=self._on_main_button)
-        self.btn_main.grid(row=2, column=0, padx=20, pady=14)
+        self.btn_main.grid(row=ROW_MAIN_BTN, column=0, padx=20, pady=12)
 
         # ステータス行（進捗テキスト / 完了 / エラー）
-        self.lbl_status = ctk.CTkLabel(self, text="", anchor="w", justify="left")
-        self.lbl_status.grid(row=3, column=0, sticky="ew", padx=20)
+        # wraplength: エラー要約（§3.3）を添えると長くなるので折り返させる
+        self.lbl_status = ctk.CTkLabel(self, text="", anchor="w", justify="left",
+                                       wraplength=500)
+        self.lbl_status.grid(row=ROW_STATUS, column=0, sticky="ew", padx=20)
 
         # 進捗バー
         self.bar = ctk.CTkProgressBar(self)
-        self.bar.grid(row=4, column=0, sticky="ew", padx=20, pady=(4, 2))
+        self.bar.grid(row=ROW_BAR, column=0, sticky="ew", padx=20, pady=(4, 2))
         self.bar.set(0)
         self.bar.grid_remove()
 
-        # 補助ボタン行（フォルダを開く / 対応サイト / 詳細を表示）
+        # 補助ボタン行（ePubを開く / フォルダを開く / 対応サイト / 詳細 / ログ保存）
         self.frm_aux = ctk.CTkFrame(self, fg_color="transparent")
-        self.frm_aux.grid(row=5, column=0, sticky="ew", padx=20, pady=2)
+        self.frm_aux.grid(row=ROW_AUX, column=0, sticky="ew", padx=20, pady=2)
         self.frm_aux.grid_remove()   # 空のときは隠す（CTkFrame の既定サイズで居座らせない）
+        self.btn_open_epub = ctk.CTkButton(self.frm_aux, text="📖 ePubを開く",
+                                           width=118, command=self._open_epub)
         self.btn_open = ctk.CTkButton(self.frm_aux, text="📂 フォルダを開く",
-                                      width=140, command=self._open_folder)
+                                      width=130, fg_color="gray40",
+                                      command=self._open_folder)
         self.btn_sites = ctk.CTkButton(self.frm_aux, text="対応サイトを見る",
                                        width=140, fg_color="gray40",
                                        command=self._show_sites)
         self.btn_log = ctk.CTkButton(self.frm_aux, text="詳細を表示",
-                                     width=110, fg_color="gray30",
+                                     width=100, fg_color="gray30",
                                      command=self._toggle_log)
+        self.btn_savelog = ctk.CTkButton(self.frm_aux, text="📄 ログを保存",
+                                         width=110, fg_color="gray30",
+                                         command=self._save_log)
 
-        # 保存先表示（小）
+        # 保存先表示（小）＋ エンジン版数（右端）
         self.lbl_outdir = ctk.CTkLabel(self, text="", anchor="w",
                                        text_color="gray", font=ctk.CTkFont(size=11))
-        self.lbl_outdir.grid(row=6, column=0, sticky="ew", padx=20, pady=(6, 0))
+        self.lbl_outdir.grid(row=ROW_OUTDIR, column=0, sticky="ew", padx=20, pady=(6, 0))
+        self.lbl_ver = ctk.CTkLabel(self, text="", anchor="e",
+                                    text_color="gray", font=ctk.CTkFont(size=11))
+        self.lbl_ver.grid(row=ROW_OUTDIR, column=0, sticky="e", padx=20, pady=(6, 0))
 
         # 詳細設定トグル
         self.btn_detail = ctk.CTkButton(
@@ -402,13 +646,19 @@ class NovelDownloaderApp(ctk.CTk):
             fg_color=("gray90", "gray25"), text_color=("gray10", "gray90"),
             hover_color=("gray80", "gray35"), cursor="hand2",
             command=self._toggle_detail)
-        self.btn_detail.grid(row=7, column=0, sticky="ew", padx=16, pady=(4, 0))
+        self.btn_detail.grid(row=ROW_DETAIL_BTN, column=0, sticky="ew", padx=16, pady=(4, 0))
 
         # 詳細設定パネル（§10.2）
         self._build_detail_panel()
 
-        # 生ログ（§10.1 トグル先）
+        # 生ログ（§10.1 トグル先）と、その高さを変えるグリップ
         self.txt_log = ctk.CTkTextbox(self, height=120)
+        self.grip_log = ctk.CTkFrame(self, height=8, corner_radius=4,
+                                     fg_color=("gray78", "gray32"),
+                                     cursor="sb_v_double_arrow")
+        self.grip_log.bind("<Button-1>", self._grip_press)
+        self.grip_log.bind("<B1-Motion>", self._grip_drag)
+        self.grip_log.bind("<ButtonRelease-1>", self._grip_release)
 
     def _lang(self) -> str:
         return "en" if self.settings.get("ui_lang") == "en" else "ja"
@@ -431,6 +681,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.btn_outdir = ctk.CTkButton(row, text="変更", width=60,
                                         command=self._pick_output_dir)
         self.btn_outdir.grid(row=0, column=1, padx=(8, 0))
+        self._attach_context_menu(self.ent_outdir)
 
         self.lbl_cover = ctk.CTkLabel(self.frm_detail, text="表紙（ePubの“顔”）", anchor="w")
         self.lbl_cover.grid(row=2, column=0, sticky="ew", padx=12, pady=(12, 0))
@@ -461,14 +712,30 @@ class NovelDownloaderApp(ctk.CTk):
         self.btn_cover_pick.grid(row=0, column=1, padx=(8, 0))
         self._cover_image_path = ""
 
+        # 動作（§5.9 / §6）。よく触る設定なので「普段は変更不要」の区切りより上に置く
+        self.lbl_behavior = ctk.CTkLabel(self.frm_detail, text="動作", anchor="w")
+        self.lbl_behavior.grid(row=7, column=0, sticky="ew", padx=12, pady=(12, 0))
+        beh = ctk.CTkFrame(self.frm_detail, fg_color="transparent")
+        beh.grid(row=8, column=0, sticky="ew", padx=24)
+        self.var_auto_paste = ctk.BooleanVar(value=True)
+        self.var_open_on_done = ctk.BooleanVar(value=True)
+        self.chk_auto_paste = ctk.CTkCheckBox(beh, text="URLを自動で貼り付ける",
+                                              variable=self.var_auto_paste,
+                                              command=self._persist)
+        self.chk_open_on_done = ctk.CTkCheckBox(beh, text="完了したらフォルダを開く",
+                                                variable=self.var_open_on_done,
+                                                command=self._persist)
+        self.chk_auto_paste.grid(row=0, column=0, sticky="w", pady=1)
+        self.chk_open_on_done.grid(row=1, column=0, sticky="w", pady=1)
+
         sep = ctk.CTkFrame(self.frm_detail, height=1, fg_color="gray70")
-        sep.grid(row=7, column=0, sticky="ew", padx=12, pady=10)
+        sep.grid(row=9, column=0, sticky="ew", padx=12, pady=10)
         self.lbl_rarely = ctk.CTkLabel(self.frm_detail, text="ここから下は普段は変更不要",
                                        text_color="gray", font=ctk.CTkFont(size=11))
-        self.lbl_rarely.grid(row=8, column=0, sticky="w", padx=12)
+        self.lbl_rarely.grid(row=10, column=0, sticky="w", padx=12)
 
         opt = ctk.CTkFrame(self.frm_detail, fg_color="transparent")
-        opt.grid(row=9, column=0, sticky="ew", padx=12, pady=(2, 12))
+        opt.grid(row=11, column=0, sticky="ew", padx=12, pady=(2, 12))
         self.var_horizontal = ctk.BooleanVar(value=False)
         self.var_kobo = ctk.BooleanVar(value=False)
         self.var_toc_at_end = ctk.BooleanVar(value=False)
@@ -526,6 +793,8 @@ class NovelDownloaderApp(ctk.CTk):
             self.var_font_name.set(os.path.basename(self._font_path))
         else:
             self.var_font_name.set(self._t("font_default"))
+        self.var_auto_paste.set(bool(s.get("auto_paste", True)))
+        self.var_open_on_done.set(bool(s.get("open_folder_on_done", True)))
         self.var_delay.set(str(s["delay"]))
         self.var_encoding.set(s["encoding"])
         self.lbl_outdir.configure(text=self._t("save_prefix") + s["output_dir"])
@@ -548,6 +817,9 @@ class NovelDownloaderApp(ctk.CTk):
             "delay": delay,
             "encoding": self.var_encoding.get(),
             "ui_lang": self.settings.get("ui_lang", "ja"),
+            "auto_paste": bool(self.var_auto_paste.get()),
+            "open_folder_on_done": bool(self.var_open_on_done.get()),
+            "window_geometry": self.settings.get("window_geometry", ""),
         }
 
     def _persist(self):
@@ -556,10 +828,27 @@ class NovelDownloaderApp(ctk.CTk):
         save_settings(self.settings)
 
     # ── 状態遷移（§4） ───────────────────────────────────────
+    _AUX_BUTTONS = ("btn_open_epub", "btn_open", "btn_sites", "btn_log", "btn_savelog")
+
     def _hide_aux(self):
-        for b in (self.btn_open, self.btn_sites, self.btn_log):
-            b.grid_forget()
+        for name in self._AUX_BUTTONS:
+            getattr(self, name).grid_forget()
         self.frm_aux.grid_remove()   # 空のフレームが高さを占有しないよう隠す
+
+    def _show_aux(self, *buttons):
+        """補助ボタン行に渡されたボタンだけを左から並べる。"""
+        self._hide_aux()
+        self.frm_aux.grid()
+        for i, b in enumerate(buttons):
+            b.grid(row=0, column=i, padx=(0, 8))
+
+    def _set_url_entry_enabled(self, enabled: bool):
+        """実行中は readonly にする（disabled だと選択もコピーもできない・§5.6）。"""
+        try:
+            self.ent_url.configure(state="normal" if enabled else "readonly")
+        except Exception:
+            self.ent_url.configure(state="normal" if enabled else "disabled")
+        self.btn_paste.configure(state="normal" if enabled else "disabled")
 
     def _set_state_idle(self):
         self.btn_main.configure(text=self._t("download"), state="normal")
@@ -567,12 +856,12 @@ class NovelDownloaderApp(ctk.CTk):
         self.bar.grid_remove()
         self.bar.stop()
         self._hide_aux()
-        self.ent_url.configure(state="normal")
+        self._set_url_entry_enabled(True)
         self._update_download_enabled()
 
     def _set_state_running(self):
         self.btn_main.configure(text=self._t("cancel"), state="normal")
-        self.ent_url.configure(state="disabled")
+        self._set_url_entry_enabled(False)
         self.lbl_status.configure(text=self._t("preparing"), text_color=("gray10", "gray90"))
         self.bar.grid()
         self.bar.configure(mode="indeterminate")
@@ -581,42 +870,78 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _set_state_done(self):
         self.btn_main.configure(text=self._t("download"), state="normal")
-        self.ent_url.configure(state="normal")
+        self._set_url_entry_enabled(True)
         self.bar.stop()
         self.bar.configure(mode="determinate")
         self.bar.set(1)
-        name = os.path.basename(self._epub_path) if self._epub_path else self._t("file_fallback")
+        has_epub = bool(self._epub_path and os.path.isfile(self._epub_path))
+        name = os.path.basename(self._epub_path) if has_epub else self._t("file_fallback")
         self.lbl_status.configure(text=self._t("done", name=name),
                                   text_color=("#1a7f37", "#3fb950"))
-        self._hide_aux()
-        self.frm_aux.grid()
-        self.btn_open.grid(row=0, column=0, padx=(0, 8))
-        self.btn_log.grid(row=0, column=1, padx=(0, 8))
+        aux = [self.btn_open_epub] if has_epub else []
+        aux += [self.btn_open, self.btn_log, self.btn_savelog]
+        self._show_aux(*aux)
+
+    @staticmethod
+    def _clip_line(text: str) -> str:
+        return text if len(text) <= 160 else text[:157] + "…"
+
+    def _error_detail(self) -> str:
+        """生ログから失敗理由の行を拾う（design_gui_v2 §3.3）。
+
+        v1 はどんな失敗も「うまくいきませんでした」の 1 文に潰していたため、
+        通信断・作品削除・サイト構造変化の区別が画面から一切つかなかった。
+
+        致命的なエラー行 → 未捕捉例外の行 → 警告行、の順に探す。
+        警告を先に拾うと、外字注記の ⚠ を失敗理由として見せてしまう。
+        """
+        tail = [ln.strip() for ln in self._raw_log[-300:] if ln.strip()]
+        for line in reversed(tail):
+            if line.startswith(_ERR_MARKS) or _RE_EXC_LINE.match(line):
+                return self._clip_line(line)
+        for line in reversed(tail):
+            if line.startswith(_WARN_MARKS):
+                return self._clip_line(line)
+        return ""
 
     def _set_state_error(self, kind: str):
         """kind: 'unsupported' | 'hameln' | 'failed'"""
         self.btn_main.configure(text=self._t("retry"), state="normal")
-        self.ent_url.configure(state="normal")
+        self._set_url_entry_enabled(True)
         self.bar.stop()
         self.bar.grid_remove()
         self._hide_aux()
         if kind == "unsupported":
             msg = self._t("err_unsupported")
-            self.frm_aux.grid()
-            self.btn_sites.grid(row=0, column=0, padx=(0, 8))
-        elif kind == "hameln":
-            msg = self._t("err_hameln")
+            self._show_aux(self.btn_sites)
         else:
-            msg = self._t("err_failed")
-            self.frm_aux.grid()
-            self.btn_log.grid(row=0, column=0, padx=(0, 8))
+            msg = self._t("err_hameln") if kind == "hameln" else self._t("err_failed")
+            detail = self._error_detail()
+            if detail:
+                msg += "\n" + detail
+            self._show_aux(self.btn_log, self.btn_savelog)
         self.lbl_status.configure(text=msg, text_color=("#b3261e", "#f2b8b5"))
 
     def _update_download_enabled(self):
+        """大ボタンの活殺と文言を決める（§5.3 / §5.5）。
+
+        URL が空でもクリップボードに URL があれば「貼り付けてダウンロード」に化ける。
+        未対応と判定済みのサイトは押せないようにする（exe を起動する前に止める）。
+        """
         if self._proc is not None:
             return
-        has_url = bool(self.var_url.get().strip())
-        self.btn_main.configure(state=("normal" if has_url else "disabled"))
+        url = self.var_url.get().strip()
+        if not url:
+            if self._clipboard_url():
+                self.btn_main.configure(text=self._t("paste_dl"), state="normal")
+            else:
+                self.btn_main.configure(text=self._t("download"), state="disabled")
+            return
+        unsupported = (self._site_info is not None
+                       and self._site_info_url == url
+                       and self._site_info.get("site") is None)
+        self.btn_main.configure(text=self._t("download"),
+                                state=("disabled" if unsupported else "normal"))
 
     # ── 大ボタン（ダウンロード / 中止） ─────────────────────────
     def _on_main_button(self):
@@ -625,17 +950,33 @@ class NovelDownloaderApp(ctk.CTk):
             return
         url = self.var_url.get().strip()
         if not url:
-            return
+            # 「📋⬇ 貼り付けてダウンロード」状態（§5.3）
+            url = self._clipboard_url()
+            if not url:
+                self.lbl_site.configure(text=self._t("clip_empty"), text_color="gray")
+                return
+            self.var_url.set(url)
+        self._start_download(url)
+
+    def _start_download(self, url: str):
         self._persist()
         self._epub_path = None
         self._raw_log = []
+        self._needs_playwright = False
+        self._prog_t0 = None
+        self._prog_n0 = 0
+        self._last_url = url
+        # §3.2: この時刻より古い .epub は「今回の成果物」ではない
+        self._started_at = time.time()
         if self._log_open:      # 前回分は破棄されるうえ、実行中は開閉ボタンが出ない
             self._toggle_log()
         self._abort_event.clear()
         self._set_state_running()
         self._proc = "starting"           # 二重起動防止のプレースホルダ
+        # 入力中に済ませたサイト判定を使い回す（§5.5）。exe の再起動 1 回分を省く
+        info = self._site_info if self._site_info_url == url else None
         self._worker = threading.Thread(target=self._download_worker,
-                                        args=(url, self._collect_settings()),
+                                        args=(url, self._collect_settings(), info),
                                         daemon=True)
         self._worker.start()
 
@@ -667,23 +1008,26 @@ class NovelDownloaderApp(ctk.CTk):
         args.append("--progress-json")
         return args
 
-    def _download_worker(self, url: str, s: dict):
+    def _download_worker(self, url: str, s: dict, info=None):
         """ワーカー本体。どんな失敗でも finished を送り、UI を実行中のまま残さない。"""
         try:
-            self._download_worker_inner(url, s)
+            self._download_worker_inner(url, s, info)
         except Exception as e:
             self._queue.put(("rawlog", f"[アプリ内エラー] {e}"))
             self._queue.put(("finished", 1))
 
-    def _download_worker_inner(self, url: str, s: dict):
-        # 1) 事前チェック（未対応 / ハーメルン）
-        info = detect_site(url)
+    def _download_worker_inner(self, url: str, s: dict, info=None):
+        # 1) 事前チェック（未対応かどうかだけ）
+        if info is None:
+            info = detect_site(url)
         if not info or info.get("site") is None:
             self._queue.put(("precheck", "unsupported"))
             return
-        if info.get("needs_playwright"):
-            self._queue.put(("precheck", "hameln"))
-            return
+        # playwright が要るサイトでも**ここでは止めない**（design_gui_v2 §3.4）。
+        # --detect-site の needs_playwright は「このサイトの性質」であって
+        # 「この環境で動かない」ではない。v1 は導入済みの環境でも門前払いしていた。
+        # 実行してみて、失敗したときに専用の案内を出す。
+        self._needs_playwright = bool(info.get("needs_playwright"))
         target_url = info.get("normalized_url") or url
 
         # 事前チェック中に中止されていたらダウンロードを起動しない
@@ -759,7 +1103,12 @@ class NovelDownloaderApp(ctk.CTk):
                                      int(ev.get("n", 0)), int(ev.get("total", 0))))
                 elif kind == "output" and ev.get("kind") == "epub":
                     self._queue.put(("epub", str(ev.get("path", "")).strip()))
-                # stage や未知のイベントは無視する（人間向けの見出しは stderr に出る）
+                elif kind == "stage":
+                    # label は使わない。_print_stage() の呼び出し側は日本語ハードコードで
+                    # i18n されていないため、英語 UI に日本語が出る（design_gui_v2 §5.7）。
+                    # n だけ使い、GUI 側の対訳に差し替える。label 全文は stderr の生ログに残る。
+                    self._queue.put(("stage", int(ev.get("n", 0))))
+                # 未知のイベントは無視する（人間向けの見出しは stderr に出る）
             except Exception:
                 self._queue.put(("rawlog", f"[警告] イベントを解釈できません: {line}"))
         return got
@@ -784,30 +1133,49 @@ class NovelDownloaderApp(ctk.CTk):
 
     # ── キュー監視（UIスレッド・§6） ──────────────────────────
     def _poll_queue(self):
+        if self._closing:
+            return          # destroy 済みのウィジェットを触らない
         try:
             while True:
                 msg = self._queue.get_nowait()
                 self._handle_msg(msg)
         except queue.Empty:
             pass
-        self.after(100, self._poll_queue)
+        self._poll_after = self.after(100, self._poll_queue)
 
     def _handle_msg(self, msg):
         kind = msg[0]
         if kind == "autofill":
-            if not self.var_url.get().strip():
+            # 判定が返ってくるまでの間に状況が変わっていることがあるので、ここで再確認する
+            cur = self.var_url.get().strip()
+            if not cur or cur == self._last_url:
                 self.var_url.set(msg[1])
+                self._request_detect()
+            return
+        if kind == "site":
+            self._apply_site_info(msg[1], msg[2], msg[3])
+            return
+        if kind == "engine_ver":
+            self._engine_ver = msg[1]
+            if msg[1]:
+                self.lbl_ver.configure(text=self._t("engine_ver", ver=msg[1]))
             return
         # 中止後にパイプへ残っていた分で表示が進まないようにする
-        if kind in ("progress", "epub") and self._abort_event.is_set():
+        if kind in ("progress", "epub", "stage") and self._abort_event.is_set():
             return
-        if kind == "progress":
+        if kind == "stage":
+            key = "stage%d" % msg[1]
+            if key in UI:
+                self.lbl_status.configure(text=self._t(key),
+                                          text_color=("gray10", "gray90"))
+        elif kind == "progress":
             n, m = msg[1], msg[2]
             if self.bar.cget("mode") != "determinate":
                 self.bar.stop()
                 self.bar.configure(mode="determinate")
             self.bar.set(n / m if m else 0)
-            self.lbl_status.configure(text=self._t("progress", n=n, m=m))
+            self.lbl_status.configure(text=self._t("progress", n=n, m=m) + self._eta(n, m),
+                                      text_color=("gray10", "gray90"))
         elif kind == "epub":
             self._epub_path = msg[1]
         elif kind == "rawlog":
@@ -832,24 +1200,112 @@ class NovelDownloaderApp(ctk.CTk):
             if rc == 0:
                 self._fallback_epub_path()
                 self._set_state_done()
-                self._open_folder()          # 完了と同時に自動オープン
+                if self.settings.get("open_folder_on_done", True):
+                    self._open_folder()      # 完了と同時に自動オープン（設定で切れる）
             else:
-                self._set_state_error("failed")
+                self._set_state_error("hameln" if self._needs_playwright else "failed")
+
+    def _eta(self, n: int, m: int) -> str:
+        """実測ペースから残り時間の目安を出す（design_gui_v2 §6）。
+
+        delay から計算すると取得時間を無視することになるので、実際に進んだ
+        話数と経過時間から割り出す。300 話の待ち時間が読めないのは不安になる。
+        """
+        now = time.monotonic()
+        if self._prog_t0 is None:
+            self._prog_t0, self._prog_n0 = now, n
+            return ""
+        if not m or n <= self._prog_n0:
+            return ""
+        per = (now - self._prog_t0) / (n - self._prog_n0)
+        remain = per * (m - n)
+        if remain < 45:
+            return ""
+        return self._t("eta", min=max(1, int(round(remain / 60))))
 
     def _fallback_epub_path(self):
-        """epub パス未捕捉なら出力先の最新 .epub を採用（§6）。"""
+        """epub パス未捕捉なら出力先の最新 .epub を採用（§6）。
+
+        **今回の実行より古いファイルは採らない**（design_gui_v2 §3.2）。
+        v1 は出力先の最新 .epub を無条件に拾っていたため、ePub が作られなかった
+        実行のあとに「前回の別作品」を完了として開いてしまうことがあった。
+        """
         if self._epub_path and os.path.isfile(self._epub_path):
             return
+        self._epub_path = None
         try:
             d = self.settings["output_dir"]
             epubs = [os.path.join(d, f) for f in os.listdir(d)
                      if f.lower().endswith((".epub", ".kepub.epub"))]
-            if epubs:
-                self._epub_path = max(epubs, key=os.path.getmtime)
+            # mtime の粒度と時計のずれを考え 2 秒だけ猶予を持たせる
+            fresh = [f for f in epubs
+                     if os.path.getmtime(f) >= self._started_at - 2]
+            if fresh:
+                self._epub_path = max(fresh, key=os.path.getmtime)
         except Exception:
             pass
 
     # ── 各種アクション ────────────────────────────────────────
+    def _open_epub(self):
+        """出来た ePub を既定のアプリで開く（§6）。
+
+        「フォルダを開く」の先がゴールなので、そこまで 1 クリックで届かせる。
+        """
+        path = self._epub_path
+        # **拡張子を必ず確かめる。** os.startfile は関連付けに従って何でも起動するため、
+        # ここは「表示」ではなく「実行」のシンクになる。_epub_path には
+        # stdout の JSON イベントのほかに、stderr を _RE_EPUB_DONE で拾う経路があり
+        # （design_progress_json §4.1 の版ずれ対策として残している）、stderr には
+        # --progress-json 時にサイト由来の作品名・話タイトルがそのまま流れ込む。
+        # 現状はイベント順序のおかげで偽装が最後に来ないが、それはエンジン側の
+        # 都合であって GUI が保証できる不変条件ではない。ここで断つ。
+        if not (path and os.path.isfile(path)
+                and path.lower().endswith(_EPUB_EXTS)):
+            self._open_folder()
+            return
+        try:
+            if IS_WINDOWS:
+                os.startfile(path)       # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", path])
+        except Exception:
+            self._open_folder()          # 関連付けが無ければフォルダを開くに退避
+
+    def _save_log(self):
+        """生ログをファイルへ書き出す（§6）。
+
+        v1 は _raw_log をメモリに溜めるだけで、不具合を報告してもらう手段が無かった。
+        """
+        name = "novel_downloader_log_%s.txt" % time.strftime("%Y%m%d_%H%M%S")
+        path = filedialog.asksaveasfilename(
+            initialfile=name, defaultextension=".txt",
+            initialdir=self.settings.get("output_dir") or default_output_dir(),
+            filetypes=[(self._t("ft_text"), "*.txt"), (self._t("ft_all"), "*.*")])
+        if not path:
+            return
+        # 保存の報せでエラー文を消さない。数秒だけ差し替えて元に戻す
+        prev = (self.lbl_status.cget("text"), self.lbl_status.cget("text_color"))
+        try:
+            header = [
+                "# %s" % APP_NAME_EN,
+                "# engine: %s" % (self._engine_ver or "unknown"),
+                "# url: %s" % self._last_url,
+                "# saved: %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
+                "",
+            ]
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(header + self._raw_log) + "\n")
+            self.lbl_status.configure(text="%s: %s" % (self._t("log_saved"), path),
+                                      text_color=("#1a7f37", "#3fb950"))
+        except Exception as e:
+            self.lbl_status.configure(text="%s" % e, text_color=("#b3261e", "#f2b8b5"))
+        self.after(5000, lambda: self._restore_status(*prev))
+
+    def _restore_status(self, text, color):
+        if self._closing:
+            return
+        self.lbl_status.configure(text=text, text_color=color)
+
     def _open_folder(self):
         path = self._epub_path
         try:
@@ -877,28 +1333,102 @@ class NovelDownloaderApp(ctk.CTk):
             ctk.CTkLabel(frm, text="・" + s.get("display_name", ""),
                          anchor="w").pack(fill="x", anchor="w", pady=1)
 
+    # ── ウィンドウサイズ（DPI スケーリングに注意） ─────────────
+    def _window_scale(self) -> float:
+        try:
+            return float(ctk.ScalingTracker.get_window_scaling(self)) or 1.0
+        except Exception:
+            return 1.0
+
+    def _logical_size(self):
+        """現在のウィンドウサイズを geometry() と同じ単位で返す。
+
+        **winfo_width()/winfo_height() と geometry() を混ぜてはいけない。**
+        CustomTkinter の `CTk.geometry(文字列)` は値に DPI 倍率を掛けて Tk に渡すが、
+        `winfo_*` が返すのは掛けたあとの実ピクセル。winfo の値をそのまま geometry に
+        渡すと倍率が二重にかかり、**開閉のたびにウィンドウが倍率ぶん増殖する**
+        （150% 表示の Windows で実際に起きた）。
+        引数なしの `geometry()` は逆変換済みの値を返すので、こちらを使う。
+        """
+        try:
+            m = re.match(r"^(\d+)x(\d+)", self.geometry())
+            if m:
+                return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+        return 560, 420
+
+    def _max_logical_height(self) -> int:
+        """画面からはみ出さない高さの上限（geometry と同じ単位）。"""
+        try:
+            return max(MIN_HEIGHT_PX,
+                       int(self.winfo_screenheight() / self._window_scale()) - 80)
+        except Exception:
+            return 2000
+
+    def _resize_height(self, delta: int):
+        """現在の高さを delta だけ増減する（画面内に収める）。"""
+        w, h = self._logical_size()
+        h = max(MIN_HEIGHT_PX, min(h + delta, self._max_logical_height()))
+        self.geometry(f"{w}x{h}")
+
     def _toggle_detail(self):
+        """詳細設定の開閉。
+
+        高さは**絶対値ではなく増減で**指定する（design_gui_v2 §6）。
+        v1 は `geometry("560x720")` / `("560x420")` と決め打ちだったため、
+        ユーザーがリサイズした幅も高さも開閉のたびに捨てられていた。
+        """
         self._detail_open = not self._detail_open
         if self._detail_open:
             self.btn_detail.configure(text=self._t("adv_open"))
-            self.frm_detail.grid(row=8, column=0, sticky="ew", padx=16, pady=(2, 10))
-            self.geometry("560x720")
+            self.frm_detail.grid(row=ROW_DETAIL, column=0, sticky="ew", padx=16, pady=(2, 10))
+            self._resize_height(DETAIL_DELTA_PX)
         else:
             self.btn_detail.configure(text=self._t("adv_closed"))
             self.frm_detail.grid_forget()
-            self.geometry("560x420")
+            self._resize_height(-DETAIL_DELTA_PX)
 
     def _toggle_log(self):
         self._log_open = not self._log_open
         if self._log_open:
             self.btn_log.configure(text=self._t("hide_log"))
-            self.txt_log.grid(row=9, column=0, sticky="ew", padx=20, pady=(2, 10))
+            # sticky="nsew" ＋ weight=1 で、ウィンドウの余った高さをログ欄が吸う。
+            # これが無いと窓をいくら大きくしてもログ欄は 120px のままだった
+            self.txt_log.grid(row=ROW_LOG, column=0, sticky="nsew", padx=20, pady=(2, 2))
+            self.grip_log.grid(row=ROW_GRIP, column=0, sticky="ew", padx=20, pady=(0, 8))
+            self.grid_rowconfigure(ROW_LOG, weight=1)
             self.txt_log.delete("1.0", "end")
             self.txt_log.insert("end", "\n".join(self._raw_log) + "\n")
             self.txt_log.see("end")
+            self._resize_height(LOG_DELTA_PX)
         else:
             self.btn_log.configure(text=self._t("show_log"))
             self.txt_log.grid_forget()
+            self.grip_log.grid_forget()
+            self.grid_rowconfigure(ROW_LOG, weight=0)
+            self._resize_height(-LOG_DELTA_PX)
+
+    # ── ログ欄のサイズ変更グリップ ────────────────────────────
+    def _grip_press(self, event):
+        self._grip_y = event.y_root
+        self._grip_h = self._logical_size()[1]
+
+    def _grip_drag(self, event):
+        """グリップのドラッグで窓の高さを変える。
+
+        ログ行に weight=1 が入っているので、増えた高さはそのままログ欄になる。
+        event.y_root は実ピクセルなので、geometry に渡す前に倍率で割る。
+        """
+        if self._grip_y is None:
+            return
+        dy = (event.y_root - self._grip_y) / self._window_scale()
+        w = self._logical_size()[0]
+        h = max(MIN_HEIGHT_PX, min(int(self._grip_h + dy), self._max_logical_height()))
+        self.geometry(f"{w}x{h}")
+
+    def _grip_release(self, _event=None):
+        self._grip_y = None
 
     def _on_cover_change(self):
         is_file = (self.var_cover.get() == "file")
@@ -936,22 +1466,203 @@ class NovelDownloaderApp(ctk.CTk):
         self.var_font_name.set(self._t("font_default"))
         self._persist()
 
-    # ── 起動時クリップボード自動入力（§7.2） ───────────────────
-    def _start_clipboard_autofill(self):
+    # ── 右クリックメニュー・キー操作（design_gui_v2 §5.1 / §5.2） ──
+    def _attach_context_menu(self, widget):
+        """入力欄に右クリックメニューと Ctrl+A を付ける。
+
+        CustomTkinter に Menu 相当が無いので tkinter.Menu を直接使う。
+        操作の実体は Tk の仮想イベントに投げる（自前で clipboard を触ると
+        選択範囲の置換や IME 変換中の挙動を取りこぼす）。
+        """
+        inner = _inner_entry(widget)
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="", command=lambda: inner.event_generate("<<Cut>>"))
+        menu.add_command(label="", command=lambda: inner.event_generate("<<Copy>>"))
+        menu.add_command(label="", command=lambda: inner.event_generate("<<Paste>>"))
+        menu.add_separator()
+        menu.add_command(label="", command=lambda: self._select_all(inner))
+        menu.add_command(label="", command=lambda: inner.delete(0, "end"))
+        # ラベルはポップアップのたびに入れ直す（言語切替に追従させるため）
+        inner.bind("<Button-3>", lambda e: self._popup_menu(menu, inner, e), add="+")
+        # Tk の既定では Ctrl+A は「行頭へ移動」で全選択にならない（§5.2）
+        inner.bind("<Control-a>", lambda e: self._select_all(inner), add="+")
+        inner.bind("<Control-A>", lambda e: self._select_all(inner), add="+")
+        return menu
+
+    @staticmethod
+    def _select_all(inner):
         try:
-            text = self.clipboard_get()       # clipboard_get は UIスレッドで
+            inner.select_range(0, "end")
+            inner.icursor("end")
         except Exception:
+            pass
+        return "break"     # Tk 既定のカーソル移動と二重に動かさない
+
+    def _popup_menu(self, menu, inner, event):
+        inner.focus_set()
+        try:
+            has_sel = bool(inner.selection_present())
+        except Exception:
+            has_sel = False
+        has_clip = bool(self._clipboard_text())
+        has_text = bool(inner.get())
+        editable = str(inner.cget("state")) not in ("disabled", "readonly")
+        labels = ("ctx_cut", "ctx_copy", "ctx_paste", None, "ctx_selectall", "ctx_clear")
+        states = (has_sel and editable, has_sel, has_clip and editable,
+                  None, has_text, has_text and editable)
+        for i, (key, ok) in enumerate(zip(labels, states)):
+            if key is None:
+                continue
+            menu.entryconfigure(i, label=self._t(key),
+                                state=("normal" if ok else "disabled"))
+        menu.configure(**_menu_colors())
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            # grab を握ったままだと以降のクリックを全部吸ってアプリが無反応になる
+            menu.grab_release()
+        return "break"
+
+    def _on_return(self, _event=None):
+        """Enter でダウンロード開始。実行中は無視する（中止の暴発を防ぐ・§5.2）。"""
+        if self._proc is None and str(self.btn_main.cget("state")) == "normal":
+            self._on_main_button()
+        return "break"
+
+    def _on_escape(self, _event=None):
+        if self._proc is not None:
+            self._abort()
+
+    # ── クリップボード（§5.3 / §5.4） ──────────────────────────
+    def _clipboard_text(self) -> str:
+        try:
+            return (self.clipboard_get() or "").strip()
+        except Exception:
+            return ""        # 選択が無いと TclError になる
+
+    def _clipboard_url(self) -> str:
+        """クリップボードの先頭が URL ならそれを返す。そうでなければ ""。
+
+        X やブログからのコピーは「本文 + URL」ではなく「URL + 付随テキスト」に
+        なることが多いので、空白・改行の手前までを URL として切り出す。
+        """
+        text = self._clipboard_text()
+        if not text.startswith(("http://", "https://")):
+            return ""
+        return text.split()[0]
+
+    def _paste_url(self):
+        url = self._clipboard_url()
+        if not url:
+            self.lbl_site.configure(text=self._t("clip_empty"), text_color="gray")
             return
-        text = (text or "").strip()
-        if not (text.startswith("http://") or text.startswith("https://")):
+        self.var_url.set(url)
+        self._last_clip = url
+        self.ent_url.focus_set()
+        self._request_detect()
+
+    def _on_focus_in(self, event):
+        """ウィンドウがフォーカスを得たらクリップボードを見直す（§5.4）。
+
+        v1 は起動時 1 回だけだったため、「アプリを開いたままブラウザで次の URL を
+        コピーする」という最も自然な使い方で自動入力がまったく効かなかった。
+        """
+        # <FocusIn> は子ウィジェットでも発火する。これが無いと入力欄をクリック
+        # するたびに走る（必須のガード）
+        if event.widget is not self:
             return
-        threading.Thread(target=self._clipboard_worker, args=(text,),
+        self._maybe_autofill_from_clipboard()
+
+    def _maybe_autofill_from_clipboard(self):
+        """条件を全部満たしたときだけクリップボードの URL を入れる（§5.4）。"""
+        if not self.settings.get("auto_paste", True):
+            return
+        if self._proc is not None:
+            return
+        url = self._clipboard_url()
+        if not url or url == self._last_clip:
+            return
+        cur = self.var_url.get().strip()
+        if cur == url:
+            return
+        # ユーザーが手で入力・編集した文字列は絶対に消さない。
+        # 空か、直前にダウンロードした URL のままのときだけ差し替える
+        if cur and cur != self._last_url:
+            return
+        # **_last_clip は実際に貼ると決めてから記録する。**
+        # 判定より前に書くと、入力中だったせいで見送ったクリップボードが
+        # 「処理済み」になり、欄を消して戻ってきても二度と貼られない
+        self._last_clip = url
+        threading.Thread(target=self._clipboard_worker, args=(url,),
                          daemon=True).start()
 
     def _clipboard_worker(self, url: str):
         info = detect_site(url)
-        if info and info.get("site") and not info.get("needs_playwright"):
+        # playwright 必須サイトも入れる（§3.4）。バッジで注意を出したうえで押させる
+        if info and info.get("site"):
             self._queue.put(("autofill", url))
+
+    # ── サイト判定バッジ（§5.5） ──────────────────────────────
+    def _on_url_changed(self):
+        self._update_download_enabled()
+        self._request_detect()
+
+    def _request_detect(self):
+        """入力が 400ms 止まったらサイト判定する（デバウンス）。"""
+        if self._detect_after is not None:
+            try:
+                self.after_cancel(self._detect_after)
+            except Exception:
+                pass
+            self._detect_after = None
+        url = self.var_url.get().strip()
+        if not url:
+            self._detect_seq += 1          # 進行中の結果を無効にする
+            self._site_info = None
+            self._site_info_url = ""
+            self.lbl_site.configure(text="")
+            self._update_download_enabled()
+            return
+        if self._site_info_url == url:
+            return                          # 判定済みの URL は叩き直さない
+        self._detect_after = self.after(400, self._start_detect)
+
+    def _start_detect(self):
+        self._detect_after = None
+        url = self.var_url.get().strip()
+        if not url:
+            return
+        self._detect_seq += 1
+        self._site_info = None
+        self._site_info_url = ""
+        self.lbl_site.configure(text=self._t("detecting"), text_color="gray")
+        self._update_download_enabled()
+        threading.Thread(target=self._detect_worker,
+                         args=(url, self._detect_seq), daemon=True).start()
+
+    def _detect_worker(self, url: str, seq: int):
+        self._queue.put(("site", seq, url, detect_site(url)))
+
+    def _apply_site_info(self, seq: int, url: str, info):
+        # 世代カウンタ。遅れて返った古い結果が新しい入力の判定を上書きしないようにする
+        if seq != self._detect_seq or url != self.var_url.get().strip():
+            return
+        self._site_info = info or {}
+        self._site_info_url = url
+        name = (info or {}).get("display_name") or ""
+        if not info or info.get("site") is None:
+            self.lbl_site.configure(text=self._t("site_ng"), text_color=("#b3261e", "#f2b8b5"))
+        elif info.get("needs_playwright"):
+            self.lbl_site.configure(text=self._t("site_pw", name=name),
+                                    text_color=("#8a6d00", "#e3b341"))
+        else:
+            self.lbl_site.configure(text=self._t("site_ok", name=name),
+                                    text_color=("#1a7f37", "#3fb950"))
+        self._update_download_enabled()
+
+    # ── エンジン版数（§6） ────────────────────────────────────
+    def _load_engine_version(self):
+        self._queue.put(("engine_ver", engine_version()))
 
     def _on_ui_lang(self, value: str):
         self.settings["ui_lang"] = "en" if value == "English" else "ja"
@@ -965,6 +1676,8 @@ class NovelDownloaderApp(ctk.CTk):
         if self._proc is None:
             self.btn_main.configure(text=self._t("download"))
         self.btn_open.configure(text=self._t("open_folder"))
+        self.btn_open_epub.configure(text=self._t("open_epub"))
+        self.btn_savelog.configure(text=self._t("save_log"))
         self.btn_sites.configure(text=self._t("sites"))
         self.btn_log.configure(text=self._t("hide_log" if self._log_open else "show_log"))
         self.btn_detail.configure(text=self._t("adv_open" if self._detail_open else "adv_closed"))
@@ -990,9 +1703,45 @@ class NovelDownloaderApp(ctk.CTk):
         self.btn_font_clear.configure(text=self._t("font_reset"))
         self.lbl_delay.configure(text=self._t("delay"))
         self.lbl_encoding.configure(text=self._t("encoding"))
+        self.lbl_behavior.configure(text=self._t("behavior"))
+        self.chk_auto_paste.configure(text=self._t("auto_paste"))
+        self.chk_open_on_done.configure(text=self._t("open_on_done"))
+        if self._engine_ver:
+            self.lbl_ver.configure(text=self._t("engine_ver", ver=self._engine_ver))
+        # サイト判定バッジは言語に依存するので、判定済みなら出し直す
+        if self._site_info is not None and self._site_info_url:
+            self._apply_site_info(self._detect_seq, self._site_info_url, self._site_info)
 
     # ── 終了 ─────────────────────────────────────────────────
     def _on_close(self):
+        # 予約済みの after を止めてから閉じる。残っていると destroy 後に発火して
+        # 「invalid command name」のトレースが stderr に出る
+        self._closing = True
+        for attr in ("_poll_after", "_detect_after"):
+            aid = getattr(self, attr, None)
+            if aid is not None:
+                try:
+                    self.after_cancel(aid)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        # ウィンドウ位置・サイズを覚える（§6）。_persist より先に settings へ入れる。
+        # 詳細設定・ログを開いたままの高さを覚えると、次回は閉じた状態なのに
+        # 縦に間延びした窓で開いてしまうので、開いている分を差し引いてから保存する
+        try:
+            w, h = self._logical_size()
+            if self._detail_open:
+                h -= DETAIL_DELTA_PX
+            if self._log_open:
+                h -= LOG_DELTA_PX
+            geo = "%dx%d" % (w, max(MIN_HEIGHT_PX, h))
+            m = re.search(r"([+-]\d+[+-]\d+)$", self.geometry())
+            if m:
+                geo += m.group(1)
+            if _RE_GEOMETRY.match(geo):
+                self.settings["window_geometry"] = geo
+        except Exception:
+            pass
         self._persist()
         _terminate_tree(self._proc)
         self.destroy()
