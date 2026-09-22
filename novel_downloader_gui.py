@@ -522,6 +522,12 @@ class NovelDownloaderApp(ctk.CTk):
         self._grip_h = 0
         self._closing = False          # 終了処理中（予約済み after を走らせない）
         self._poll_after = None
+        # ── ジョブキュー（design_gui_v2 §7）──
+        # v1.3 Step 1 では常に 1 件だが、終端処理を 1 箇所に集約するための土台。
+        # §8 の受信箱・本棚の一括処理もこの上に乗せる
+        self._jobs = []
+        self._job_i = -1               # 実行中ジョブの添字（-1 = 未開始）
+        self._queue_settings = None    # キュー開始時に固めた設定（§7.10）
 
         self.title(APP_NAME)
         self.geometry(self.settings.get("window_geometry") or "560x420")
@@ -958,27 +964,108 @@ class NovelDownloaderApp(ctk.CTk):
             self.var_url.set(url)
         self._start_download(url)
 
+    # ── ジョブキュー（design_gui_v2 §7）──────────────────────
+    def _make_job(self, target: str, kind: str = "download", info=None) -> dict:
+        """キューに積むジョブを 1 つ作る（§7.4）。"""
+        return {
+            "kind": kind,          # "download"（§8 で "append" が増える）
+            "target": target,      # URL、または kind="append" の .txt パス
+            "label": target,
+            "site_name": "",
+            "info": info,          # --detect-site の結果。実行時に使い回す
+            "status": "waiting",   # waiting/running/done/error/skipped/aborted
+            "detail": "",
+            "epub": None,
+            "n": 0, "total": 0,
+        }
+
     def _start_download(self, url: str):
+        """URL 1 本を「1 件のキュー」として流す（§7.13 Step 1）。"""
+        # 入力中に済ませたサイト判定を使い回す（§5.5）。exe の起動 1 回分を省く
+        info = self._site_info if self._site_info_url == url else None
+        self._jobs = [self._make_job(url, info=info)]
+        self._job_i = -1
+        self._queue_start()
+
+    def _queue_start(self):
+        """キューの実行を始める。設定はここで 1 回だけ固める（§7.10）。"""
         self._persist()
+        self._queue_settings = self._collect_settings()
+        self._abort_event.clear()
+        if self._log_open:      # 前回分は破棄されるうえ、実行中は開閉ボタンが出ない
+            self._toggle_log()
+        self._advance()
+
+    def _advance(self):
+        """次の待機ジョブへ進む。無ければキュー終了。"""
+        for i, job in enumerate(self._jobs):
+            if job["status"] == "waiting":
+                self._start_job(i)
+                return
+        self._queue_done()
+
+    def _start_job(self, i: int):
+        self._job_i = i
+        job = self._jobs[i]
+        job["status"] = "running"
+        # ここから下はジョブ単位でリセットする値
         self._epub_path = None
         self._raw_log = []
         self._needs_playwright = False
         self._prog_t0 = None
         self._prog_n0 = 0
-        self._last_url = url
+        self._last_url = job["target"]
         # §3.2: この時刻より古い .epub は「今回の成果物」ではない
         self._started_at = time.time()
-        if self._log_open:      # 前回分は破棄されるうえ、実行中は開閉ボタンが出ない
-            self._toggle_log()
-        self._abort_event.clear()
         self._set_state_running()
         self._proc = "starting"           # 二重起動防止のプレースホルダ
-        # 入力中に済ませたサイト判定を使い回す（§5.5）。exe の再起動 1 回分を省く
-        info = self._site_info if self._site_info_url == url else None
-        self._worker = threading.Thread(target=self._download_worker,
-                                        args=(url, self._collect_settings(), info),
-                                        daemon=True)
+        self._worker = threading.Thread(
+            target=self._download_worker,
+            args=(job, self._queue_settings or self._collect_settings()),
+            daemon=True)
         self._worker.start()
+
+    def _job_finished(self, status: str, err_kind: str = ""):
+        """**ダウンロードの唯一の出口**（§7.5）。
+
+        終端は precheck / aborted / finished の 3 経路あり、それぞれに
+        「次へ進む」を書くと必ず取りこぼす。すべてここを通す。
+        """
+        job = self._jobs[self._job_i] if 0 <= self._job_i < len(self._jobs) else None
+        if job is not None:
+            job["status"] = status
+            job["epub"] = self._epub_path
+            job["err_kind"] = err_kind or ("hameln" if self._needs_playwright else "")
+            if status in ("error", "skipped"):
+                job["detail"] = self._error_detail()
+        if status == "aborted":
+            self._queue_done()            # 中止はキュー全体を止める（§7.6）
+            return
+        self._advance()
+
+    def _queue_done(self):
+        """キューが終わったときの表示。
+
+        1 件だけのときは v1.2 とまったく同じ画面遷移にする（§7.3）。
+        複数件のサマリーは Step 4 で足す。
+        """
+        self._job_i = -1
+        job = self._jobs[-1] if self._jobs else None
+        if job is None:
+            self._set_state_idle()
+            return
+        status = job["status"]
+        if status == "aborted":
+            self._set_state_idle()
+            self.lbl_status.configure(text=self._t("aborted"))
+        elif status == "done":
+            self._set_state_done()
+            if self.settings.get("open_folder_on_done", True):
+                self._open_folder()      # 完了と同時に自動オープン（設定で切れる）
+        elif status == "skipped":
+            self._set_state_error(job.get("err_kind") or "unsupported")
+        else:
+            self._set_state_error(job.get("err_kind") or "failed")
 
     def _abort(self):
         self._abort_event.set()           # ワーカーが起動前チェックで参照する
@@ -988,8 +1075,14 @@ class NovelDownloaderApp(ctk.CTk):
                          daemon=True).start()
 
     # ── ダウンロードワーカー（別スレッド・§6） ──────────────────
-    def _build_cli_args(self, target_url: str, s: dict) -> list:
-        args = [target_url, "--output-dir", s["output_dir"]]
+    def _build_cli_args(self, job: dict, s: dict) -> list:
+        """ジョブ 1 件分の CLI 引数を組む。
+
+        job を受け取るのは §8 への布石（`kind="append"` は `--append FILE` になる）。
+        v1.3 の時点では "download" しか作らないので分岐は置かない。
+        """
+        target = job["info"].get("normalized_url") if job.get("info") else None
+        args = [target or job["target"], "--output-dir", s["output_dir"]]
         if s["cover_mode"] == "site":
             args.append("--use-site-cover")
         elif s["cover_mode"] == "file" and s.get("cover_image_path") and \
@@ -1008,18 +1101,20 @@ class NovelDownloaderApp(ctk.CTk):
         args.append("--progress-json")
         return args
 
-    def _download_worker(self, url: str, s: dict, info=None):
+    def _download_worker(self, job: dict, s: dict):
         """ワーカー本体。どんな失敗でも finished を送り、UI を実行中のまま残さない。"""
         try:
-            self._download_worker_inner(url, s, info)
+            self._download_worker_inner(job, s)
         except Exception as e:
             self._queue.put(("rawlog", f"[アプリ内エラー] {e}"))
             self._queue.put(("finished", 1))
 
-    def _download_worker_inner(self, url: str, s: dict, info=None):
+    def _download_worker_inner(self, job: dict, s: dict):
         # 1) 事前チェック（未対応かどうかだけ）
+        info = job.get("info")
         if info is None:
-            info = detect_site(url)
+            info = detect_site(job["target"])
+            job["info"] = info
         if not info or info.get("site") is None:
             self._queue.put(("precheck", "unsupported"))
             return
@@ -1028,7 +1123,6 @@ class NovelDownloaderApp(ctk.CTk):
         # 「この環境で動かない」ではない。v1 は導入済みの環境でも門前払いしていた。
         # 実行してみて、失敗したときに専用の案内を出す。
         self._needs_playwright = bool(info.get("needs_playwright"))
-        target_url = info.get("normalized_url") or url
 
         # 事前チェック中に中止されていたらダウンロードを起動しない
         if self._abort_event.is_set():
@@ -1036,7 +1130,7 @@ class NovelDownloaderApp(ctk.CTk):
             return
 
         # 2) ダウンロード起動（イベント方式）
-        cli = self._build_cli_args(target_url, s)
+        cli = self._build_cli_args(job, s)
         rc, got_events = self._run_engine(cli)
         if rc is None:
             return
@@ -1146,7 +1240,13 @@ class NovelDownloaderApp(ctk.CTk):
     def _handle_msg(self, msg):
         kind = msg[0]
         if kind == "autofill":
-            # 判定が返ってくるまでの間に状況が変わっていることがあるので、ここで再確認する
+            # 判定が返ってくるまでの間に状況が変わっていることがあるので、ここで再確認する。
+            # **実行中かどうかも見直す。** 判定は _maybe_autofill_from_clipboard が
+            # 実行前に始めるが、結果は数秒後に届くため、その間にダウンロードが始まって
+            # いることがある。実行中の URL 欄は走っている作品を指しているべきで、
+            # ここで差し替えると「何を落としているのか」が画面と食い違う
+            if self._proc is not None:
+                return
             cur = self.var_url.get().strip()
             if not cur or cur == self._last_url:
                 self.var_url.set(msg[1])
@@ -1183,27 +1283,23 @@ class NovelDownloaderApp(ctk.CTk):
             if self._log_open:
                 self.txt_log.insert("end", msg[1] + "\n")
                 self.txt_log.see("end")
+        # ── 終端は必ず _job_finished を通す（§7.5）──
         elif kind == "precheck":
             self._proc = None
-            self._set_state_error(msg[1])
+            self._job_finished("skipped", err_kind=msg[1])
         elif kind == "aborted":
             self._proc = None
-            self._set_state_idle()
-            self.lbl_status.configure(text=self._t("aborted"))
+            self._job_finished("aborted")
         elif kind == "finished":
             rc = msg[1]
             self._proc = None
             if self._abort_event.is_set():   # 中止後の終了は「中止」として扱う
-                self._set_state_idle()
-                self.lbl_status.configure(text=self._t("aborted"))
-                return
-            if rc == 0:
+                self._job_finished("aborted")
+            elif rc == 0:
                 self._fallback_epub_path()
-                self._set_state_done()
-                if self.settings.get("open_folder_on_done", True):
-                    self._open_folder()      # 完了と同時に自動オープン（設定で切れる）
+                self._job_finished("done")
             else:
-                self._set_state_error("hameln" if self._needs_playwright else "failed")
+                self._job_finished("error")
 
     def _eta(self, n: int, m: int) -> str:
         """実測ペースから残り時間の目安を出す（design_gui_v2 §6）。
