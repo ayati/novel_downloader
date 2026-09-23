@@ -301,6 +301,8 @@ UI = {
                        "Notify on completion and updates via webhook (Discord / Slack)"),
     "webhook_ph":   ("https://discord.com/api/webhooks/…",
                      "https://discord.com/api/webhooks/…"),
+    "webhook_need_url": ("宛先の URL を入れると送られるようになります",
+                         "Enter the webhook URL to start sending"),
     "shelf_scan_fail": ("本棚を読み込めませんでした。もう一度お試しください。",
                         "Could not read the bookshelf. Please try again."),
     "inbox_need_shelf": ("本棚を読めなかったため、取得済みかどうかを判定できませんでした。",
@@ -421,20 +423,30 @@ def settings_path() -> str:
 
 
 def normalize_webhook(s: dict) -> dict:
-    """Webhook 設定を、成立する形に整えて返す（design_gui_v2 §8.13）。
+    """Webhook 設定の**書式だけ**整えて返す（design_gui_v2 §8.13a）。
 
-    **load_settings と _collect_settings の両方で通すこと。** 読み込み時だけに
-    置くと、画面で入力した直後の値が検査を通らないまま設定として確定し、
-    宛先が空なのにチェックだけ入った状態が画面に残る（実測で踏んだ）。
+    **「通知には宛先が要る」をここで適用してはいけない。** 以前はここで
+    「URL が空なら notify を False に戻す」「URL 形式が違えば空にする」を
+    やっていたが、これは**画面の状態に制約をかけてしまう**:
+
+      チェックを入れる → URL がまだ空 → notify が False に戻る →
+      チェックが即座に外れる → URL 欄が disabled のまま → URL を入れられない
+
+    URL が無いと有効にできず、有効にしないと URL を入れられない詰みだった
+    （実機で踏んだ）。**利用可能かどうかの判断は `webhook_ready()` に置き、
+    CLI 引数を組む瞬間にだけ効かせる。** 入力中の値は勝手に消さない。
     """
     if s.get("webhook_format") not in ("discord", "slack"):
         s["webhook_format"] = "discord"
-    url = str(s.get("webhook_url") or "").strip()
-    # 形式が違うものを渡すとエンジンが parser.error で即死するので、ここで弾く
-    s["webhook_url"] = url if url.startswith(("http://", "https://")) else ""
-    # 宛先が無ければ通知は成立しない
-    s["notify_webhook"] = bool(s.get("notify_webhook")) and bool(s["webhook_url"])
+    s["webhook_url"] = str(s.get("webhook_url") or "").strip()
+    s["notify_webhook"] = bool(s.get("notify_webhook"))
     return s
+
+
+def webhook_ready(s: dict) -> bool:
+    """Webhook 通知を実際に使える状態か（チェック済み＋宛先が http(s)）。"""
+    return bool(s.get("notify_webhook")) and \
+        str(s.get("webhook_url") or "").startswith(("http://", "https://"))
 
 
 def default_settings() -> dict:
@@ -616,8 +628,9 @@ def _webhook_args(s: dict) -> list:
 
     宛先が空のまま `--notify webhook` を渡すとエンジンが起動直後に
     parser.error で落ちるので、**URL が揃っているときだけ**渡す。
+    ここが「通知には宛先が要る」を効かせる唯一の場所（§8.13a）。
     """
-    if not (s.get("notify_webhook") and s.get("webhook_url")):
+    if not webhook_ready(s):
         return []
     return ["--notify", "webhook",
             "--webhook-url", s["webhook_url"],
@@ -1143,6 +1156,13 @@ class NovelDownloaderApp(ctk.CTk):
             whbox, values=["discord", "slack"], variable=self.var_webhook_fmt,
             width=100, command=lambda *_: self._on_notify_changed())
         self.opt_webhook_fmt.grid(row=0, column=1, padx=(8, 0))
+        # 「チェックは入っているが宛先が無いので送られない」を黙らせない
+        self.lbl_webhook_hint = ctk.CTkLabel(whbox, text="", anchor="w",
+                                             text_color=("#8a6d00", "#e3b341"),
+                                             font=ctk.CTkFont(size=11))
+        self.lbl_webhook_hint.grid(row=1, column=0, columnspan=2, sticky="w",
+                                   pady=(2, 0))
+        self.lbl_webhook_hint.grid_remove()
 
         sep = ctk.CTkFrame(self.frm_detail, height=1, fg_color="gray70")
         sep.grid(row=9, column=0, sticky="ew", padx=12, pady=10)
@@ -1603,18 +1623,26 @@ class NovelDownloaderApp(ctk.CTk):
             return int(self.settings.get("inbox_scan_min", 5) or 0)
 
     def _on_notify_changed(self, _event=None):
-        """Webhook 設定の確定。宛先が無いままチェックだけ入るのを防ぐ。"""
+        """Webhook 設定の確定。**入力中の値は書き戻さない**（§8.13a）。"""
         self._persist()
-        # load_settings 側の妥当性検査（URL 形式・宛先なし）を反映し直す
-        self.var_notify.set(bool(self.settings.get("notify_webhook")))
-        self.var_webhook_url.set(self.settings.get("webhook_url", ""))
-        self.var_webhook_fmt.set(self.settings.get("webhook_format", "discord"))
         self._sync_notify_enabled()
 
     def _sync_notify_enabled(self):
-        state = "normal" if self.var_notify.get() else "disabled"
+        """チェックの有無で入力欄の可否を、宛先の有無で注意書きを切り替える。
+
+        チェックは**宛先が無くても自由に入れられる**。入れられないと
+        URL 欄が disabled のままで宛先を貼れない（実機で踏んだ詰み）。
+        代わりに、有効なのに宛先が揃っていないことを注意書きで知らせる。
+        """
+        on = bool(self.var_notify.get())
+        state = "normal" if on else "disabled"
         self.ent_webhook.configure(state=state)
         self.opt_webhook_fmt.configure(state=state)
+        if on and not webhook_ready(self.settings):
+            self.lbl_webhook_hint.configure(text=self._t("webhook_need_url"))
+            self.lbl_webhook_hint.grid()
+        else:
+            self.lbl_webhook_hint.grid_remove()
 
     def _on_inbox_scan_changed(self, _event=None):
         """間隔を変えたら保存して予約を取り直す（次の周期から効く）。"""
@@ -3621,6 +3649,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.chk_no_images.configure(text=self._t("no_images"))
         self.chk_notify.configure(text=self._t("notify_webhook"))
         self.ent_webhook.configure(placeholder_text=self._t("webhook_ph"))
+        self._sync_notify_enabled()
         if self._engine_ver:
             self.lbl_ver.configure(text=self._t("engine_ver", ver=self._engine_ver))
         # サイト判定バッジは言語に依存するので、判定済みなら出し直す
