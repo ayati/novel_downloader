@@ -17,13 +17,20 @@ export NOVEL_DOWNLOADER_LANG=en
 python novel_downloader.py --help
 ```
 
-Windows GUI (`novel_downloader_gui.py`): use the **Japanese / English** control in the top-right corner. The choice is stored in the GUI settings file.
+Windows GUI (`novel_downloader_gui.py`): use the **Japanese / English** control in the top-right corner. The choice is stored in the GUI settings file. The inbox and bookshelf added in v2.14.0 are translated too.
 
 `--lang` / `NOVEL_DOWNLOADER_LANG` select the UI language. `LANG` / `LC_ALL` are ignored so an English locale does not change the Japanese default.
 
 ## Supported sites
 
-The engine still targets Japanese posting sites (Syosetu / Narou, Kakuyomu, Alphapolis, Estar, Hameln, Novema, Novelup+, and others listed in the Japanese README). Pass the work URL; the site is detected automatically.
+The engine still targets Japanese posting sites (Syosetu / Narou, Kakuyomu, Alphapolis, Estar, Hameln, Novema, Novelup+, and others listed in the Japanese README). Pass the work URL; the site is detected automatically. Single-episode Narou works, which have no table-of-contents page, are handled as of v2.14.0.
+
+## Desktop GUI
+
+`novel_downloader_gui.py` (requires `pip install customtkinter`) wraps the engine so it can be driven without a terminal. Two panels were added in v2.14.0:
+
+- **Inbox** — watches a folder you share from your phone (OneDrive, Google Drive, a network share). It pulls every URL out of the dropped text files, expands short links, and shows the title, author and episode count *before* you download, so you can decide once you remember what the work was. Files that downloaded successfully move to `done\`; files with no URL are left alone. It rescans on launch, on a timer (5 minutes by default, 0 disables it), when the window regains focus, and on demand.
+- **Bookshelf** — lists the `.txt` files in your output folder, checks them all for new episodes, and appends the ones that have any. There is no separate database; the `底本URL：` header line in each `.txt` is the index.
 
 ## Requirements
 
