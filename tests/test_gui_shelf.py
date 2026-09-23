@@ -84,6 +84,39 @@ def main() -> int:
                 ck(label, (app._shelf_dirty or app._shelf_loaded) if want
                    else app._shelf_dirty is False)
 
+            # ── 話の一覧・ePub を開く（§8.15）──
+            row = app._shelf_works()[0]
+            ck("最後の話の題が行に届いている", row.get("last_title") == "第2話",
+               str(row.get("last_title")))
+            r0 = app._shelf_rows[0]
+            ck("『一覧』ボタンがある", r0["list"].cget("text") == "☰")
+            ck("ePub が無ければ『開く』は押せない",
+               r0["open"].cget("state") == "disabled")
+
+            app._shelf_show_episodes(row)
+            ck("一覧を読み込める",
+               app.wait(lambda: not app._shelf_listing, 90))
+            wins = [w for w in app.winfo_children()
+                    if w.winfo_class() == "Toplevel"]
+            ck("一覧の窓が開く", len(wins) >= 1)
+            for w in wins:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+
+            win = app._show_episode_window("作品A", "手元に 3 話",
+                                           ["第1話", "第2話", "第3話"])
+            app.pump(0.2)
+            box = [c for c in win.winfo_children()
+                   if c.winfo_class() == "CTkTextbox" or "Textbox" in type(c).__name__]
+            ck("話数ぶんのラベルを並べず 1 枚のテキストで出す", len(box) == 1)
+            if box:
+                text = box[0].get("1.0", "end")
+                ck("番号付きで全話入っている",
+                   "1. 第1話" in text and "3. 第3話" in text, text.strip()[:40])
+            win.destroy()
+
             # ── 走査失敗は「空の本棚」と区別する（§8.12 (2)）──
             # 一度成功していれば、失敗しても**直前の一覧を捨てない**。古くても
             # 妥当な行が残っている方が、空として扱って重複判定を壊すより安全

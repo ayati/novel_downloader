@@ -47,6 +47,7 @@ i18n で進捗表示を訳せないのも、Step 0 で出力完了の書式を�
 | `output` | `kind`（`txt` / `epub`）, `path` | `_print_text_done()` / `_print_epub_done()` |
 | `workinfo` | `title`, `author`, `total`（任意）, `unit`, `url` | `_dry_run_exit()` |
 | `checkresult` | `file`, `path`, `title`, `author`, `existing`, `total`, `new`, `status`, `error` | `_emit_checkresult()` |
+| `episodes` | `title`, `author`, `total`, `titles`（配列） | `_show_episode_list()` |
 
 ```json
 {"schema":1,"event":"stage","n":1,"total":3,"label":"作品情報を取得中: https://…"}
@@ -121,6 +122,26 @@ i18n で進捗表示を訳せないのも、Step 0 で出力完了の書式を�
 
 **ディレクトリモードの受け手は `stage` / `progress` を全体進捗に使わず、
 `checkresult` の到着数で数えること。**
+
+### 3.4 `episodes`（v2.15.0+ / design_gui_v2.md §8.15）
+
+`--list-only` の結果（話の題名の配列）を 1 回で通知する。
+
+```json
+{"schema":1,"event":"episodes","title":"作品A","author":"著者名","total":3,
+ "titles":["第1話","第2話","第3話"]}
+```
+
+- 発火点は `_show_episode_list()` の 1 箇所。**全 17 サイトがここを通る**ので
+  ここだけで賄える（`workinfo` / `checkresult` と同じ考え方）
+- **`--from-file FILE --list-only` でも出る。** 手元の `.txt` の話一覧を
+  **通信せずに**取れるので、GUI の本棚はこちらを使う
+- `checkresult` では題名の配列を載せなかったが、こちらは載せる。あちらは
+  ディレクトリ内の作品ごとにループで発火し受け手は件数しか使わないのに対し、
+  こちらは**利用者の明示操作で 1 回だけ**で、題名そのものが目的だから。
+  935 話で 1 行あたり 60KB 程度になるが、`for line in stream` で読む分には支障ない
+- `_CHECK_UPDATE_MODE` のときは従来どおり `_CheckUpdateDone` を送出して
+  イベントは出さない（`--check-update` 系の内部利用と混ざらない）
 
 ## 4. GUI 側
 

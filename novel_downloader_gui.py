@@ -286,6 +286,15 @@ UI = {
     "shelf_count":  ("（{n}件）", " ({n})"),
     "shelf_count_new": ("（{n}件・新着{u}）", " ({n}, {u} updated)"),
     "shelf_refresh": ("一覧を更新", "Refresh list"),
+    "tip_shelf_list": ("話の一覧を見る（手元のファイルから）",
+                       "Show the episode list (from the local file)"),
+    "tip_shelf_open": ("ePub を開く", "Open the EPUB"),
+    "shelf_noepub": ("ePub がありません（テキストのみ）", "No EPUB (text only)"),
+    "shelf_listing": ("一覧を読み込み中…", "Loading the episode list…"),
+    "shelf_list_fail": ("一覧を読み込めませんでした。", "Could not load the episode list."),
+    "shelf_list_title": ("{title} — 話の一覧", "{title} — Episodes"),
+    "shelf_list_sub": ("手元に {n} 話　{author}", "{n} episodes here　{author}"),
+    "shelf_last": ("最後の話: {t}", "Last episode: {t}"),
     "shelf_check":  ("🔄 新着チェック", "🔄 Check for updates"),
     "shelf_checking": ("確認中 {n}/{m}…", "Checking {n}/{m}…"),
     "shelf_empty":  ("保存先にダウンロード済みの作品がありません。",
@@ -713,6 +722,32 @@ def dry_run_info(url: str, timeout=180) -> dict:
     return info
 
 
+def episode_list(target: str, from_file: bool = False, timeout=300) -> dict:
+    """`--list-only` の `episodes` イベントを返す。失敗時 {}（§8.15）。
+
+    `from_file=True` なら手元の `.txt` を読むだけで**通信しない**。本棚の
+    一覧はこちらを使う。人間向けの表示は読まない（`workinfo` と同じ理由）。
+    """
+    args = (["--from-file", target] if from_file else [target])
+    args += ["--list-only", "--progress-json"]
+    try:
+        out = _run_capture(args, timeout=timeout)
+    except Exception:
+        return {}
+    info = {}
+    for ln in out.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            ev = json.loads(ln)
+        except Exception:
+            continue
+        if ev.get("event") == "episodes":
+            info = ev
+    return info
+
+
 def engine_version() -> str:
     """エンジンの版を返す（`novel_downloader 2.11.2` → `2.11.2`）。失敗時は ""。
 
@@ -854,6 +889,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._shelf_rows = []
         self._shelf_dirty = False      # 追記・DL でずれたので走査し直したい（キュー終了後）
         self._shelf_dir_mtime = None   # 走査した時点の出力先フォルダの更新時刻
+        self._shelf_listing = False    # 話一覧を読み込み中（§8.15）
         self._shelf_chk_done = 0       # checkresult の到着数（§8.2: stage は使わない）
         self._shelf_chk_total = 0
         self._h_before_shelf = 0
@@ -1458,17 +1494,21 @@ class NovelDownloaderApp(ctk.CTk):
             ctk.CTkLabel(self.frm_shelf_list, text="●" if new else "○",
                          width=18, anchor="w").grid(row=i, column=0, sticky="w",
                                                     padx=(2, 4), pady=1)
-            name = self._ellipsis(r.get("title") or r.get("file", ""), 26)
+            name = self._ellipsis(r.get("title") or r.get("file", ""), 20)
             if r.get("display_name"):
                 name = "%s  [%s]" % (name, r["display_name"])
             ctk.CTkLabel(self.frm_shelf_list, text=name, anchor="w",
                          font=ctk.CTkFont(size=11)).grid(row=i, column=1,
                                                          sticky="ew", pady=1)
-            ctk.CTkLabel(self.frm_shelf_list,
-                         text=self._t("shelf_eps", n=r.get("episodes", 0)),
-                         anchor="e", text_color="gray",
-                         font=ctk.CTkFont(size=11)).grid(row=i, column=2,
-                                                         sticky="e", padx=(6, 4), pady=1)
+            lbl_eps = ctk.CTkLabel(self.frm_shelf_list,
+                                   text=self._t("shelf_eps", n=r.get("episodes", 0)),
+                                   anchor="e", text_color="gray",
+                                   font=ctk.CTkFont(size=11))
+            lbl_eps.grid(row=i, column=2, sticky="e", padx=(6, 4), pady=1)
+            # 件数だけでは「どこまで持っているか」が分からないので、最後の話の題を
+            # ツールチップで添える。行を広げずに済む（§8.15）
+            if r.get("last_title"):
+                _Tooltip(lbl_eps, lambda t=r["last_title"]: self._t("shelf_last", t=t))
             if new:
                 state = self._t("shelf_new", n=new)
                 color = ("#1a7f37", "#3fb950")
@@ -1479,13 +1519,29 @@ class NovelDownloaderApp(ctk.CTk):
             ctk.CTkLabel(self.frm_shelf_list, text=state, anchor="e",
                          text_color=color, font=ctk.CTkFont(size=11)).grid(
                              row=i, column=3, sticky="e", padx=(4, 4), pady=1)
+            # 話の一覧（手元の .txt を読むだけ・通信しない）
+            b_list = ctk.CTkButton(self.frm_shelf_list, text="☰", width=28, height=22,
+                                   fg_color="gray40", font=ctk.CTkFont(size=11),
+                                   command=lambda row=r: self._shelf_show_episodes(row))
+            b_list.grid(row=i, column=4, sticky="e", padx=(4, 0), pady=1)
+            _Tooltip(b_list, lambda: self._t("tip_shelf_list"))
+            # ePub を開く。--shelf-scan が返したパスをそのまま使う
+            b_open = ctk.CTkButton(self.frm_shelf_list, text="📖", width=28, height=22,
+                                   fg_color="gray40", font=ctk.CTkFont(size=11),
+                                   command=lambda row=r: self._shelf_open_epub(row))
+            b_open.grid(row=i, column=5, sticky="e", padx=(4, 0), pady=1)
+            if not r.get("epub"):
+                b_open.configure(state="disabled")
+            _Tooltip(b_open, lambda row=r: self._t(
+                "tip_shelf_open" if row.get("epub") else "shelf_noepub"))
             btn = ctk.CTkButton(self.frm_shelf_list, text=self._t("shelf_append"),
                                 width=92, height=22, font=ctk.CTkFont(size=11),
                                 command=lambda row=r: self._shelf_append([row]))
-            btn.grid(row=i, column=4, sticky="e", padx=(4, 2), pady=1)
+            btn.grid(row=i, column=6, sticky="e", padx=(4, 2), pady=1)
             if not new:
                 btn.configure(state="disabled", fg_color="gray40")
-            self._shelf_rows.append({"row": r, "button": btn})
+            self._shelf_rows.append({"row": r, "button": btn,
+                                     "list": b_list, "open": b_open})
         n_new = self._shelf_new_count()
         if n_new:
             self.btn_shelf_all.configure(text=self._t("shelf_append_all", n=n_new))
@@ -1572,6 +1628,56 @@ class NovelDownloaderApp(ctk.CTk):
         self.lbl_shelf_status.configure(text="")
         self._refresh_shelf_list()
         self._sync_shelf_header()
+
+    def _shelf_open_epub(self, row):
+        """本棚の行の ePub を開く。無ければ保存先フォルダに退避する。"""
+        if not self._open_epub_path(row.get("epub") or ""):
+            self._open_folder()
+
+    def _shelf_show_episodes(self, row):
+        """行の話一覧を出す。**手元の .txt から読むので通信しない**（§8.15）。"""
+        if self._shelf_listing:
+            return
+        self._shelf_listing = True
+        self.lbl_shelf_status.configure(text=self._t("shelf_listing"))
+        threading.Thread(target=self._shelf_list_worker, args=(row,),
+                         daemon=True).start()
+
+    def _shelf_list_worker(self, row):
+        self._queue.put(("episodelist", row, episode_list(row["path"], from_file=True)))
+
+    def _apply_episode_list(self, row, info):
+        self._shelf_listing = False
+        if not info or not info.get("titles"):
+            self.lbl_shelf_status.configure(text=self._t("shelf_list_fail"))
+            return
+        self.lbl_shelf_status.configure(text="")
+        self._show_episode_window(
+            info.get("title") or row.get("title", ""),
+            self._t("shelf_list_sub", n=info.get("total", 0),
+                    author=info.get("author") or row.get("author", "")),
+            info["titles"])
+
+    def _show_episode_window(self, title: str, subtitle: str, titles: list):
+        """話一覧の窓。
+
+        **ラベルを話数ぶん並べない。** 900 話で CTkLabel を 900 個作ると生成に
+        数秒かかり操作感が壊れる。1 枚のテキストボックスに流し込む
+        （選択・コピーもできる・§8.15）。
+        """
+        win = ctk.CTkToplevel(self)
+        win.title(self._t("shelf_list_title", title=self._ellipsis(title, 40)))
+        win.geometry("460x540")
+        win.transient(self)
+        ctk.CTkLabel(win, text=subtitle, anchor="w", text_color="gray",
+                     font=ctk.CTkFont(size=11)).pack(fill="x", padx=12, pady=(10, 2))
+        box = ctk.CTkTextbox(win, wrap="none")
+        box.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        w = len(str(len(titles)))
+        box.insert("end", "\n".join(f"{i:{w}}. {t}"
+                                    for i, t in enumerate(titles, 1)))
+        box.configure(state="disabled")
+        return win
 
     # ── 続きを取得（kind="append" のジョブとしてキューへ）────
     def _shelf_append(self, rows):
@@ -2921,6 +3027,9 @@ class NovelDownloaderApp(ctk.CTk):
         if kind == "checkresult":
             self._apply_checkresult(msg[1])
             return
+        if kind == "episodelist":
+            self._apply_episode_list(msg[1], msg[2])
+            return
         if kind == "shelfcheck_done":
             self._shelf_check_finished(msg[1])
             return
@@ -3035,7 +3144,14 @@ class NovelDownloaderApp(ctk.CTk):
 
         「フォルダを開く」の先がゴールなので、そこまで 1 クリックで届かせる。
         """
-        path = self._epub_path
+        if not self._open_epub_path(self._epub_path):
+            self._open_folder()
+
+    def _open_epub_path(self, path: str) -> bool:
+        """拡張子を確かめたうえで ePub を開く。開けなければ False を返す。
+
+        本棚の行からも呼ぶので、`self._epub_path` に依存しない形に切り出した（§8.15）。
+        """
         # **拡張子を必ず確かめる。** os.startfile は関連付けに従って何でも起動するため、
         # ここは「表示」ではなく「実行」のシンクになる。_epub_path には
         # stdout の JSON イベントのほかに、stderr を _RE_EPUB_DONE で拾う経路があり
@@ -3045,15 +3161,15 @@ class NovelDownloaderApp(ctk.CTk):
         # 都合であって GUI が保証できる不変条件ではない。ここで断つ。
         if not (path and os.path.isfile(path)
                 and path.lower().endswith(_EPUB_EXTS)):
-            self._open_folder()
-            return
+            return False
         try:
             if IS_WINDOWS:
                 os.startfile(path)       # type: ignore[attr-defined]
             else:
                 subprocess.run(["xdg-open", path])
+            return True
         except Exception:
-            self._open_folder()          # 関連付けが無ければフォルダを開くに退避
+            return False                 # 関連付けが無ければ呼び出し側で退避
 
     def _save_log(self):
         """生ログをファイルへ書き出す（§6）。

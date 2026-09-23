@@ -1191,9 +1191,20 @@ _CHECK_UPDATE_MODE: bool = False   # --check-update 実行中に True
 
 
 def _show_episode_list(title: str, author: str, ep_titles: list[str]) -> None:
-    """--list-only / --check-update モード: エピソード一覧を表示または取得する。"""
+    """--list-only / --check-update モード: エピソード一覧を表示または取得する。
+
+    `--progress-json` 指定時は `episodes` イベントも出す。**全 17 サイトが
+    ここを通る唯一の地点**なので、発火点はこの 1 箇所で足りる
+    （`workinfo` / `checkresult` と同じ考え方・design_gui_v2.md §8.15）。
+
+    `checkresult` では題名の配列を載せなかったが、こちらは載せる。あちらは
+    ディレクトリ内の作品ごとにループで発火し受け手は件数しか使わないのに対し、
+    こちらは**利用者の明示操作で 1 回だけ**で、題名そのものが目的だから。
+    """
     if _CHECK_UPDATE_MODE:
         raise _CheckUpdateDone(title, author, ep_titles)
+    _emit_event("episodes", title=title or "", author=author or "",
+                total=len(ep_titles), titles=list(ep_titles))
     total = len(ep_titles)
     width = len(str(total))
     _print_field("タイトル", f"{title}", width=8, blank_before=True)
@@ -9774,6 +9785,11 @@ def run_from_file(args):
     print(f"\n[Step 1] テキストファイルを解析中: {txt_path}  (encoding={used_enc})")
     title, author, synopsis, episodes, meta = parse_aozora_text(content)
 
+    # --list-only は「手元の .txt が何話持っているか」を**通信せずに**返す。
+    # 本棚の一覧表示がこれを使う（design_gui_v2.md §8.15）
+    if getattr(args, "list_only", False):
+        _show_episode_list(title, author, [ep.get("title", "") for ep in episodes])
+
     # 底本URL はメタ行とは別のラベル行なのでヘッダーから直接拾う。
     # これにより --from-file で作り直した ePub でも dc:source と
     # 表紙の「○○で読む」リンクが失われない。
@@ -11110,6 +11126,8 @@ def shelf_scan(dir_path: str) -> list[dict]:
             sid = _safe(lambda: detect_site(url), "unknown")
             if sid in _SITE_DISPATCH:
                 site, display = sid, _SITE_DISPATCH[sid][0]
+        # 話数と最終話の題を 1 回の読み込みから取る（4MB 級の .txt を二度読まない）
+        secs, eps = _safe(lambda: _load_existing_txt(path), ([], []))
         out.append({
             "path":     path,
             "file":     tf.name,
@@ -11118,7 +11136,10 @@ def shelf_scan(dir_path: str) -> list[dict]:
             "url":      url,
             "site":     site,
             "display_name": display,
-            "episodes": _safe(lambda: len(_load_existing_txt(path)[0]), 0),
+            "episodes": len(secs),
+            # **手元で最後まで取れている話の題**。件数だけでは「どこまで持っているか」
+            # が分からない（design_gui_v2.md §8.15）
+            "last_title": (eps[-1].get("title", "") if eps else ""),
             "epub":     _safe(lambda: _shelf_epub_path(path), ""),
             "mtime":    _safe(lambda: round(tf.stat().st_mtime, 3), 0.0),
             "meta":     _safe(lambda: _extract_meta_from_txt(path), {}),

@@ -95,7 +95,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `--append FILE` | — | 既存 `.txt` を指定して続きを追記・ePub 再生成。`底本URL：` から URL を自動検出し `--resume 0` と同等の差分ダウンロードを実行する。URL 指定不要。新規エピソードがない場合は既存ファイルを上書きしない。`--notify webhook` 対応 |
 | `--append-dir DIR` | — | ディレクトリ内の全 `.txt` を走査し、新着エピソードがある作品だけ差分ダウンロード・追記・ePub 再生成する。Phase 1 で事前チェック → 確認プロンプト → Phase 2 でダウンロード → サマリー表示。`--yes` で確認スキップ。`--notify webhook` 対応 |
 | `--yes` | — | `--append-dir` の確認プロンプトをスキップする（自動化用） |
-| `--list-only` | — | ダウンロードせずエピソード一覧と話数のみ表示して終了する |
+| `--list-only` | — | ダウンロードせずエピソード一覧と話数のみ表示して終了する。**`--from-file FILE` と併用すると手元の `.txt` の話一覧を通信せずに出す**（GUI の本棚が使う）。`--progress-json` 併用時は `episodes` イベントも出る |
 | `--check-update FILE` | — | 既存 `.txt` を渡してサイトの最新話数と比較し、新着話数・タイトルを表示して終了。ダウンロード・ファイル上書きは一切行わない。`--append` の前の確認に使う。`--notify webhook` 対応 |
 | `--check-update-dir DIR` | — | ディレクトリ内の全 `.txt` を走査し、各作品の新着エピソードを一括確認する。底本URL のないファイルは自動スキップ。ダウンロード・ファイル上書きは一切行わない。`--notify webhook` 対応 |
 | `--dry-run` | — | 作品情報（タイトル・著者・総話数）を取得して表示したあと終了する。ダウンロード・ファイル出力は一切行わない。`--list-only` より軽量な接続確認用 |
@@ -116,8 +116,8 @@ python novel_downloader.py --from-file mynovel.txt
 | `--watch-auto-default` | — | ウォッチリストで `auto=` 未指定のエントリに自動 DL を適用する |
 | `--detect-site URL` | — | GUI 用の読み取り専用モード。URL のサイト種別を判定し JSON 1行（`{"schema":1,"site","display_name","needs_playwright","normalized_url","short_url"}`）を stdout に出力して終了。オフライン・即時・**短縮URL展開なし**。未対応サイトは `site:null`、ハーメルンは `needs_playwright:true`。`detect_site()`/`normalize_url()`/`_SITE_DISPATCH` を流用。**`short_url` は `is_short_url()`（`_SHORT_URL_HOSTS` のホスト名照合のみ・オフライン）の結果**で、`share.google` 等は `site:null` かつ `short_url:true` になる。**呼び出し側は `site is None` だけで「未対応」と判断してはいけない** — 展開すれば落とせる URL をエンジン起動前に捨てることになる（design_gui_v2.md §8.8） |
 | `--list-sites` | — | GUI 用の読み取り専用モード。対応サイト一覧（`[{"site","display_name"}]`）を JSON で stdout に出力して終了。`_SITE_DISPATCH` を挿入順に列挙 |
-| `--shelf-scan DIR` | — | GUI 用の読み取り専用モード。ディレクトリ内の `.txt` を走査し、1 件 1 オブジェクトの JSON 配列（`path` / `file` / `title` / `author` / `url` / `site` / `display_name` / `episodes` / `epub` / `mtime` / `meta`）を stdout に出力して終了。**オフライン・ネットワークに一切触れない**。`episodes` は**手元のファイルが持っている話数**で、`meta["episode_count"]`（ダウンロード時点のサイト側総話数）とは別物。`底本URL：` の無い `.txt` も `url:""` の行として返す（本棚に出すかは GUI 側の判断）。`_extract_url_from_txt` / `_load_existing_txt` / `_extract_meta_from_txt` / `detect_site` を流用し、**GUI 側に青空文庫書式の解析を再実装させない**のが目的（design_gui_v2.md §8.1b） |
-| `--progress-json` | — | GUI 連携用。**stdout を JSON Lines のイベント専用にし、人間向け出力は stderr へ回す**（`_main()` 冒頭で `sys.stdout` を差し替えるので既存の `print()` は無改修）。イベントは `stage` / `progress` / `output` / `workinfo` の4種。**指定しなければ挙動は一切変わらない**。仕様は `design_progress_json.md` |
+| `--shelf-scan DIR` | — | GUI 用の読み取り専用モード。ディレクトリ内の `.txt` を走査し、1 件 1 オブジェクトの JSON 配列（`path` / `file` / `title` / `author` / `url` / `site` / `display_name` / `episodes` / `last_title` / `epub` / `mtime` / `meta`）を stdout に出力して終了。**オフライン・ネットワークに一切触れない**。`episodes` は**手元のファイルが持っている話数**で、`meta["episode_count"]`（ダウンロード時点のサイト側総話数）とは別物。`底本URL：` の無い `.txt` も `url:""` の行として返す（本棚に出すかは GUI 側の判断）。`_extract_url_from_txt` / `_load_existing_txt` / `_extract_meta_from_txt` / `detect_site` を流用し、**GUI 側に青空文庫書式の解析を再実装させない**のが目的（design_gui_v2.md §8.1b） |
+| `--progress-json` | — | GUI 連携用。**stdout を JSON Lines のイベント専用にし、人間向け出力は stderr へ回す**（`_main()` 冒頭で `sys.stdout` を差し替えるので既存の `print()` は無改修）。イベントは `stage` / `progress` / `output` / `workinfo` / `checkresult` / `episodes` の6種。**指定しなければ挙動は一切変わらない**。仕様は `design_progress_json.md` |
 
 ## 依存ライブラリ
 

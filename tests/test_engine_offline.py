@@ -4,6 +4,7 @@
 ネットワークにも画面にも触れないものだけ。ここが落ちたら GUI 側を見る前に
 まずこちらを直す。
 """
+import contextlib
 import io
 import json
 import os
@@ -77,6 +78,40 @@ def main() -> int:
             ck("サイトを判定できる", w["display_name"] == "小説家になろう")
             ck("path は絶対パス", os.path.isabs(w["path"]))
         ck("壊れたディレクトリでも落ちない", N.shelf_scan("/no/such/dir") == [])
+
+    # ── 手元の話一覧（§8.15）──
+    with tempfile.TemporaryDirectory() as d:
+        path = make_work_txt(d, "A.txt", "作品A", "n0001aa", episodes=3)
+        rows = N.shelf_scan(d)
+        ck("shelf-scan が最後の話の題を返す",
+           rows[0].get("last_title") == "第3話", str(rows[0].get("last_title")))
+
+        buf = io.StringIO()
+        old_out = N._EVENT_OUT
+        N._EVENT_OUT = buf
+        try:
+            # 人間向けの一覧は stdout に出るので、テストの表示に混ぜない
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    N._show_episode_list("作品A", "著者名", ["第1話", "第2話", "第3話"])
+                except SystemExit:
+                    pass
+        finally:
+            N._EVENT_OUT = old_out
+        ev = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()]
+        ep = [e for e in ev if e.get("event") == "episodes"]
+        ck("episodes イベントが出る", len(ep) == 1)
+        if ep:
+            ck("題名の配列が載る", ep[0]["titles"] == ["第1話", "第2話", "第3話"])
+            ck("題名・著者・件数も載る",
+               ep[0]["title"] == "作品A" and ep[0]["author"] == "著者名"
+               and ep[0]["total"] == 3)
+        ck("送出先を元に戻している（--progress-json 無しでは黙る）",
+           N._EVENT_OUT is None)
+        ck("フィクスチャは .txt だけで ePub を作っていない",
+           [f for f in os.listdir(d) if f.endswith(".epub")] == [])
+        ck("_load_existing_txt と話数が一致する",
+           len(N._load_existing_txt(path)[1]) == 3)
 
     # ── checkresult の path は realpath（§8.12 (9)）──
     with tempfile.TemporaryDirectory() as d:
