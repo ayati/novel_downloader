@@ -402,6 +402,8 @@ python -c "import zipfile; zipfile.ZipFile('<出力.epub>').extractall('/tmp/epu
 
 **原則**: リリースは `scripts/release.sh` 1本に集約する。**「Python をリリースしたのに APK を作り直し忘れる」「`__version__` を上げ忘れる」を構造的に防ぐ**ため、版数更新 → タグ push → APK ビルド → Release 作成/添付を1コマンドで行う。
 
+> **ただし Windows exe はこのスクリプトの対象外で、手動ビルド・手動添付**（後述「Windows exe は手動」）。
+
 ```bash
 # 通常のリリース（__version__更新→コミット→タグ→Release作成→APK添付まで全部）
 scripts/release.sh 2.3.0 --notes-file /path/to/notes.md
@@ -425,6 +427,38 @@ scripts/release.sh 2.3.0 --no-release
   **この keystore を失うと `com.ayati.noveldownloader` を二度と更新できない**（要バックアップ）。
 - **陳腐化ガード（B）**: `scripts/release.sh` はビルド後に `android/.apk_built_from`（`novel_downloader.py` の sha256・`.gitignore` 済み）を記録する。`scripts/install-hooks.sh` を一度実行して `pre-push` フックを入れておくと、`vX.Y.Z` タグ push 時に **(1) `__version__` とタグの不一致**、**(2) APK が古い（本体を変えたのに作り直していない）** を検知して警告する（いずれもブロックはしない）。
 - 配布 APK（`android/noveldownloader_vX.Y.Z.apk`）は `.gitignore` 済み。GitHub Release のアセットとして配る。
+
+### Windows exe は手動（release.sh の対象外）
+
+**`scripts/release.sh` は APK しかビルドしない。Windows exe は人がビルドして Release に添付する。**
+自動化していないのは **PyInstaller がクロスコンパイルできない**ため。開発は WSL2 でも
+exe の生成は Windows 側の Python で行う必要があり、WSL から走る release.sh には手が届かない
+（`gui_v1_design.md` §12.5）。
+
+| ファイル | 中身 |
+|---|---|
+| `forwindows/novel_downloader.exe` | CLI 本体（エンジン） |
+| `forwindows/novel_downloader_gui.exe` | GUI。**隣の `novel_downloader.exe` をサブプロセスで呼ぶ**（`gui_v1_design.md` §12.2） |
+
+**2つセットで作り直すこと。** GUI exe はエンジンを内蔵せず隣の exe を呼ぶので、
+`novel_downloader.py` を直したのに CLI exe だけ古いと、**GUI の新機能は動くのに
+エンジン側の修正が効かない**という分かりにくい状態になる。
+実例: v2.14.0 では GUI の受信箱・本棚が動いても、exe を作り直さなければ
+短編対応・SSRF ガード・`--shelf-scan` が入らない。
+
+ビルドは Windows 上で（GUI の例は `gui_v1_design.md` §12.5、CLI は `WINDOWS_SETUP.md`）:
+
+```
+pyinstaller --windowed --onefile --collect-data customtkinter \
+            --exclude-module playwright --icon novel_downloader.ico novel_downloader_gui.py
+```
+
+- `*.exe` は `.gitignore` 済み。**GitHub Release のアセットとして配る**
+  （v2.14.0 は 2つの exe とバッチ類をまとめた `novel_downloader_2_14_0.zip` で添付）
+- **陳腐化ガードは無い。** APK には `android/.apk_built_from`（`novel_downloader.py` の
+  sha256）と pre-push フックによる警告があるが、exe にはこれに相当する仕組みが無い。
+  `novel_downloader.py` / `novel_downloader_gui.py` を変更したリリースでは、
+  **exe の作り直しを人が覚えている必要がある**
 
 ## ウォッチモード（--watch）
 
