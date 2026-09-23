@@ -41,20 +41,23 @@ def main() -> int:
             ck("見ているときは鳴らさない", belled == [])
 
             # ── 見ていないとき: 光る ──
+            # **_focused は _notify の直前に入れる。** pump() の間に
+            # ウィンドウマネージャから本物のフォーカスイベントが飛んでくると
+            # 値が上書きされ、結果が実行ごとに変わる
             app._focused = False
             app._notify("notice_done", n=5)
-            app.pump(0.1)
             ck("見ていないときは光る", len(flashed) == 1)
             ck("音は既定では鳴らさない", belled == [])
 
             app.settings["notify_sound"] = True
+            app._focused = False
             app._notify("notice_failed")
-            app.pump(0.1)
             ck("設定を入れれば鳴る", len(belled) == 1)
             ck("失敗も知らせる", "⚠" in app.title(), app.title())
 
             app.settings["notify_taskbar"] = False
             n_before = len(flashed)
+            app._focused = False
             app._notify("notice_done", n=1)
             ck("設定を切れば光らない", len(flashed) == n_before)
             app.settings["notify_taskbar"] = True
@@ -62,13 +65,13 @@ def main() -> int:
             # ── 見たら知らせは消える ──
             class E:
                 widget = app
-            app._on_focus_in(E())
-            app.pump(0.1)
-            ck("窓を見たらタイトルが元に戻る", app.title() == base, app.title())
-            ck("見たので _focused が立つ", app._focused is True)
-
-            # ── 各場面で知らせが出るか ──
             app._focused = False
+            app._on_focus_in(E())
+            # pump を挟まずに見る（挟むと実イベントで値が変わりうる）
+            ck("見たので _focused が立つ", app._focused is True)
+            ck("窓を見たらタイトルが元に戻る", app.title() == base, app.title())
+
+            # ── 各場面で知らせが出るか（タイトルで見るので focus に依らない）──
             app._epub_path = None
             app._set_state_done()
             ck("1 件の完了で知らせる", "✅" in app.title(), app.title())
