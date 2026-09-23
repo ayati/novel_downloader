@@ -287,6 +287,16 @@ UI = {
     "shelf_count":  ("（{n}件）", " ({n})"),
     "shelf_count_new": ("（{n}件・新着{u}）", " ({n}, {u} updated)"),
     "shelf_refresh": ("一覧を更新", "Refresh list"),
+    "sort_updated": ("更新が新しい順", "Recently updated"),
+    "sort_name":    ("名前順", "By name"),
+    "sort_episodes": ("話数が多い順", "Most episodes"),
+    "shelf_check_stop": ("■ 中止", "■ Stop"),
+    "shelf_check_stopping": ("中止しています…", "Stopping…"),
+    "shelf_check_stopped": ("中止しました（{n} 件まで確認済み）",
+                            "Stopped ({n} checked)"),
+    "shelf_checking_now": ("確認中 {n}/{m}：{name}", "Checking {n}/{m}: {name}"),
+    "shelf_row_checking": ("確認中…", "Checking…"),
+    "shelf_row_error": ("確認できず", "Check failed"),
     "tip_shelf_list": ("話の一覧を見る（手元のファイルから）",
                        "Show the episode list (from the local file)"),
     "tip_shelf_open": ("ePub を開く", "Open the EPUB"),
@@ -493,6 +503,8 @@ def default_settings() -> dict:
         "inbox_scan_min": 5,           # 受信箱を見に行く間隔（分・0 で無効・§8.10）
         "inbox_open": False,           # 受信箱の節を開いた状態で起動する
         "shelf_open": False,           # 本棚の節を開いた状態で起動する
+        # design_gui_v2 §8.17。表示の並び順＝新着チェックの確認順
+        "shelf_sort": "updated",       # "updated" | "name" | "episodes"
         # design_gui_v2 §8.13
         "no_inline_images": False,     # 本文中の挿絵を取り込まない（避難口）
         "notify_webhook": False,       # 完了・新着を Webhook で通知する
@@ -551,6 +563,8 @@ def load_settings() -> dict:
         s["ui_lang"] = "ja"
     for k in ("auto_paste", "open_folder_on_done"):
         s[k] = bool(s.get(k, True))
+    if s.get("shelf_sort") not in ("updated", "name", "episodes"):
+        s["shelf_sort"] = "updated"
     for k in ("inbox_auto", "inbox_open", "shelf_open",
               "no_inline_images", "notify_webhook"):
         s[k] = bool(s.get(k, False))
@@ -916,6 +930,8 @@ class NovelDownloaderApp(ctk.CTk):
         self._shelf_dirty = False      # 追記・DL でずれたので走査し直したい（キュー終了後）
         self._shelf_dir_mtime = None   # 走査した時点の出力先フォルダの更新時刻
         self._shelf_listing = False    # 話一覧を読み込み中（§8.15）
+        self._shelf_checking = ""      # いま確認中の作品のパス（§8.17）
+        self._shelf_stop = False       # 新着チェックの中止要求
         self._shelf_chk_done = 0       # checkresult の到着数（§8.2: stage は使わない）
         self._shelf_chk_total = 0
         self._h_before_shelf = 0
@@ -1358,13 +1374,19 @@ class NovelDownloaderApp(ctk.CTk):
         # 一覧の読み直し（手元のフォルダを見るだけ・オフライン）。
         # 「新着チェック」はサイトへ問い合わせる別の操作なので、絵文字を重ねず
         # 文言で区別する（§8.14）
-        self.btn_shelf_reload = ctk.CTkButton(head, text="", width=104, height=24,
+        # 並び順（表示＝確認順）。新着が出やすいものを先に確認できる（§8.17）
+        self.var_shelf_sort = ctk.StringVar(value=self._t("sort_updated"))
+        self.opt_shelf_sort = ctk.CTkOptionMenu(
+            head, values=[], width=100, height=24,
+            variable=self.var_shelf_sort, command=self._on_shelf_sort_pick)
+        self.opt_shelf_sort.grid(row=0, column=1, sticky="e", padx=(6, 0))
+        self.btn_shelf_reload = ctk.CTkButton(head, text="", width=92, height=24,
                                               fg_color="gray40",
                                               command=self._shelf_reload)
-        self.btn_shelf_reload.grid(row=0, column=1, sticky="e", padx=(6, 0))
-        self.btn_shelf_check = ctk.CTkButton(head, text="", width=132, height=24,
+        self.btn_shelf_reload.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        self.btn_shelf_check = ctk.CTkButton(head, text="", width=124, height=24,
                                              command=self._shelf_check_updates)
-        self.btn_shelf_check.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        self.btn_shelf_check.grid(row=0, column=3, sticky="e", padx=(6, 0))
 
         self.frm_shelf_list = ctk.CTkScrollableFrame(self.frm_shelf, height=QUEUE_LIST_PX)
         self.frm_shelf_list.grid(row=1, column=0, sticky="ew", pady=(4, 0))
@@ -1426,6 +1448,43 @@ class NovelDownloaderApp(ctk.CTk):
         """
         return [r for r in self._shelf if r.get("url")]
 
+    def _shelf_sorted_works(self) -> list:
+        """本棚に出す順番（§8.17）。**この並びがそのまま確認順になる。**
+
+        既定は更新日の新しい順。新着が出やすい作品が先に確認され、
+        待っている間に結果が出はじめる。サイト側の更新日が無ければ
+        ファイルの更新時刻で代用する。
+        """
+        works = self._shelf_works()
+        mode = self.settings.get("shelf_sort", "updated")
+        if mode == "name":
+            return sorted(works, key=lambda r: (r.get("title")
+                                                or r.get("file", "")).lower())
+        if mode == "episodes":
+            return sorted(works, key=lambda r: int(r.get("episodes") or 0),
+                          reverse=True)
+        return sorted(works, key=lambda r: (
+            str((r.get("meta") or {}).get("updated") or ""),
+            "%020d" % int(r.get("mtime") or 0)), reverse=True)
+
+    _SORT_KEYS = ("updated", "name", "episodes")
+
+    def _sort_labels(self) -> list:
+        return [self._t("sort_" + k) for k in self._SORT_KEYS]
+
+    def _on_shelf_sort_pick(self, value=None):
+        """選ばれた表示名からキーを引く（表示名は言語で変わる）。"""
+        labels = self._sort_labels()
+        key = self._SORT_KEYS[labels.index(value)] if value in labels else "updated"
+        self.settings["shelf_sort"] = key
+        self._persist()
+        self._refresh_shelf_list()
+
+    def _sync_shelf_sort_widget(self):
+        self.opt_shelf_sort.configure(values=self._sort_labels())
+        key = self.settings.get("shelf_sort", "updated")
+        self.var_shelf_sort.set(self._t("sort_" + key))
+
     def _shelf_new_count(self) -> int:
         return sum(1 for r in self._shelf_works()
                    if (self._shelf_new.get(r["path"]) or {}).get("new", 0) > 0)
@@ -1439,6 +1498,7 @@ class NovelDownloaderApp(ctk.CTk):
         elif n or self._shelf_loaded:
             label += self._t("shelf_count", n=n)
         self.btn_shelf.configure(text=label)
+        self._sync_shelf_sort_widget()
         self.btn_shelf_reload.configure(text=self._t("shelf_refresh"))
         self.btn_shelf_check.configure(text=self._t("shelf_check"))
 
@@ -1506,21 +1566,23 @@ class NovelDownloaderApp(ctk.CTk):
                 self._inbox_scanning = False
 
     def _refresh_shelf_list(self):
+        """一覧を組み直す。**行の中身の更新は _update_shelf_row() に任せる。**
+
+        ここは行を全部 destroy して作り直すので、結果が 1 件届くたびに呼ぶと
+        作品数の二乗の手間になり、スクロール位置も先頭へ飛ぶ（§8.17）。
+        """
         for w in self.frm_shelf_list.winfo_children():
             w.destroy()
         self._shelf_rows = []
-        works = self._shelf_works()
+        works = self._shelf_sorted_works()
         if not works:
             self.lbl_shelf_status.configure(text=self._t("shelf_empty"))
             self.btn_shelf_all.grid_remove()
             return
         self.lbl_shelf_status.configure(text="")
         for i, r in enumerate(works):
-            cr = self._shelf_new.get(r["path"]) or {}
-            new = int(cr.get("new", 0) or 0)
-            ctk.CTkLabel(self.frm_shelf_list, text="●" if new else "○",
-                         width=18, anchor="w").grid(row=i, column=0, sticky="w",
-                                                    padx=(2, 4), pady=1)
+            icon = ctk.CTkLabel(self.frm_shelf_list, text="", width=18, anchor="w")
+            icon.grid(row=i, column=0, sticky="w", padx=(2, 4), pady=1)
             name = self._ellipsis(r.get("title") or r.get("file", ""), 20)
             if r.get("display_name"):
                 name = "%s  [%s]" % (name, r["display_name"])
@@ -1536,16 +1598,9 @@ class NovelDownloaderApp(ctk.CTk):
             # ツールチップで添える。行を広げずに済む（§8.15）
             if r.get("last_title"):
                 _Tooltip(lbl_eps, lambda t=r["last_title"]: self._t("shelf_last", t=t))
-            if new:
-                state = self._t("shelf_new", n=new)
-                color = ("#1a7f37", "#3fb950")
-            elif cr:
-                state, color = self._t("shelf_latest"), "gray"
-            else:
-                state, color = self._t("shelf_unknown"), "gray"
-            ctk.CTkLabel(self.frm_shelf_list, text=state, anchor="e",
-                         text_color=color, font=ctk.CTkFont(size=11)).grid(
-                             row=i, column=3, sticky="e", padx=(4, 4), pady=1)
+            state = ctk.CTkLabel(self.frm_shelf_list, text="", anchor="e",
+                                 font=ctk.CTkFont(size=11))
+            state.grid(row=i, column=3, sticky="e", padx=(4, 4), pady=1)
             # 話の一覧（手元の .txt を読むだけ・通信しない）
             b_list = ctk.CTkButton(self.frm_shelf_list, text="☰", width=28, height=22,
                                    fg_color="gray40", font=ctk.CTkFont(size=11),
@@ -1565,10 +1620,47 @@ class NovelDownloaderApp(ctk.CTk):
                                 width=92, height=22, font=ctk.CTkFont(size=11),
                                 command=lambda row=r: self._shelf_append([row]))
             btn.grid(row=i, column=6, sticky="e", padx=(4, 2), pady=1)
-            if not new:
-                btn.configure(state="disabled", fg_color="gray40")
-            self._shelf_rows.append({"row": r, "button": btn,
-                                     "list": b_list, "open": b_open})
+            self._shelf_rows.append({"row": r, "button": btn, "icon": icon,
+                                     "state": state, "list": b_list, "open": b_open,
+                                     "btn_fg": btn.cget("fg_color")})
+            self._update_shelf_row(i)
+        self._sync_shelf_all_button()
+
+    def _update_shelf_row(self, i: int):
+        """1 行だけ描き直す（§8.17）。
+
+        新着チェックの結果は 1 件ずつ届くので、**届いたその行だけ**を直す。
+        全体を作り直すと作品数ぶんの再構築が積み上がり、スクロール位置も飛ぶ。
+        """
+        if not 0 <= i < len(self._shelf_rows):
+            return
+        e = self._shelf_rows[i]
+        r = e["row"]
+        cr = self._shelf_new.get(r["path"]) or {}
+        new = int(cr.get("new", 0) or 0)
+        checking = bool(self._shelf_checking) and self._shelf_checking == r["path"]
+        e["icon"].configure(text="⏳" if checking else ("●" if new else "○"))
+        if checking:
+            text, color = self._t("shelf_row_checking"), ("#8a6d00", "#e3b341")
+        elif cr.get("status") == "error":
+            text, color = self._t("shelf_row_error"), ("#b3261e", "#f2b8b5")
+        elif new:
+            text, color = self._t("shelf_new", n=new), ("#1a7f37", "#3fb950")
+        elif cr:
+            text, color = self._t("shelf_latest"), "gray"
+        else:
+            text, color = self._t("shelf_unknown"), "gray"
+        e["state"].configure(text=text, text_color=color)
+        e["button"].configure(state="normal" if new else "disabled",
+                              fg_color=e["btn_fg"] if new else "gray40")
+
+    def _shelf_row_index(self, path: str) -> int:
+        for i, e in enumerate(self._shelf_rows):
+            if e["row"].get("path") == path:
+                return i
+        return -1
+
+    def _sync_shelf_all_button(self):
         n_new = self._shelf_new_count()
         if n_new:
             self.btn_shelf_all.configure(text=self._t("shelf_append_all", n=n_new))
@@ -1592,15 +1684,29 @@ class NovelDownloaderApp(ctk.CTk):
             return
         self._shelf_chk_total = len(self._shelf_works())
         self._shelf_chk_done = 0
-        self.btn_shelf_check.configure(state="disabled")
+        self._shelf_stop = False
+        self._shelf_checking = ""
+        # 押したボタンがそのまま中止になる。長いときに止められないのがいちばん辛い
+        self.btn_shelf_check.configure(text=self._t("shelf_check_stop"),
+                                       command=self._shelf_check_cancel)
         self.lbl_shelf_status.configure(
             text=self._t("shelf_checking", n=0, m=self._shelf_chk_total))
         threading.Thread(target=self._shelf_check_worker, args=(d,), daemon=True).start()
+
+    def _shelf_check_cancel(self):
+        """確認中のプロセスを止める。**届いた分の結果は残す**（§8.17）。"""
+        self._shelf_stop = True
+        self.lbl_shelf_status.configure(text=self._t("shelf_check_stopping"))
+        if self._shelf_proc is not None:
+            threading.Thread(target=_terminate_tree, args=(self._shelf_proc,),
+                             daemon=True).start()
 
     def _shelf_check_worker(self, d: str):
         try:
             proc = subprocess.Popen(
                 engine_cmd("--check-update-dir", d, "--progress-json",
+                           "--check-update-order",
+                           self.settings.get("shelf_sort", "updated"),
                            *_webhook_args(self.settings)),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env=_engine_env(), creationflags=_CREATE_NO_WINDOW,
@@ -1630,6 +1736,8 @@ class NovelDownloaderApp(ctk.CTk):
                     continue
                 if ev.get("event") == "checkresult":
                     self._queue.put(("checkresult", ev))
+                elif ev.get("event") == "checkstart":
+                    self._queue.put(("checkstart", ev))
             rc = proc.wait()
         except Exception as e:
             self._queue.put(("rawlog", f"[本棚] {e}"))
@@ -1641,20 +1749,52 @@ class NovelDownloaderApp(ctk.CTk):
             self._shelf_proc = None
             self._queue.put(("shelfcheck_done", rc))
 
+    def _apply_checkstart(self, ev: dict):
+        """いまどの作品を確認しているかを出す（§8.17）。"""
+        prev = self._shelf_checking
+        self._shelf_checking = ev.get("path") or ""
+        for p in (prev, self._shelf_checking):
+            i = self._shelf_row_index(p) if p else -1
+            if i >= 0:
+                self._update_shelf_row(i)
+        i = self._shelf_row_index(self._shelf_checking)
+        name = (self._shelf_rows[i]["row"].get("title") if i >= 0
+                else ev.get("file", "")) or ev.get("file", "")
+        self.lbl_shelf_status.configure(
+            text=self._t("shelf_checking_now", n=int(ev.get("index", 0)),
+                         m=int(ev.get("total", 0)), name=self._ellipsis(name, 18)))
+
     def _apply_checkresult(self, ev: dict):
         path = ev.get("path") or ""
         if path:
             self._shelf_new[path] = ev
         self._shelf_chk_done += 1
+        if self._shelf_checking == path:
+            self._shelf_checking = ""
+        # **届いた行だけを直す。** 全体の作り直しはしない（§8.17）
+        i = self._shelf_row_index(path)
+        if i >= 0:
+            self._update_shelf_row(i)
+        self._sync_shelf_all_button()
+        self._sync_shelf_header()
         self.lbl_shelf_status.configure(
             text=self._t("shelf_checking", n=self._shelf_chk_done,
                          m=max(self._shelf_chk_total, self._shelf_chk_done)))
 
     def _shelf_check_finished(self, _rc: int):
-        self.btn_shelf_check.configure(state="normal")
-        self.lbl_shelf_status.configure(text="")
+        self.btn_shelf_check.configure(text=self._t("shelf_check"),
+                                       command=self._shelf_check_updates,
+                                       state="normal")
+        stopped = self._shelf_stop
+        self._shelf_stop = False
+        self._shelf_checking = ""
         self._refresh_shelf_list()
         self._sync_shelf_header()
+        # **状況表示は一覧を組み直した後に入れる。** _refresh_shelf_list() は
+        # 作品があるときに状況表示を空にするので、先に書くと即座に消える
+        self.lbl_shelf_status.configure(
+            text=self._t("shelf_check_stopped", n=self._shelf_chk_done)
+            if stopped else "")
 
     def _shelf_open_epub(self, row):
         """本棚の行の ePub を開く。無ければ保存先フォルダに退避する。"""
@@ -2302,6 +2442,7 @@ class NovelDownloaderApp(ctk.CTk):
             "webhook_format": self.var_webhook_fmt.get(),
             "inbox_open": bool(self._inbox_open),
             "shelf_open": bool(self._shelf_open),
+            "shelf_sort": self.settings.get("shelf_sort", "updated"),
         })
 
     def _persist(self):
@@ -3177,6 +3318,9 @@ class NovelDownloaderApp(ctk.CTk):
         # ── 受信箱・本棚（§8）。ダウンロードの中止フラグとは無関係 ──
         if kind == "shelf":
             self._apply_shelf_rows(msg[1])
+            return
+        if kind == "checkstart":
+            self._apply_checkstart(msg[1])
             return
         if kind == "checkresult":
             self._apply_checkresult(msg[1])

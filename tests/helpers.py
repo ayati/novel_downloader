@@ -62,7 +62,8 @@ def gui_available() -> tuple[bool, str]:
 
 
 def make_work_txt(directory: str, filename: str, title: str,
-                  ncode: str = "n0001aa", episodes: int = 1) -> str:
+                  ncode: str = "n0001aa", episodes: int = 1,
+                  meta: dict = None) -> str:
     """本棚テスト用の青空文庫書式 .txt を作る。
 
     **書式はエンジン自身の関数で組み立てる。** 区切り線やヘッダーをテスト側で
@@ -71,8 +72,9 @@ def make_work_txt(directory: str, filename: str, title: str,
     """
     import novel_downloader as N
     url = f"https://ncode.syosetu.com/{ncode}/"
-    header = N.aozora_header(title, "著者名", "あらすじ", source_url=url,
-                             meta={"site": "小説家になろう"})
+    m = {"site": "小説家になろう"}
+    m.update(meta or {})
+    header = N.aozora_header(title, "著者名", "あらすじ", source_url=url, meta=m)
     sections = [f"{N.aozora_chapter_title(f'第{i}話')}\n\n本文{i}\n"
                 for i in range(1, episodes + 1)]
     colophon = N.aozora_colophon(title, url, "小説家になろう")

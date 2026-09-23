@@ -11147,6 +11147,28 @@ def shelf_scan(dir_path: str) -> list[dict]:
     return out
 
 
+def _order_txt_files(paths: list, order: str) -> list:
+    """一括モードの処理順を決める（design_gui_v2.md §8.17）。
+
+    既定は `name`（従来どおりの名前順）。`updated` は**更新日の新しい順**で、
+    新着が出やすい作品を先に確認できる。1 件あたり目次の全ページ取得が要るため
+    全件の確認には時間がかかり、**先に終わる順番が体感を大きく変える**。
+    サイト側の更新日が無いファイルはファイルの更新時刻で代用する。
+    """
+    if order not in ("updated", "episodes"):
+        return paths
+    def key(p):
+        meta = _extract_meta_from_txt(str(p))
+        if order == "episodes":
+            return (int(meta.get("episode_count") or 0), "")
+        try:
+            mt = os.path.getmtime(str(p))
+        except OSError:
+            mt = 0.0
+        return (str(meta.get("updated") or ""), "%020d" % int(mt))
+    return sorted(paths, key=key, reverse=True)
+
+
 def _emit_checkresult(result: dict, txt_path: str = "") -> dict:
     """更新チェック 1 件の結果を GUI 向けイベントとして送る（design_gui_v2.md §8.1a）。
 
@@ -11963,6 +11985,13 @@ def _build_arg_parser(lang: str = "ja") -> argparse.ArgumentParser:
                         help=H(
                             "Print the supported-site list as JSON and exit (GUI helper; read-only)",
                             "対応サイト一覧を JSON で出力して終了（GUI用・読み取り専用）"))
+    parser.add_argument("--check-update-order", dest="check_update_order",
+                        choices=["name", "updated", "episodes"], default="name",
+                        help=H(
+                            "Order in which --check-update-dir visits works "
+                            "(name: filename, updated: newest first, episodes: most first)",
+                            "--check-update-dir が作品を確認する順番"
+                            "（name: ファイル名順 / updated: 更新日の新しい順 / episodes: 話数の多い順）"))
     parser.add_argument("--shelf-scan", dest="shelf_scan", default=None, metavar="DIR",
                         help=H(
                             "Scan a directory of .txt files and print them as JSON, then exit "
@@ -12067,8 +12096,15 @@ def _main(argv=None):
         print(f" 一括更新チェック: {len(targets)} 作品")
         print(f"{'=' * 60}\n")
 
+        targets = _order_txt_files(
+            targets, getattr(args, "check_update_order", "name"))
+
         results = []
         for i, tf in enumerate(targets):
+            # 1 件ごとの開始を知らせる。全件終わるまで何も分からないと
+            # 待っている側は進んでいるのか判断できない（§8.17）
+            _emit_event("checkstart", index=i + 1, total=len(targets),
+                        file=tf.name, path=os.path.realpath(str(tf)))
             print(f"── [{i + 1}/{len(targets)}] {tf.name} ──")
             r = _check_update_one(str(tf), delay=args.delay)
             results.append(r)

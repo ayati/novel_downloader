@@ -130,6 +130,96 @@ def main() -> int:
                    "1. 第1話" in text and "3. 第3話" in text, text.strip()[:40])
             win.destroy()
 
+            # ── 並び順（表示＝確認順・§8.17）──
+            saved_shelf = app._shelf
+            app._shelf = [
+                {"path": "/x/a.txt", "file": "a.txt", "title": "A", "url": "u1",
+                 "episodes": 10, "mtime": 1, "meta": {"updated": "2020-01-01"}},
+                {"path": "/x/b.txt", "file": "b.txt", "title": "B", "url": "u2",
+                 "episodes": 100, "mtime": 2, "meta": {"updated": "2026-09-20"}},
+                {"path": "/x/c.txt", "file": "c.txt", "title": "C", "url": "u3",
+                 "episodes": 500, "mtime": 3, "meta": {"updated": "2024-05-05"}},
+            ]
+            for mode, exp in (("name", ["A", "B", "C"]),
+                              ("updated", ["B", "C", "A"]),
+                              ("episodes", ["C", "B", "A"])):
+                app.settings["shelf_sort"] = mode
+                got = [r["title"] for r in app._shelf_sorted_works()]
+                ck(f"並び順 {mode}", got == exp, str(got))
+            ck("既定は更新が新しい順",
+               G.load_settings().get("shelf_sort") == "updated")
+            app.settings["shelf_sort"] = "updated"
+            app._shelf = saved_shelf
+            app._refresh_shelf_list()
+
+            # ── 1 件ずつ届いて 1 行だけ直る（§8.17）──
+            target = app._shelf_works()[0]
+            app._shelf_new = {}
+            app._refresh_shelf_list()
+            before = [e["state"].cget("text") for e in app._shelf_rows]
+            app._shelf_chk_total = len(app._shelf_works())
+            app._shelf_chk_done = 0
+            app._handle_msg(("checkstart", {"event": "checkstart", "index": 1,
+                                            "total": len(app._shelf_works()),
+                                            "file": target["file"],
+                                            "path": target["path"]}))
+            app.pump(0.2)
+            idx = app._shelf_row_index(target["path"])
+            ck("確認中の行に印が付く",
+               app._shelf_rows[idx]["icon"].cget("text") == "⏳")
+            ck("確認中だと分かる表示になる",
+               "確認中" in app._shelf_rows[idx]["state"].cget("text"),
+               app._shelf_rows[idx]["state"].cget("text"))
+            others = [i for i in range(len(app._shelf_rows)) if i != idx]
+            ck("他の行は変わらない",
+               all(app._shelf_rows[i]["state"].cget("text") == before[i]
+                   for i in others))
+
+            app._handle_msg(("checkresult", {
+                "event": "checkresult", "path": target["path"],
+                "file": target["file"], "title": target.get("title", ""),
+                "author": "", "existing": 1, "total": 9, "new": 8,
+                "status": "updated", "error": ""}))
+            app.pump(0.2)
+            ck("結果が届いた行だけ新着になる",
+               "8" in app._shelf_rows[idx]["state"].cget("text"),
+               app._shelf_rows[idx]["state"].cget("text"))
+            ck("その行の『続きを取得』が押せるようになる",
+               app._shelf_rows[idx]["button"].cget("state") == "normal")
+            ck("結果待ちの行は押せないまま",
+               all(app._shelf_rows[i]["button"].cget("state") == "disabled"
+                   for i in others))
+            ck("まとめ取得ボタンが出る", bool(app.btn_shelf_all.winfo_ismapped()))
+
+            # 失敗した作品は失敗と分かる
+            app._handle_msg(("checkresult", {
+                "event": "checkresult", "path": app._shelf_works()[1]["path"],
+                "file": "x", "title": "", "author": "", "existing": 0,
+                "total": 0, "new": 0, "status": "error", "error": "だめ"}))
+            app.pump(0.2)
+            j = app._shelf_row_index(app._shelf_works()[1]["path"])
+            ck("確認できなかった行が分かる",
+               "確認できず" in app._shelf_rows[j]["state"].cget("text"),
+               app._shelf_rows[j]["state"].cget("text"))
+
+            # ── 中止できる（§8.17）──
+            ck("ふだんは『新着チェック』", "中止" not in app.btn_shelf_check.cget("text"))
+            app._shelf_stop = False
+            app.btn_shelf_check.configure(text=app._t("shelf_check_stop"),
+                                          command=app._shelf_check_cancel)
+            app._shelf_check_cancel()
+            ck("中止を押すと止める要求が立つ", app._shelf_stop is True)
+            app._shelf_chk_done = 2
+            app._shelf_check_finished(0)
+            app.pump(0.2)
+            ck("中止後はボタンが戻る",
+               "中止" not in app.btn_shelf_check.cget("text")
+               and app.btn_shelf_check.cget("state") == "normal")
+            ck("どこまで確認したか残る",
+               "2" in app.lbl_shelf_status.cget("text"),
+               app.lbl_shelf_status.cget("text"))
+            ck("中止しても届いた結果は消えない", app._shelf_new_count() >= 1)
+
             # ── 走査失敗は「空の本棚」と区別する（§8.12 (2)）──
             # 一度成功していれば、失敗しても**直前の一覧を捨てない**。古くても
             # 妥当な行が残っている方が、空として扱って重複判定を壊すより安全

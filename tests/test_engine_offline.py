@@ -113,6 +113,26 @@ def main() -> int:
         ck("_load_existing_txt と話数が一致する",
            len(N._load_existing_txt(path)[1]) == 3)
 
+    # ── 一括チェックの並び順（§8.17）──
+    with tempfile.TemporaryDirectory() as d:
+        from pathlib import Path
+        #        名前順 / 更新日 / 話数
+        make_work_txt(d, "a.txt", "A", "n0001aa", 2,
+                      {"updated": "2020-01-01", "episode_count": 10})
+        make_work_txt(d, "b.txt", "B", "n0002bb", 2,
+                      {"updated": "2026-09-20", "episode_count": 100})
+        make_work_txt(d, "c.txt", "C", "n0003cc", 2,
+                      {"updated": "2024-05-05", "episode_count": 500})
+        files = sorted(Path(d).glob("*.txt"))
+        for mode, exp in (("name", ["a.txt", "b.txt", "c.txt"]),
+                          ("updated", ["b.txt", "c.txt", "a.txt"]),
+                          ("episodes", ["c.txt", "b.txt", "a.txt"])):
+            got = [q.name for q in N._order_txt_files(list(files), mode)]
+            ck(f"確認順 {mode}", got == exp, str(got))
+        ck("知らない並び順は元のまま",
+           [q.name for q in N._order_txt_files(list(files), "zzz")]
+           == [q.name for q in files])
+
     # ── checkresult の path は realpath（§8.12 (9)）──
     with tempfile.TemporaryDirectory() as d:
         real = os.path.join(d, "real")
