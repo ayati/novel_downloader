@@ -104,6 +104,42 @@ def main() -> int:
                 wins = [w for w in app.winfo_children()
                         if w.winfo_class() == "Toplevel"]
                 ck("一覧の窓が開く", len(wins) >= 1)
+
+                # ── ここから取得（§8.16）──
+                win = wins[-1]
+                ck("受信箱の窓には『ここから取得』がある",
+                   hasattr(win, "start_button") and hasattr(win, "select_line"))
+                ck("行を選ぶまでは押せない",
+                   win.start_button.cget("state") == "disabled")
+                win.select_line(2)
+                app.pump(0.2)
+                ck("行を選ぶと押せるようになる",
+                   win.picked == 2 and win.start_button.cget("state") == "normal")
+                ck("選んだ番号がボタンに出る",
+                   "2" in win.start_button.cget("text"), win.start_button.cget("text"))
+                win.select_line(999)
+                ck("範囲外を選んでも変わらない", win.picked == 2)
+
+                app._jobs = []
+                app._proc = "busy"            # 積むだけで走らせない
+                win.start_button.cget("command")()
+                app.pump(0.2)
+                ck("ジョブが 1 件積まれる", len(app._jobs) == 1, str(len(app._jobs)))
+                if app._jobs:
+                    j = app._jobs[0]
+                    ck("ジョブに開始位置が入る", j.get("start") == 2, str(j.get("start")))
+                    cli = app._build_cli_args(j, app._collect_settings())
+                    ck("--start が CLI に載る",
+                       "--start" in cli and cli[cli.index("--start") + 1] == "2",
+                       " ".join(cli[:4]))
+                    ck("--end は付けない（常に最新まで）", "--end" not in cli)
+                    ck("受信箱由来の印が残る（done へ移すため）",
+                       j.get("inbox_file") == item["path"])
+                    app._refresh_queue_list()
+                    ck("一覧の行に開始位置が出る",
+                       "2" in app._queue_rows[0]["label"].cget("text"),
+                       app._queue_rows[0]["label"].cget("text"))
+                app._proc = None
                 for w in wins:
                     try:
                         w.destroy()

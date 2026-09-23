@@ -83,6 +83,20 @@ def main() -> int:
        ex("見つけた https://a.example/1。") == ["https://a.example/1"])
     ck("URL が無ければ空", ex("ただのメモ") == [])
 
+    # ── 外部 URL を開くゲート（§8.16）──
+    ck("http(s) 以外は開かない",
+       all(G.open_external_url(u) is False for u in
+           ("file:///etc/passwd", "javascript:alert(1)", "ftp://x/y", "", None)))
+    import webbrowser
+    opened, real_open = [], webbrowser.open
+    webbrowser.open = lambda u, *a, **k: opened.append(u)
+    try:
+        ok_open = G.open_external_url("https://example.com/x")
+    finally:
+        webbrowser.open = real_open
+    ck("http(s) ならブラウザに渡す",
+       ok_open is True and opened == ["https://example.com/x"], str(opened))
+
     # ── パネルの高さ配分（§8.5）──
     A = G.NovelDownloaderApp._allocate_heights
     spec = [[None, 150, 90, 40]] * 3 + [[None, 300, 120, 60]]

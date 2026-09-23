@@ -27,6 +27,7 @@ import threading
 import shutil
 import subprocess
 import tempfile
+import webbrowser
 from pathlib import Path
 
 try:
@@ -296,6 +297,10 @@ UI = {
     "shelf_list_sub": ("手元に {n} 話　{author}", "{n} episodes here　{author}"),
     "shelf_last": ("最後の話: {t}", "Last episode: {t}"),
     "inbox_list_sub": ("サイトに {n} 話　{author}", "{n} episodes on the site　{author}"),
+    "ep_open_site": ("🔗 元サイトを開く", "🔗 Open on the site"),
+    "ep_pick_hint": ("行を選ぶと ここから取得", "Pick a line to fetch from"),
+    "ep_start_from": ("⬇ {n} 番目から取得", "⬇ Fetch from #{n}"),
+    "q_from": ("（{n} 番目から）", " (from #{n})"),
     "tip_inbox_list": ("話の一覧を見る（サイトに問い合わせます）",
                        "Show the episode list (queries the site)"),
     "tip_inbox_have": ("取得済みです。一覧は本棚から見られます",
@@ -725,6 +730,22 @@ def dry_run_info(url: str, timeout=180) -> dict:
         if ev.get("event") == "workinfo":
             info = ev
     return info
+
+
+def open_external_url(url: str) -> bool:
+    """作品ページをブラウザで開く。**http(s) 以外は開かない**（§8.16）。
+
+    ここに来る URL は `.txt` の `底本URL：` や受信箱のメモ由来で、こちらが
+    作った値ではない。`file://` や `javascript:` をブラウザに渡さないための門で、
+    `_open_epub_path()` の拡張子ゲートと同じ考え方。
+    """
+    if not str(url or "").lower().startswith(("http://", "https://")):
+        return False
+    try:
+        webbrowser.open(url)
+        return True
+    except Exception:
+        return False
 
 
 def episode_list(target: str, from_file: bool = False, timeout=300) -> dict:
@@ -1666,31 +1687,89 @@ class NovelDownloaderApp(ctk.CTk):
             status.configure(text=self._t("shelf_list_fail"))
             return
         status.configure(text="")
+        inbox = (where == "inbox")
         self._show_episode_window(
             info.get("title") or row.get("title", ""),
             self._t(sub_key, n=info.get("total", 0),
                     author=info.get("author") or row.get("author", "")),
-            info["titles"])
+            info["titles"],
+            source_url=(row.get("resolved") or row.get("url", "")),
+            # **「ここから取得」は受信箱だけ。** 本棚は手元にある作品なので、
+            # 続きは --append が担う。ここで部分ファイルを作らせない（§8.16）
+            on_start=((lambda n, it=row: self._inbox_fetch_from(it, n))
+                      if inbox else None))
 
-    def _show_episode_window(self, title: str, subtitle: str, titles: list):
-        """話一覧の窓。
+    def _show_episode_window(self, title: str, subtitle: str, titles: list,
+                             *, source_url: str = "", on_start=None):
+        """話一覧の窓（§8.15 / §8.16）。
 
         **ラベルを話数ぶん並べない。** 900 話で CTkLabel を 900 個作ると生成に
         数秒かかり操作感が壊れる。1 枚のテキストボックスに流し込む
-        （選択・コピーもできる・§8.15）。
+        （選択・コピーもできる）。
+
+        `source_url` があれば「元サイトを開く」を出す。`on_start` を渡すと
+        行をクリックして「ここから取得」できる（受信箱だけ・本棚は `--append`
+        が続きを担うので出さない）。
         """
         win = ctk.CTkToplevel(self)
         win.title(self._t("shelf_list_title", title=self._ellipsis(title, 40)))
-        win.geometry("460x540")
+        win.geometry("480x560")
         win.transient(self)
         ctk.CTkLabel(win, text=subtitle, anchor="w", text_color="gray",
                      font=ctk.CTkFont(size=11)).pack(fill="x", padx=12, pady=(10, 2))
         box = ctk.CTkTextbox(win, wrap="none")
-        box.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        box.pack(fill="both", expand=True, padx=12, pady=(0, 6))
         w = len(str(len(titles)))
         box.insert("end", "\n".join(f"{i:{w}}. {t}"
                                     for i, t in enumerate(titles, 1)))
         box.configure(state="disabled")
+        # 明暗どちらの外観でも読める固定色（tag_config はタプル色を受けない）
+        box.tag_config("pick", background="#3b6ea5", foreground="#ffffff")
+        win.episode_box = box          # テストから中身を確かめる用
+
+        foot = ctk.CTkFrame(win, fg_color="transparent")
+        foot.pack(fill="x", padx=12, pady=(0, 12))
+        win.site_button = None
+        if source_url:
+            win.site_button = ctk.CTkButton(
+                foot, text=self._t("ep_open_site"), height=28, width=150,
+                fg_color="gray40",
+                command=lambda u=source_url: open_external_url(u))
+            win.site_button.pack(side="left")
+
+        win.picked = 0
+        if on_start is not None:
+            btn = ctk.CTkButton(foot, text=self._t("ep_pick_hint"), height=28,
+                                state="disabled")
+            btn.pack(side="right")
+            win.start_button = btn
+
+            def fetch():
+                if win.picked:
+                    on_start(win.picked)
+                    win.destroy()
+
+            def select(n: int):
+                """n 行目を選んだ状態にする。"""
+                if not 1 <= n <= len(titles):
+                    return
+                box.tag_remove("pick", "1.0", "end")
+                box.tag_add("pick", f"{n}.0", f"{n}.end")
+                win.picked = n
+                btn.configure(text=self._t("ep_start_from", n=n), state="normal",
+                              command=fetch)
+
+            def pick(event):
+                # state="disabled" でも index("@x,y") は効くので、
+                # 読み取り専用のまま行を選べる
+                try:
+                    select(int(box.index(f"@{event.x},{event.y}").split(".")[0]))
+                except Exception:
+                    pass
+
+            box.bind("<Button-1>", pick, add="+")
+            # クリック座標の計算とは切り離して確かめられるようにしておく
+            win.select_line = select
         return win
 
     # ── 続きを取得（kind="append" のジョブとしてキューへ）────
@@ -2068,6 +2147,21 @@ class NovelDownloaderApp(ctk.CTk):
         target = it.get("resolved") or it["url"]
         self._queue.put(("episodelist", "inbox", it, episode_list(target)))
 
+    def _inbox_fetch_from(self, it, start: int):
+        """一覧で選んだ話から**最新まで**を取得する（§8.16）。
+
+        サイトで既に読んだ分を飛ばす用途。終わりは常に最新でよいので
+        `--end` は付けない。
+        """
+        job = self._make_job(it.get("resolved") or it["url"],
+                             info=it.get("site_info"))
+        if it.get("title"):
+            job["label"] = it["title"]
+        job["site_name"] = it.get("site_name") or job.get("site_name") or ""
+        job["inbox_file"] = it["path"]
+        job["start"] = max(1, int(start))
+        self._start_or_enqueue(self._add_jobs([job]))
+
     def _inbox_fetch_selected(self, auto: bool = False):
         items = [it for it in self._inbox
                  if it["url"] and it["sel"].get() and not it["have"]]
@@ -2388,6 +2482,7 @@ class NovelDownloaderApp(ctk.CTk):
             # ここで埋めないと、その行だけサイト名が出ない
             "site_name": (info or {}).get("display_name") or "",
             "info": info,          # --detect-site の結果。実行時に使い回す
+            "start": 0,            # --start（0 = 先頭から・§8.16）
             "status": "waiting",   # waiting/running/done/error/skipped/aborted
             "detail": "",
             "epub": None,
@@ -2615,6 +2710,8 @@ class NovelDownloaderApp(ctk.CTk):
             label = "%s  [%s]" % (self._ellipsis(label, 30), job["site_name"])
         else:
             label = self._ellipsis(label)
+        if job.get("start"):
+            label += self._t("q_from", n=job["start"])
         row["label"].configure(text=label)
         row["status"].configure(text=self._job_status_text(job))
 
@@ -2869,6 +2966,10 @@ class NovelDownloaderApp(ctk.CTk):
             args.append("--toc-at-end")
         if s.get("font_path") and os.path.isfile(s["font_path"]):
             args += ["--font", s["font_path"]]
+        if job.get("start"):
+            # 一覧で選んだ話から取得する。**単位はサイトによって違う**（話/章/ページ）が、
+            # 一覧に出ている行と --start の刻みは一致するので利用者は意識しないで済む
+            args += ["--start", str(job["start"])]
         if s.get("no_inline_images"):
             args.append("--no-inline-images")
         args += ["--delay", str(s["delay"]), "--encoding", s["encoding"]]

@@ -105,6 +105,19 @@ def main() -> int:
                 except Exception:
                     pass
 
+            # 本棚の窓には「ここから取得」を出さない（続きは --append が担う）
+            wshelf = app._show_episode_window("作品A", "手元に 3 話",
+                                              ["第1話"], source_url=row.get("url", ""))
+            app.pump(0.2)
+            ck("本棚の窓に『ここから取得』は出さない",
+               not hasattr(wshelf, "start_button"))
+            ck("元サイトを開くボタンは出す", wshelf.site_button is not None)
+            w2 = app._show_episode_window("作品A", "手元に 3 話", ["第1話"])
+            app.pump(0.1)
+            ck("URL が無ければ出さない", w2.site_button is None)
+            w2.destroy()
+            wshelf.destroy()
+
             win = app._show_episode_window("作品A", "手元に 3 話",
                                            ["第1話", "第2話", "第3話"])
             app.pump(0.2)
