@@ -24,6 +24,7 @@ import json
 import time
 import queue
 import threading
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -77,6 +78,11 @@ DETAIL_MIN_PX   = 120
 DETAIL_FLOOR_PX = 60
 QUEUE_MIN_PX    = 90           # 一覧も詰められる（詰めた分は中でスクロール）
 QUEUE_FLOOR_PX  = 40
+# 受信箱・本棚（§8.3 / §8.4）も同じスクロール一覧なので QUEUE_* を共用する。
+# 別の定数を建てても値が同じまま増えるだけで、ずれたときに理由が説明できない
+
+# ジョブ種別 → 行頭の記号。本棚の「続きを取得」は kind="append"
+_JOB_KIND_ICON = {"download": "", "append": "＋"}
 FIT_MARGIN_PX   = 24
 
 # ジョブ状態 → 行頭の記号（design_gui_v2 §7.3）
@@ -102,11 +108,22 @@ ROW_STATUS     = 4
 ROW_BAR        = 5
 ROW_QUEUE      = 6
 ROW_AUX        = 7
-ROW_OUTDIR     = 8
-ROW_DETAIL_BTN = 9
-ROW_DETAIL     = 10
-ROW_LOG        = 11
-ROW_GRIP       = 12
+# 受信箱・本棚は詳細設定と同じ「▸ 見出しを押すと開く」折りたたみ節（§8.5）。
+# CTkTabview にしないのは、タブ化するとルートの winfo_reqheight が全タブの
+# 最大になり、_fit_window の高さ配分が壊れるため（§8.0 (3)）
+# 詳細ログは**補助ボタン行の直下**に置く。以前は詳細設定パネルより下にあり、
+# 「詳細を表示」を押すと詳細設定の中（実際は下）に出ているように見えて、
+# 何を開いたのか分からなかった（実機確認での指摘・§8.9）
+ROW_LOG_BTN    = 8
+ROW_LOG        = 9
+ROW_GRIP       = 10
+ROW_INBOX_BTN  = 11
+ROW_INBOX      = 12
+ROW_SHELF_BTN  = 13
+ROW_SHELF      = 14
+ROW_OUTDIR     = 15
+ROW_DETAIL_BTN = 16
+ROW_DETAIL     = 17
 
 # ePub として開いてよい拡張子（_open_epub の実行ゲート）
 _EPUB_EXTS = (".epub", ".kepub.epub")
@@ -139,8 +156,6 @@ UI = {
     "retry": ("↓ もう一度", "↓ Try again"),
     "open_folder": ("📂 フォルダを開く", "📂 Open folder"),
     "sites": ("対応サイトを見る", "Supported sites"),
-    "show_log": ("詳細を表示", "Show details"),
-    "hide_log": ("詳細を隠す", "Hide log"),
     "adv_closed": ("▸ 詳細設定（保存先・表紙などの変更）", "▸ Advanced (folder, cover, …)"),
     "adv_open": ("▾ 詳細設定（保存先・表紙などの変更）", "▾ Advanced (folder, cover, …)"),
     "save_prefix": ("保存先： ", "Save to: "),
@@ -238,6 +253,53 @@ UI = {
     "queue_stopped": ("■ 中止しました（完了 {ok} / 失敗 {ng} / 未処理 {rest}）",
                       "■ Stopped (done {ok} / failed {ng} / pending {rest})"),
     "retry_failed": ("↻ 失敗した {n} 件を再試行", "↻ Retry {n} failed"),
+    "logsec_closed": ("▸ 📄 詳細ログ", "▸ 📄 Details"),
+    "logsec_open":   ("▾ 📄 詳細ログ", "▾ 📄 Details"),
+    "site_short": ("短縮URL — 開いてから判定します", "Short URL — will resolve on download"),
+    # ── 受信箱（§8.3）──────────────────────────────────
+    "inbox_closed": ("▸ 📥 受信箱", "▸ 📥 Inbox"),
+    "inbox_open":   ("▾ 📥 受信箱", "▾ 📥 Inbox"),
+    "inbox_count":  ("（{n}件）", " ({n})"),
+    "inbox_reload": ("🔄 取り込む", "🔄 Import"),
+    "inbox_pick":   ("フォルダを選ぶ", "Choose folder"),
+    "inbox_nodir":  ("監視フォルダが未設定です。右の「フォルダを選ぶ」で指定してください。",
+                     "No watch folder set. Use “Choose folder” on the right."),
+    "inbox_empty":  ("新しいファイルはありません。", "No new files."),
+    "inbox_nourl":  ("URL が見つかりません", "No URL found"),
+    "inbox_have":   ("取得済み", "Already downloaded"),
+    "inbox_checking": ("確認中…", "Checking…"),
+    "inbox_fetch":  ("✅ 選んだ {n} 件を取得", "✅ Fetch {n} selected"),
+    "inbox_fetch0": ("✅ 取得", "✅ Fetch"),
+    "inbox_moved":  ("[受信箱] {name} を done へ移しました", "[inbox] moved {name} to done"),
+    "inbox_movefail": ("[受信箱] {name} を移動できませんでした（次回に持ち越します）",
+                       "[inbox] could not move {name} (will retry next time)"),
+    "inbox_ng":     ("未対応のサイト", "Unsupported site"),
+    "inbox_scanned": ("　最終確認 {t}", "  last checked {t}"),
+    "inbox_scan_min": ("受信箱を見に行く間隔（分・0で無効）",
+                       "Check the inbox every N minutes (0 = off)"),
+    "inbox_auto":   ("受信箱に入った作品を自動で取得する",
+                     "Automatically fetch works dropped into the inbox"),
+    "inbox_dir":    ("受信箱フォルダ", "Inbox folder"),
+    # ── 本棚（§8.4）────────────────────────────────────
+    "shelf_closed": ("▸ 📚 本棚", "▸ 📚 Bookshelf"),
+    "shelf_open":   ("▾ 📚 本棚", "▾ 📚 Bookshelf"),
+    "shelf_count":  ("（{n}件）", " ({n})"),
+    "shelf_count_new": ("（{n}件・新着{u}）", " ({n}, {u} updated)"),
+    "shelf_check":  ("🔄 新着チェック", "🔄 Check for updates"),
+    "shelf_checking": ("確認中 {n}/{m}…", "Checking {n}/{m}…"),
+    "shelf_empty":  ("保存先にダウンロード済みの作品がありません。",
+                     "No downloaded works in the output folder."),
+    "shelf_new":    ("🆕 +{n}", "🆕 +{n}"),
+    "shelf_latest": ("最新", "Up to date"),
+    "shelf_unknown": ("未チェック", "Not checked"),
+    "shelf_append": ("続きを取得", "Get new episodes"),
+    "shelf_append_all": ("✅ 新着のある {n} 件をまとめて取得", "✅ Get updates for {n} works"),
+    "shelf_eps":    ("{n}話", "{n} eps"),
+    "shelf_busy":   ("ダウンロード中はチェックできません。", "Cannot check while downloading."),
+    "shelf_scan_fail": ("本棚を読み込めませんでした。もう一度お試しください。",
+                        "Could not read the bookshelf. Please try again."),
+    "inbox_need_shelf": ("本棚を読めなかったため、取得済みかどうかを判定できませんでした。",
+                         "Could not read the bookshelf, so downloaded works cannot be identified."),
     "close_title": ("確認", "Confirm"),
     "confirm_close": ("ダウンロードが {n} 件残っています。終了しますか？",
                       "{n} download(s) still pending. Quit anyway?"),
@@ -353,6 +415,12 @@ def default_settings() -> dict:
         "auto_paste": True,            # クリップボードの URL を自動で入れる（§5.4）
         "open_folder_on_done": True,   # 完了時にフォルダを開く（§6）
         "window_geometry": "",         # ウィンドウ位置・サイズの記憶（§6）
+        # design_gui_v2 §8.6
+        "inbox_dir": "",               # 受信箱の監視フォルダ（既定なし・§8.3）
+        "inbox_auto": False,           # 取り込んだ作品を自動取得する（既定 OFF・§8.3）
+        "inbox_scan_min": 5,           # 受信箱を見に行く間隔（分・0 で無効・§8.10）
+        "inbox_open": False,           # 受信箱の節を開いた状態で起動する
+        "shelf_open": False,           # 本棚の節を開いた状態で起動する
     }
 
 
@@ -406,6 +474,16 @@ def load_settings() -> dict:
         s["ui_lang"] = "ja"
     for k in ("auto_paste", "open_folder_on_done"):
         s[k] = bool(s.get(k, True))
+    for k in ("inbox_auto", "inbox_open", "shelf_open"):
+        s[k] = bool(s.get(k, False))
+    try:
+        s["inbox_scan_min"] = max(0, min(int(s.get("inbox_scan_min", 5)), 1440))
+    except Exception:
+        s["inbox_scan_min"] = 5
+    # **inbox_dir は存在しなくても消さない。** 外付け・クラウドが未マウントの
+    # ままで起動すると一時的に見えないだけで、ここで空にすると次の _persist() が
+    # その空を保存してしまい**設定が永久に失われる**。使えるかどうかは
+    # 走査の直前（_inbox_maybe_scan / _inbox_reload）で見る
     geo = s.get("window_geometry") or ""
     s["window_geometry"] = geo if _RE_GEOMETRY.match(str(geo)) else ""
     return s
@@ -457,6 +535,108 @@ def list_sites():
         return json.loads(line)
     except Exception:
         return []
+
+
+def canon_url(url: str) -> str:
+    """重複判定用に URL を畳む（design_gui_v2 §8.12）。
+
+    エンジンの `_find_txt_by_url` は `rstrip("/")` して比べている。GUI 側も
+    揃えないと、**末尾スラッシュの有無や大文字の ncode だけで「未取得」に化け**、
+    自動取得が既にある作品を第1話から落とし直して `.txt` を上書きする。
+
+    対応 17 サイトの作品 ID は数字・16進・なろうの ncode（大小区別なし）で、
+    大小で別作品になるものが無いため、まるごと小文字化してよい。
+    """
+    return (url or "").strip().rstrip("/").lower()
+
+
+def is_unsupported(info) -> bool:
+    """`--detect-site` の結果が「確かに未対応」かを返す（design_gui_v2 §8.8）。
+
+    **`site is None` だけで未対応と決めてはいけない。** `--detect-site` は
+    オフライン契約なので短縮URL（`share.google/…` 等）の先を判定できず、
+    必ず `site: null` を返す。エンジン本体は `expand_short_url()` で展開できるので、
+    ここで弾くと**実際には落とせる URL をエンジンを起動する前に捨てる**ことになる
+    （§3.4 でハーメルンについて直したのと同じ失敗）。
+    """
+    if not info:
+        return True
+    return info.get("site") is None and not info.get("short_url")
+
+
+def shelf_scan(dir_path: str, timeout=180) -> list:
+    """--shelf-scan を呼び本棚の行リストを返す。失敗時 []（design_gui_v2 §8.1b）。
+
+    青空文庫書式の解析を GUI 側に持たないのが要点。話数のカウントは
+    区切り線・改ページ・奥付切り落としの合わせ技で、書式が変わると黙ってずれる。
+    既定のタイムアウトが長いのは、1 作品 4MB 級の .txt を全部読むため。
+    """
+    try:
+        out = _run_capture(["--shelf-scan", dir_path], timeout=timeout)
+        line = [ln for ln in out.splitlines() if ln.strip()][-1]
+        rows = json.loads(line)
+        return rows if isinstance(rows, list) else None
+    except Exception:
+        # **失敗は None。空リストを返してはいけない**（design_gui_v2 §8.12）。
+        # 呼び出し側が「本棚は空」と解釈すると、受信箱の重複判定が全滅し、
+        # 自動取得が取得済みの作品を丸ごと落とし直す
+        return None
+
+
+# 受信箱のファイルは「URL を書いたメモ」なので、これを超えるものは読まない。
+# 監視フォルダにはスクリーンショット等の巻き添えファイルが普通に入る（実例あり）
+INBOX_MAX_BYTES = 1 << 20      # 1MiB
+
+
+def read_text_any(path: str) -> str:
+    """受信箱のファイルを読む。UTF-8（BOM 可）→ cp932 の順（design_gui_v2 §8.3）。
+
+    スマホから投げたメモは UTF-8 が通常だが、Windows のメモ帳由来は cp932 がある。
+
+    **画像などのバイナリを読まされる前提で書くこと。** 監視フォルダには
+    スクリーンショットが一緒に置かれることがあり、cp932 は多くのバイト列を
+    黙って復号してしまうので、NUL を含む結果はテキストでないとみなして捨てる。
+    """
+    try:
+        if os.path.getsize(path) > INBOX_MAX_BYTES:
+            return ""
+    except OSError:
+        return ""
+    for enc in ("utf-8-sig", "cp932"):
+        try:
+            with open(path, "r", encoding=enc) as f:
+                text = f.read()
+        except (UnicodeDecodeError, LookupError):
+            continue
+        except OSError:
+            return ""
+        return "" if "\x00" in text else text
+    return ""
+
+
+def dry_run_info(url: str, timeout=180) -> dict:
+    """`--dry-run --progress-json` を叩いて workinfo を返す。失敗時 {}。
+
+    受信箱が「出先で投げた URL が何の作品か」を取得前に見せるために使う
+    （design_gui_v2 §8.3）。**人間向け表示は読まない。** workinfo イベントは
+    そのために足したもの（design_progress_json.md §3.1）。
+    """
+    try:
+        out = _run_capture([url, "--dry-run", "--progress-json"], timeout=timeout)
+    except Exception:
+        return {}
+    info = {}
+    for ln in out.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            ev = json.loads(ln)
+        except Exception:
+            continue
+        if ev.get("event") == "workinfo":
+            info = ev
+    return info
 
 
 def engine_version() -> str:
@@ -590,6 +770,27 @@ class NovelDownloaderApp(ctk.CTk):
         self._jobs = []
         self._job_i = -1               # 実行中ジョブの添字（-1 = 未開始）
         self._queue_settings = None    # キュー開始時に固めた設定（§7.10）
+        # ── 受信箱・本棚（design_gui_v2 §8）──
+        self._shelf = []               # --shelf-scan の行（そのまま保持）
+        self._shelf_new = {}           # path → checkresult（新着チェックの結果）
+        self._shelf_open = False
+        self._shelf_loaded = False     # 一度でも走査したか（開いた時に初回だけ走らせる）
+        self._shelf_scanning = False
+        self._shelf_proc = None        # 新着チェックのプロセス（終了時に殺す）
+        self._shelf_rows = []
+        self._shelf_dirty = False      # 追記でずれたので走査し直したい（キュー終了後）
+        self._shelf_chk_done = 0       # checkresult の到着数（§8.2: stage は使わない）
+        self._shelf_chk_total = 0
+        self._h_before_shelf = 0
+        self._inbox = []               # 受信箱の行（URL 1 本 = 1 行）
+        self._inbox_open = False
+        self._inbox_scanning = False
+        self._inbox_rows = []
+        self._inbox_after = None       # 定期スキャンの予約（§8.10）
+        self._inbox_last_scan = 0.0    # 直近に走査した時刻（フォーカス連打よけ）
+        self._inbox_pending = False    # 本棚の走査待ちで保留中
+        self._inbox_tried = set()      # 自動取得を一度試したファイル（無限再試行よけ）
+        self._h_before_inbox = 0
 
         self.title(APP_NAME)
         self.geometry(self.settings.get("window_geometry") or "560x420")
@@ -619,6 +820,11 @@ class NovelDownloaderApp(ctk.CTk):
         self._maybe_autofill_from_clipboard()
         # エンジンの版を名乗らせる（exe 起動を伴うので別スレッド・§6）
         threading.Thread(target=self._load_engine_version, daemon=True).start()
+        # 受信箱・本棚の開閉状態を復元する（§8.5）。ウィジェットが揃ってから
+        # 走らせたいので after(0) 越しにする
+        self.after(0, self._restore_panels)
+        # 受信箱の監視（§8.10）。節の開閉に関係なく、起動時に 1 回見てから周期に入る
+        self.after(0, self._inbox_boot)
         # キュー監視
         self._poll_after = self.after(100, self._poll_queue)
         # 終了時に設定保存
@@ -726,14 +932,15 @@ class NovelDownloaderApp(ctk.CTk):
         self.btn_sites = ctk.CTkButton(self.frm_aux, text="対応サイトを見る",
                                        width=140, fg_color="gray40",
                                        command=self._show_sites)
-        self.btn_log = ctk.CTkButton(self.frm_aux, text="詳細を表示",
-                                     width=100, fg_color="gray30",
-                                     command=self._toggle_log)
         self.btn_savelog = ctk.CTkButton(self.frm_aux, text="📄 ログを保存",
                                          width=110, fg_color="gray30",
                                          command=self._save_log)
         self.btn_retry = ctk.CTkButton(self.frm_aux, text="", width=150,
                                        command=self._retry_failed)
+
+        # 受信箱・本棚の折りたたみ節（§8.3 / §8.4）
+        self._build_inbox_panel()
+        self._build_shelf_panel()
 
         # 保存先表示（小）＋ エンジン版数（右端）
         self.lbl_outdir = ctk.CTkLabel(self, text="", anchor="w",
@@ -758,6 +965,11 @@ class NovelDownloaderApp(ctk.CTk):
         # 既定の高さ。内容フィット方式では**この値がそのままログの見える量**に
         # なる（120 だと初期ウィンドウの余白に収まってしまい、開いても
         # 窓が広がらず以前より狭くなる）。足りなければ下端のグリップで伸ばせる
+        # 詳細ログの折りたたみ見出し（§8.9）。受信箱・本棚・詳細設定と同じ意匠に
+        # して「開いたものが何か」を見た目で分かるようにする。ログがあるときだけ出す
+        self.btn_logsec = self._section_button(ROW_LOG_BTN, self._toggle_log)
+        self.btn_logsec.grid_remove()
+
         self.txt_log = ctk.CTkTextbox(self, height=180)
         self.grip_log = ctk.CTkFrame(self, height=8, corner_radius=4,
                                      fg_color=("gray78", "gray32"),
@@ -837,6 +1049,18 @@ class NovelDownloaderApp(ctk.CTk):
                                                 command=self._persist)
         self.chk_auto_paste.grid(row=0, column=0, sticky="w", pady=1)
         self.chk_open_on_done.grid(row=1, column=0, sticky="w", pady=1)
+        # 受信箱を見に行く間隔（§8.10）。0 で監視を止められるようにしておく
+        scanbox = ctk.CTkFrame(beh, fg_color="transparent")
+        scanbox.grid(row=2, column=0, sticky="w", pady=(4, 1))
+        self.lbl_inbox_scan = ctk.CTkLabel(scanbox, text="", anchor="w")
+        self.lbl_inbox_scan.pack(side="left")
+        self.var_inbox_scan = ctk.StringVar(value="5")
+        self.ent_inbox_scan = ctk.CTkEntry(scanbox, textvariable=self.var_inbox_scan,
+                                           width=60)
+        self.ent_inbox_scan.pack(side="left", padx=(8, 0))
+        # Entry には command が無いので、確定の契機を自前で拾う
+        self.ent_inbox_scan.bind("<Return>", self._on_inbox_scan_changed, add="+")
+        self.ent_inbox_scan.bind("<FocusOut>", self._on_inbox_scan_changed, add="+")
 
         sep = ctk.CTkFrame(self.frm_detail, height=1, fg_color="gray70")
         sep.grid(row=9, column=0, sticky="ew", padx=12, pady=10)
@@ -887,6 +1111,719 @@ class NovelDownloaderApp(ctk.CTk):
                           width=130, command=lambda *_: self._persist()).grid(
             row=4, column=1, sticky="w", padx=(16, 0), pady=(6, 0))
 
+    # ══════════════════════════════════════════
+    #  受信箱（§8.3）と本棚（§8.4）
+    # ══════════════════════════════════════════
+    # どちらも「▸ 見出しを押すと開く」折りたたみ節で、詳細設定とまったく同じ
+    # 作りにしてある。CTkTabview にしないのは §8.0 (3) の理由（タブ化すると
+    # ルートの winfo_reqheight が全タブの最大になり _fit_window が壊れる）。
+
+    def _section_button(self, row: int, command):
+        """折りたたみ節の見出しボタン（詳細設定と同じ意匠）。"""
+        btn = ctk.CTkButton(
+            self, text="", anchor="w",
+            fg_color=("gray90", "gray25"), text_color=("gray10", "gray90"),
+            hover_color=("gray80", "gray35"), cursor="hand2", command=command)
+        btn.grid(row=row, column=0, sticky="ew", padx=16, pady=(4, 0))
+        return btn
+
+    def _build_inbox_panel(self):
+        self.btn_inbox = self._section_button(ROW_INBOX_BTN, self._toggle_inbox)
+
+        self.frm_inbox = ctk.CTkFrame(self, fg_color="transparent")
+        self.frm_inbox.grid_columnconfigure(0, weight=1)
+        head = ctk.CTkFrame(self.frm_inbox, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew")
+        head.grid_columnconfigure(0, weight=1)
+        self.lbl_inbox_status = ctk.CTkLabel(head, text="", anchor="w",
+                                             text_color="gray", wraplength=330,
+                                             justify="left",
+                                             font=ctk.CTkFont(size=11))
+        self.lbl_inbox_status.grid(row=0, column=0, sticky="ew")
+        self.btn_inbox_reload = ctk.CTkButton(head, text="", width=104, height=24,
+                                              command=self._inbox_reload)
+        self.btn_inbox_reload.grid(row=0, column=1, sticky="e", padx=(6, 0))
+        self.btn_inbox_pick = ctk.CTkButton(head, text="", width=112, height=24,
+                                            fg_color="gray40",
+                                            command=self._pick_inbox_dir)
+        self.btn_inbox_pick.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        # どのフォルダを見ているのかは画面に出しておかないと分からない。
+        # 一覧の幅を食わないようツールチップにする
+        _Tooltip(self.btn_inbox_pick,
+                 lambda: "%s: %s" % (self._t("inbox_dir"),
+                                     self.settings.get("inbox_dir") or "—"))
+
+        self.frm_inbox_list = ctk.CTkScrollableFrame(self.frm_inbox, height=QUEUE_LIST_PX)
+        self.frm_inbox_list.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.frm_inbox_list.grid_columnconfigure(1, weight=1)
+
+        foot = ctk.CTkFrame(self.frm_inbox, fg_color="transparent")
+        foot.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        foot.grid_columnconfigure(0, weight=1)
+        self.var_inbox_auto = ctk.BooleanVar(value=False)
+        self.chk_inbox_auto = ctk.CTkCheckBox(foot, text="", variable=self.var_inbox_auto,
+                                              command=self._persist)
+        self.chk_inbox_auto.grid(row=0, column=0, sticky="w")
+        self.btn_inbox_fetch = ctk.CTkButton(foot, text="", height=28,
+                                             command=self._inbox_fetch_selected)
+        self.btn_inbox_fetch.grid(row=0, column=1, sticky="e")
+
+    def _build_shelf_panel(self):
+        self.btn_shelf = self._section_button(ROW_SHELF_BTN, self._toggle_shelf)
+
+        self.frm_shelf = ctk.CTkFrame(self, fg_color="transparent")
+        self.frm_shelf.grid_columnconfigure(0, weight=1)
+        head = ctk.CTkFrame(self.frm_shelf, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew")
+        head.grid_columnconfigure(0, weight=1)
+        self.lbl_shelf_status = ctk.CTkLabel(head, text="", anchor="w",
+                                             text_color="gray", wraplength=330,
+                                             justify="left",
+                                             font=ctk.CTkFont(size=11))
+        self.lbl_shelf_status.grid(row=0, column=0, sticky="ew")
+        self.btn_shelf_check = ctk.CTkButton(head, text="", width=132, height=24,
+                                             command=self._shelf_check_updates)
+        self.btn_shelf_check.grid(row=0, column=1, sticky="e", padx=(6, 0))
+
+        self.frm_shelf_list = ctk.CTkScrollableFrame(self.frm_shelf, height=QUEUE_LIST_PX)
+        self.frm_shelf_list.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.frm_shelf_list.grid_columnconfigure(1, weight=1)
+
+        self.btn_shelf_all = ctk.CTkButton(self.frm_shelf, text="", height=28,
+                                           command=self._shelf_append_all)
+        self.btn_shelf_all.grid(row=2, column=0, sticky="e", pady=(4, 0))
+        self.btn_shelf_all.grid_remove()
+
+    def _restore_panels(self):
+        """保存された開閉状態を復元する（§8.5）。"""
+        if self.settings.get("inbox_open"):
+            self._toggle_inbox()
+        if self.settings.get("shelf_open"):
+            self._toggle_shelf()
+        self._sync_inbox_header()
+        self._sync_shelf_header()
+
+    # ── 開閉 ─────────────────────────────────────────────────
+    def _toggle_inbox(self):
+        self._inbox_open = not self._inbox_open
+        if self._inbox_open:
+            self._h_before_inbox = self._logical_size()[1]
+            self.frm_inbox.grid(row=ROW_INBOX, column=0, sticky="ew",
+                                padx=16, pady=(2, 6))
+            self._fit_window(grow_only=True)
+            if not self._inbox and not self._inbox_scanning:
+                self._inbox_reload()
+        else:
+            self.frm_inbox.grid_forget()
+            self._fit_window(restore_to=self._h_before_inbox)
+        self._sync_inbox_header()
+        self._persist()
+
+    def _toggle_shelf(self):
+        self._shelf_open = not self._shelf_open
+        if self._shelf_open:
+            self._h_before_shelf = self._logical_size()[1]
+            self.frm_shelf.grid(row=ROW_SHELF, column=0, sticky="ew",
+                                padx=16, pady=(2, 6))
+            self._fit_window(grow_only=True)
+            if not self._shelf_loaded and not self._shelf_scanning:
+                self._shelf_reload()
+        else:
+            self.frm_shelf.grid_forget()
+            self._fit_window(restore_to=self._h_before_shelf)
+        self._sync_shelf_header()
+        self._persist()
+
+    # ══════════════════════════════════════════
+    #  本棚
+    # ══════════════════════════════════════════
+    def _shelf_works(self) -> list:
+        """本棚に出す行（＝底本URL を持つ .txt）だけを返す。
+
+        `--shelf-scan` は URL の無い .txt も返してくる（ユーザーが保存先に
+        置いた無関係なテキスト）。**出すかどうかは GUI 側の判断**（§8.1b）。
+        """
+        return [r for r in self._shelf if r.get("url")]
+
+    def _shelf_new_count(self) -> int:
+        return sum(1 for r in self._shelf_works()
+                   if (self._shelf_new.get(r["path"]) or {}).get("new", 0) > 0)
+
+    def _sync_shelf_header(self):
+        n = len(self._shelf_works())
+        u = self._shelf_new_count()
+        label = self._t("shelf_open" if self._shelf_open else "shelf_closed")
+        if u:
+            label += self._t("shelf_count_new", n=n, u=u)
+        elif n or self._shelf_loaded:
+            label += self._t("shelf_count", n=n)
+        self.btn_shelf.configure(text=label)
+        self.btn_shelf_check.configure(text=self._t("shelf_check"))
+
+    def _shelf_reload(self):
+        """--shelf-scan を別スレッドで叩いて一覧を作り直す。"""
+        if self._shelf_scanning:
+            return
+        d = self.settings.get("output_dir", "")
+        self._shelf_scanning = True
+        self.lbl_shelf_status.configure(text=self._t("inbox_checking"))
+        threading.Thread(target=self._shelf_scan_worker, args=(d,), daemon=True).start()
+
+    def _shelf_scan_worker(self, d: str):
+        rows = shelf_scan(d) if d and os.path.isdir(d) else []
+        self._queue.put(("shelf", rows))
+
+    def _apply_shelf_rows(self, rows):
+        self._shelf_scanning = False
+        if rows is None:
+            # 走査に失敗した。**空の本棚として扱ってはいけない**（§8.12）。
+            # _shelf_loaded を立てないので次回やり直す。保留中の受信箱走査も、
+            # 重複判定の土台が無いまま走らせず、ここで畳む
+            self.lbl_shelf_status.configure(text=self._t("shelf_scan_fail"))
+            if self._inbox_pending:
+                self._inbox_pending = False
+                self._inbox_scanning = False
+                self.lbl_inbox_status.configure(text=self._t("inbox_need_shelf"))
+            return
+        self._shelf = rows
+        self._shelf_loaded = True
+        # 消えたファイルのチェック結果は落とす（残すと存在しない行の新着が数に乗る）
+        alive = {r["path"] for r in rows}
+        self._shelf_new = {k: v for k, v in self._shelf_new.items() if k in alive}
+        self._refresh_shelf_list()
+        self._sync_shelf_header()
+        if self._inbox_pending:
+            # 本棚待ちで保留していた受信箱の走査を、ここで初めて走らせる（§8.10）
+            self._inbox_pending = False
+            d = self.settings.get("inbox_dir", "")
+            if d and os.path.isdir(d):
+                self._inbox_start_worker(d)
+            else:
+                self._inbox_scanning = False
+
+    def _refresh_shelf_list(self):
+        for w in self.frm_shelf_list.winfo_children():
+            w.destroy()
+        self._shelf_rows = []
+        works = self._shelf_works()
+        if not works:
+            self.lbl_shelf_status.configure(text=self._t("shelf_empty"))
+            self.btn_shelf_all.grid_remove()
+            return
+        self.lbl_shelf_status.configure(text="")
+        for i, r in enumerate(works):
+            cr = self._shelf_new.get(r["path"]) or {}
+            new = int(cr.get("new", 0) or 0)
+            ctk.CTkLabel(self.frm_shelf_list, text="●" if new else "○",
+                         width=18, anchor="w").grid(row=i, column=0, sticky="w",
+                                                    padx=(2, 4), pady=1)
+            name = self._ellipsis(r.get("title") or r.get("file", ""), 26)
+            if r.get("display_name"):
+                name = "%s  [%s]" % (name, r["display_name"])
+            ctk.CTkLabel(self.frm_shelf_list, text=name, anchor="w",
+                         font=ctk.CTkFont(size=11)).grid(row=i, column=1,
+                                                         sticky="ew", pady=1)
+            ctk.CTkLabel(self.frm_shelf_list,
+                         text=self._t("shelf_eps", n=r.get("episodes", 0)),
+                         anchor="e", text_color="gray",
+                         font=ctk.CTkFont(size=11)).grid(row=i, column=2,
+                                                         sticky="e", padx=(6, 4), pady=1)
+            if new:
+                state = self._t("shelf_new", n=new)
+                color = ("#1a7f37", "#3fb950")
+            elif cr:
+                state, color = self._t("shelf_latest"), "gray"
+            else:
+                state, color = self._t("shelf_unknown"), "gray"
+            ctk.CTkLabel(self.frm_shelf_list, text=state, anchor="e",
+                         text_color=color, font=ctk.CTkFont(size=11)).grid(
+                             row=i, column=3, sticky="e", padx=(4, 4), pady=1)
+            btn = ctk.CTkButton(self.frm_shelf_list, text=self._t("shelf_append"),
+                                width=92, height=22, font=ctk.CTkFont(size=11),
+                                command=lambda row=r: self._shelf_append([row]))
+            btn.grid(row=i, column=4, sticky="e", padx=(4, 2), pady=1)
+            if not new:
+                btn.configure(state="disabled", fg_color="gray40")
+            self._shelf_rows.append({"row": r, "button": btn})
+        n_new = self._shelf_new_count()
+        if n_new:
+            self.btn_shelf_all.configure(text=self._t("shelf_append_all", n=n_new))
+            self.btn_shelf_all.grid()
+        else:
+            self.btn_shelf_all.grid_remove()
+
+    # ── 新着チェック（--check-update-dir + checkresult）──────
+    def _shelf_check_updates(self):
+        """本棚の全作品の新着をまとめて確認する（§8.4）。
+
+        **stage / progress は見ない。** ディレクトリモードでは作品ごとに
+        繰り返されるので全体進捗にならない（design_progress_json.md §3.3）。
+        数えるのは checkresult の到着数。
+        """
+        if self._proc is not None or self._shelf_proc is not None:
+            self.lbl_shelf_status.configure(text=self._t("shelf_busy"))
+            return
+        d = self.settings.get("output_dir", "")
+        if not (d and os.path.isdir(d)) or not self._shelf_works():
+            return
+        self._shelf_chk_total = len(self._shelf_works())
+        self._shelf_chk_done = 0
+        self.btn_shelf_check.configure(state="disabled")
+        self.lbl_shelf_status.configure(
+            text=self._t("shelf_checking", n=0, m=self._shelf_chk_total))
+        threading.Thread(target=self._shelf_check_worker, args=(d,), daemon=True).start()
+
+    def _shelf_check_worker(self, d: str):
+        try:
+            proc = subprocess.Popen(
+                engine_cmd("--check-update-dir", d, "--progress-json"),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=_engine_env(), creationflags=_CREATE_NO_WINDOW,
+                bufsize=1, universal_newlines=True, encoding="utf-8", errors="replace")
+        except Exception as e:
+            self._queue.put(("rawlog", f"[本棚] 起動失敗: {e}"))
+            self._queue.put(("shelfcheck_done", 1))
+            return
+        self._shelf_proc = proc
+        rc = 1
+        # **_read_log は使わない。** あれは進捗行と ePub 完了行を拾って
+        # ダウンロード用のイベントに変えるので、作品ごとに進捗行を出す
+        # --check-update-dir に噛ませると本棚のチェック中にダウンロードの
+        # 進捗バーとステータス行が動いてしまう
+        t_err = threading.Thread(target=self._read_log_plain, args=(proc.stderr,),
+                                 daemon=True)
+        t_err.start()
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    self._queue.put(("rawlog", line))
+                    continue
+                if ev.get("event") == "checkresult":
+                    self._queue.put(("checkresult", ev))
+            rc = proc.wait()
+        except Exception as e:
+            self._queue.put(("rawlog", f"[本棚] {e}"))
+        finally:
+            # **必ず通す。** ここを抜けないと _shelf_proc が None に戻らず、
+            # チェックボタンが無効のまま・受信箱の定期スキャンも
+            # （_inbox_maybe_scan の見送り条件に引っかかって）永久に止まる
+            t_err.join(timeout=5)
+            self._shelf_proc = None
+            self._queue.put(("shelfcheck_done", rc))
+
+    def _apply_checkresult(self, ev: dict):
+        path = ev.get("path") or ""
+        if path:
+            self._shelf_new[path] = ev
+        self._shelf_chk_done += 1
+        self.lbl_shelf_status.configure(
+            text=self._t("shelf_checking", n=self._shelf_chk_done,
+                         m=max(self._shelf_chk_total, self._shelf_chk_done)))
+
+    def _shelf_check_finished(self, _rc: int):
+        self.btn_shelf_check.configure(state="normal")
+        self.lbl_shelf_status.configure(text="")
+        self._refresh_shelf_list()
+        self._sync_shelf_header()
+
+    # ── 続きを取得（kind="append" のジョブとしてキューへ）────
+    def _shelf_append(self, rows):
+        jobs = []
+        for r in rows:
+            job = self._make_job(r["path"], kind="append")
+            job["label"] = r.get("title") or r.get("file", "")
+            job["site_name"] = r.get("display_name") or ""
+            job["info"] = {"site": r.get("site"), "display_name": r.get("display_name")}
+            job["shelf_path"] = r["path"]
+            jobs.append(job)
+        self._start_or_enqueue(self._add_jobs(jobs))
+
+    def _shelf_append_all(self):
+        rows = [r for r in self._shelf_works()
+                if (self._shelf_new.get(r["path"]) or {}).get("new", 0) > 0]
+        if rows:
+            self._shelf_append(rows)
+
+    def _shelf_after_append(self, job):
+        """追記が終わった行の新着表示を落とし、走査のやり直しを予約する（§8.4）。
+
+        **ここで shelf_scan を呼んではいけない。** `_job_finished()` は UI スレッドで
+        走るうえ、走査は本棚ぶんの .txt を全部読む（1 作品 4MB 級）。同期で呼ぶと
+        1 件追記するたびに画面が固まる。まとめ取得なら件数ぶん繰り返される。
+        走査は**キューを流し終えてから 1 回だけ**行う（`_shelf_flush_pending`）。
+        """
+        path = job.get("shelf_path")
+        if not path:
+            return
+        self._shelf_new.pop(path, None)
+        self._shelf_dirty = True
+        self._refresh_shelf_list()
+        self._sync_shelf_header()
+
+    def _shelf_flush_pending(self):
+        """キュー終了後に本棚を 1 回だけ作り直す（話数を実態へ合わせる）。"""
+        if not self._shelf_dirty:
+            return
+        self._shelf_dirty = False
+        if self._shelf_open:
+            self._shelf_reload()
+        else:
+            self._shelf_loaded = False   # 次に開いたときに読み直す
+
+    # ══════════════════════════════════════════
+    #  受信箱
+    # ══════════════════════════════════════════
+    def _sync_inbox_header(self):
+        n = len(self._inbox)
+        label = self._t("inbox_open" if self._inbox_open else "inbox_closed")
+        if n:
+            label += self._t("inbox_count", n=n)
+        self.btn_inbox.configure(text=label)
+        self.btn_inbox_reload.configure(text=self._t("inbox_reload"))
+        self.btn_inbox_pick.configure(text=self._t("inbox_pick"))
+        self.chk_inbox_auto.configure(text=self._t("inbox_auto"))
+        sel = sum(1 for it in self._inbox if it["sel"].get() and not it["have"])
+        self.btn_inbox_fetch.configure(
+            text=self._t("inbox_fetch", n=sel) if sel else self._t("inbox_fetch0"),
+            state="normal" if sel else "disabled")
+
+    def _pick_inbox_dir(self):
+        d = filedialog.askdirectory(initialdir=self.settings.get("inbox_dir") or None)
+        if not d:
+            return
+        self.settings["inbox_dir"] = d
+        save_settings(self.settings)
+        self._inbox_reload()
+
+    # ── 監視（§8.10）────────────────────────────────────────
+    # スマホからトリガーフォルダへ置いたものを、GUI を立ち上げたまま拾うための仕組み。
+    # OS のファイル監視 API は使わない。入口Bの本命は OneDrive / Google ドライブの
+    # 同期フォルダで、**同期で現れるファイルはイベントが素直に飛んでこない**ため
+    # 当てにならない。周期で見に行くほうが確実（watcher.bat の 2 秒間隔は過剰）。
+
+    def _inbox_scan_min_from_widget(self) -> int:
+        try:
+            return max(0, min(int(float(self.var_inbox_scan.get())), 1440))
+        except Exception:
+            return int(self.settings.get("inbox_scan_min", 5) or 0)
+
+    def _on_inbox_scan_changed(self, _event=None):
+        """間隔を変えたら保存して予約を取り直す（次の周期から効く）。"""
+        self._persist()
+        self.var_inbox_scan.set(str(self.settings.get("inbox_scan_min", 5)))
+        self._inbox_schedule()
+
+    def _inbox_boot(self):
+        """起動時に 1 回見てから周期スキャンに入る。"""
+        self._inbox_maybe_scan()
+        self._inbox_schedule()
+
+    def _inbox_schedule(self):
+        """次の自動スキャンを予約し直す（0 分なら止める）。"""
+        if self._inbox_after is not None:
+            try:
+                self.after_cancel(self._inbox_after)
+            except Exception:
+                pass
+            self._inbox_after = None
+        minutes = int(self.settings.get("inbox_scan_min", 5) or 0)
+        if minutes and not self._closing:
+            self._inbox_after = self.after(minutes * 60_000, self._inbox_tick)
+
+    def _inbox_tick(self):
+        self._inbox_after = None
+        if self._closing:
+            return
+        self._inbox_maybe_scan()
+        self._inbox_schedule()
+
+    def _inbox_maybe_scan(self, min_gap: float = 0.0) -> bool:
+        """条件が揃っているときだけ受信箱を見に行く。
+
+        ダウンロード中・本棚の新着チェック中は見送る。先読みの `--dry-run` が
+        同じサイトへ重ねて当たるのを避けるためで、取りこぼしても次の周期で拾える。
+        """
+        if self._closing:
+            return False
+        d = self.settings.get("inbox_dir", "")
+        if not (d and os.path.isdir(d)):
+            return False
+        if self._inbox_scanning or self._inbox_pending:
+            return False
+        if self._proc is not None or self._shelf_proc is not None:
+            return False
+        if min_gap and (time.time() - self._inbox_last_scan) < min_gap:
+            return False
+        self._inbox_reload()
+        return True
+
+    def _inbox_reload(self):
+        d = self.settings.get("inbox_dir", "")
+        if not (d and os.path.isdir(d)):
+            self._inbox = []
+            self._refresh_inbox_list()
+            self.lbl_inbox_status.configure(text=self._t("inbox_nodir"))
+            self._sync_inbox_header()
+            return
+        if self._inbox_scanning:
+            return
+        self._inbox_scanning = True
+        self.lbl_inbox_status.configure(text=self._t("inbox_checking"))
+        # **重複判定には本棚の URL が要る（§8.3）。本棚が未走査なら、その結果が
+        # 届くまで受信箱の走査を保留する。** 空の本棚のまま進めると取得済みの作品を
+        # 「未取得」と判定してしまい、自動取得が入っていると丸ごと落とし直す。
+        # 起動時スキャンでは本棚も未走査なので、ここを詰めないと毎回起きる
+        if not self._shelf_loaded:
+            self._inbox_pending = True
+            if not self._shelf_scanning:
+                self._shelf_reload()
+            return
+        self._inbox_start_worker(d)
+
+    def _inbox_start_worker(self, d: str):
+        # 末尾スラッシュ・大小の違いで「未取得」に化けないよう畳んで比べる（§8.12）
+        known = {canon_url(r["url"]) for r in self._shelf if r.get("url")}
+        threading.Thread(target=self._inbox_worker, args=(d, known), daemon=True).start()
+
+    def _inbox_worker(self, d: str, known: set):
+        """監視フォルダを読み、URL を抜き、作品情報を先読みする（§8.3）。
+
+        `--detect-site` はオフラインなので全 URL に掛けて正規化と重複判定を先に済ませ、
+        **本棚にすでにある作品にはネットワークを使わない**。
+        """
+        try:
+            self._inbox_worker_inner(d, known)
+        finally:
+            # **必ず通す。** ここを抜けないと _inbox_scanning が True のまま残り、
+            # 以後の走査が全部早期 return して受信箱が黙って死ぬ（§8.12）
+            self._queue.put(("inboxdone",))
+
+    def _inbox_worker_inner(self, d: str, known: set):
+        items = []
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            names = []
+        for name in names:
+            path = os.path.join(d, name)
+            # os.path.isdir はリンクを辿るので、シンボリックリンクは別に弾く。
+            # 受信箱は共有フォルダでありうる（§8.11）
+            if name.startswith(".") or os.path.islink(path) or os.path.isdir(path):
+                continue      # done\ はここで自然に外れる
+            urls = self._extract_urls(read_text_any(path))
+            if not urls:
+                items.append({"path": path, "file": name, "url": "",
+                              "error": "nourl"})
+                continue
+            for u in urls:
+                items.append({"path": path, "file": name, "url": u})
+        self._queue.put(("inbox", items))
+
+        seen = {}
+        for it in items:
+            u = it.get("url")
+            if not u:
+                continue
+            if u in seen:
+                self._queue.put(("inboxinfo", u, seen[u]))
+                continue
+            info = detect_site(u) or {}
+            norm = info.get("normalized_url") or u
+            have = (canon_url(norm) in known) or (canon_url(u) in known)
+            payload = {"site": info, "have": have, "url": u,
+                       "resolved": "", "work": {}}
+            # 短縮URL（share.google 等）は --detect-site では正体が分からない。
+            # --dry-run に通すとエンジンが展開し workinfo["url"] で本当の作品 URL を
+            # 返すので、**重複判定はそれを受け取ってからやり直す**（§8.8）
+            if not have and (info.get("site") or info.get("short_url")):
+                work = dry_run_info(norm)
+                payload["work"] = work
+                resolved = work.get("url") or ""
+                if resolved and resolved != norm:
+                    payload["resolved"] = resolved
+                    payload["have"] = canon_url(resolved) in known
+                    # 展開後の URL でサイト名を取り直す（オフライン・即時）
+                    payload["site"] = detect_site(resolved) or info
+                time.sleep(1.0)     # 先読みでもサイトに連打しない
+            seen[u] = payload
+            self._queue.put(("inboxinfo", u, payload))
+
+    def _apply_inbox_items(self, items):
+        self._inbox = []
+        for it in items:
+            self._inbox.append({
+                "path": it["path"], "file": it["file"], "url": it.get("url", ""),
+                "error": it.get("error", ""), "title": "", "author": "",
+                "total": 0, "unit": "", "site_name": "", "site_info": None,
+                "resolved": "", "unsupported": False,
+                "have": False, "checking": bool(it.get("url")),
+                "sel": ctk.BooleanVar(value=bool(it.get("url"))),
+            })
+        self._refresh_inbox_list()
+        self._sync_inbox_header()
+
+    def _apply_inbox_info(self, url: str, payload: dict):
+        info = payload.get("site") or {}
+        work = payload.get("work") or {}
+        for it in self._inbox:
+            if it["url"] != url:
+                continue
+            it["checking"] = False
+            it["site_info"] = info or None
+            it["site_name"] = info.get("display_name") or ""
+            it["resolved"] = payload.get("resolved") or ""
+            it["have"] = bool(payload.get("have"))
+            it["unsupported"] = is_unsupported(info)
+            if it["have"] or it["unsupported"]:
+                it["sel"].set(False)   # 取れないものを自動取得の対象にしない
+            it["title"] = work.get("title") or ""
+            it["author"] = work.get("author") or ""
+            it["total"] = work.get("total") or 0
+            it["unit"] = work.get("unit") or ""
+        self._refresh_inbox_list()
+        self._sync_inbox_header()
+
+    def _inbox_scan_finished(self):
+        self._inbox_scanning = False
+        self._inbox_last_scan = time.time()
+        stamp = self._t("inbox_scanned", t=time.strftime("%H:%M"))
+        if not self._inbox:
+            self.lbl_inbox_status.configure(text=self._t("inbox_empty") + stamp)
+        else:
+            self.lbl_inbox_status.configure(text=stamp.strip())
+        # 自動取得（既定 OFF・§8.3）
+        if self.settings.get("inbox_auto") and self._proc is None:
+            self._inbox_fetch_selected(auto=True)
+
+    def _refresh_inbox_list(self):
+        for w in self.frm_inbox_list.winfo_children():
+            w.destroy()
+        self._inbox_rows = []
+        for i, it in enumerate(self._inbox):
+            if it.get("error") == "nourl" or not it["url"]:
+                ctk.CTkLabel(self.frm_inbox_list, text="⚠", width=18,
+                             anchor="w").grid(row=i, column=0, sticky="w",
+                                              padx=(2, 4), pady=1)
+                ctk.CTkLabel(self.frm_inbox_list, text=self._ellipsis(it["file"], 26),
+                             anchor="w", font=ctk.CTkFont(size=11)).grid(
+                                 row=i, column=1, sticky="ew", pady=1)
+                ctk.CTkLabel(self.frm_inbox_list, text=self._t("inbox_nourl"),
+                             anchor="e", text_color="gray",
+                             font=ctk.CTkFont(size=11)).grid(
+                                 row=i, column=2, columnspan=2, sticky="e",
+                                 padx=(6, 2), pady=1)
+                continue
+            chk = ctk.CTkCheckBox(self.frm_inbox_list, text="", width=20,
+                                  variable=it["sel"], command=self._sync_inbox_header)
+            chk.grid(row=i, column=0, sticky="w", padx=(2, 4), pady=1)
+            if it["have"] or it.get("unsupported"):
+                chk.configure(state="disabled")
+            name = it["title"] or it.get("resolved") or it["url"]
+            name = self._ellipsis(name, 26)
+            if it["site_name"]:
+                name = "%s  [%s]" % (name, it["site_name"])
+            ctk.CTkLabel(self.frm_inbox_list, text=name, anchor="w",
+                         font=ctk.CTkFont(size=11)).grid(row=i, column=1,
+                                                         sticky="ew", pady=1)
+            if it["checking"]:
+                state = self._t("inbox_checking")
+            elif it.get("unsupported"):
+                state = self._t("inbox_ng")
+            elif it["have"]:
+                state = self._t("inbox_have")
+            elif it["total"]:
+                state = self._t("shelf_eps", n=it["total"])
+            else:
+                state = ""
+            ctk.CTkLabel(self.frm_inbox_list, text=state, anchor="e",
+                         text_color="gray", font=ctk.CTkFont(size=11)).grid(
+                             row=i, column=2, sticky="e", padx=(6, 4), pady=1)
+            self._inbox_rows.append(it)
+
+    def _inbox_fetch_selected(self, auto: bool = False):
+        items = [it for it in self._inbox
+                 if it["url"] and it["sel"].get() and not it["have"]]
+        if auto:
+            # **同じファイルを周期ごとに叩き続けない。** 取れない URL（削除済み・
+            # 未対応）はダウンロードが失敗し done へ移らないので、素直に書くと
+            # 5 分おきに永久に再試行することになる。自動で一度試したファイルは
+            # この起動中は見送る（手動の「取得」は従来どおり効く）。
+            # 印を付けるのは実際に積めた後（下）
+            items = [it for it in items if it["path"] not in self._inbox_tried]
+        if not items:
+            return
+        jobs = []
+        for it in items:
+            # 展開済みなら短縮URLではなく実URLを投げる。短縮URLのままだと
+            # エンジンが毎回リダイレクトを追い直すうえ、一覧に正体が出ない
+            job = self._make_job(it.get("resolved") or it["url"],
+                                 info=it.get("site_info"))
+            if it["title"]:
+                job["label"] = it["title"]
+            job["site_name"] = it.get("site_name") or job.get("site_name") or ""
+            job["inbox_file"] = it["path"]
+            jobs.append(job)
+        added = self._start_or_enqueue(self._add_jobs(jobs))
+        if auto:
+            # **積めたものだけ「試した」印を付ける。** _add_jobs は既に同じ対象が
+            # キューにあると黙って捨てるので、投入前に印を付けると
+            # 一度も落としていないファイルが二度と自動取得されなくなる（§8.12）
+            for job in added:
+                if job.get("inbox_file"):
+                    self._inbox_tried.add(job["inbox_file"])
+
+    def _inbox_settle(self, job):
+        """受信箱由来のジョブが終わったら、元ファイルを done\\ へ移す（§8.3）。
+
+        1 つのファイルに複数 URL が入っていることがあるので、**そのファイル由来の
+        ジョブが全部成功したときだけ**動かす。1 本でも失敗したら残して次回もう一度出す。
+        """
+        src = job.get("inbox_file")
+        if not src:
+            return
+        sibs = [j for j in self._jobs if j.get("inbox_file") == src]
+        if any(j["status"] in ("waiting", "running") for j in sibs):
+            return
+        if not all(j["status"] == "done" for j in sibs):
+            return
+        threading.Thread(target=self._inbox_move_done, args=(src,), daemon=True).start()
+
+    def _inbox_move_done(self, src: str):
+        """クラウド同期でロックされうるので 3 回まで粘る（§8.3）。
+
+        **`done` が本物のディレクトリであることを必ず確かめる。** 受信箱は共有
+        フォルダでありうるので、`done` をシンボリックリンクに差し替えられると
+        `os.makedirs(exist_ok=True)` が成功してしまい、**中身も名前も第三者が
+        決めたファイルがリンク先に置かれる**（`~/.ssh/authorized_keys` など）。
+        移動先が受信箱の外を指したら何もしない（§8.11）。
+        """
+        inbox = os.path.realpath(os.path.dirname(src))
+        dest_dir = os.path.join(inbox, "done")
+        name = os.path.basename(src)
+        if os.path.islink(dest_dir):
+            self._queue.put(("rawlog", self._t("inbox_movefail", name=name)))
+            return
+        for attempt in range(3):
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                dst = os.path.join(dest_dir, name)
+                if os.path.exists(dst):
+                    stem, ext = os.path.splitext(name)
+                    dst = os.path.join(dest_dir, f"{stem}_{int(time.time())}{ext}")
+                if not os.path.realpath(dst).startswith(inbox + os.sep):
+                    break                  # 受信箱の外へ出る宛先には書かない
+                shutil.move(src, dst)      # 別ボリュームでも動くよう os.replace は使わない
+                self._queue.put(("rawlog", self._t("inbox_moved", name=name)))
+                return
+            except OSError:
+                time.sleep(0.5 * (attempt + 1))
+        self._queue.put(("rawlog", self._t("inbox_movefail", name=name)))
+
     # ── 設定 ⇔ ウィジェット ───────────────────────────────────
     def _apply_settings_to_widgets(self):
         s = self.settings
@@ -903,6 +1840,8 @@ class NovelDownloaderApp(ctk.CTk):
             self.var_font_name.set(os.path.basename(self._font_path))
         else:
             self.var_font_name.set(self._t("font_default"))
+        self.var_inbox_auto.set(bool(s.get("inbox_auto", False)))
+        self.var_inbox_scan.set(str(s.get("inbox_scan_min", 5)))
         self.var_auto_paste.set(bool(s.get("auto_paste", True)))
         self.var_open_on_done.set(bool(s.get("open_folder_on_done", True)))
         self.var_delay.set(str(s["delay"]))
@@ -930,6 +1869,13 @@ class NovelDownloaderApp(ctk.CTk):
             "auto_paste": bool(self.var_auto_paste.get()),
             "open_folder_on_done": bool(self.var_open_on_done.get()),
             "window_geometry": self.settings.get("window_geometry", ""),
+            # 受信箱・本棚（§8.6）。inbox_dir はフォルダ選択ボタンで入るので
+            # ウィジェットではなく settings 側を正とする
+            "inbox_dir": self.settings.get("inbox_dir", ""),
+            "inbox_auto": bool(self.var_inbox_auto.get()),
+            "inbox_scan_min": self._inbox_scan_min_from_widget(),
+            "inbox_open": bool(self._inbox_open),
+            "shelf_open": bool(self._shelf_open),
         }
 
     def _persist(self):
@@ -939,7 +1885,7 @@ class NovelDownloaderApp(ctk.CTk):
 
     # ── 状態遷移（§4） ───────────────────────────────────────
     _AUX_BUTTONS = ("btn_retry", "btn_open_epub", "btn_open", "btn_sites",
-                    "btn_log", "btn_savelog")
+                    "btn_savelog")
 
     def _hide_aux(self):
         for name in self._AUX_BUTTONS:
@@ -967,6 +1913,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.bar.grid_remove()
         self.bar.stop()
         self._hide_aux()
+        self._sync_log_section()
         self._set_url_entry_enabled(True)
         self._update_download_enabled()
 
@@ -978,6 +1925,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.bar.configure(mode="indeterminate")
         self.bar.start()
         self._hide_aux()
+        self._sync_log_section()
 
     def _set_state_done(self):
         self.btn_main.configure(text=self._t("download"), state="normal")
@@ -990,8 +1938,9 @@ class NovelDownloaderApp(ctk.CTk):
         self.lbl_status.configure(text=self._t("done", name=name),
                                   text_color=("#1a7f37", "#3fb950"))
         aux = [self.btn_open_epub] if has_epub else []
-        aux += [self.btn_open, self.btn_log, self.btn_savelog]
+        aux += [self.btn_open, self.btn_savelog]
         self._show_aux(*aux)
+        self._sync_log_section()
 
     @staticmethod
     def _clip_line(text: str) -> str:
@@ -1030,8 +1979,9 @@ class NovelDownloaderApp(ctk.CTk):
             detail = self._error_detail()
             if detail:
                 msg += "\n" + detail
-            self._show_aux(self.btn_log, self.btn_savelog)
+            self._show_aux(self.btn_savelog)
         self.lbl_status.configure(text=msg, text_color=("#b3261e", "#f2b8b5"))
+        self._sync_log_section()
 
     def _update_download_enabled(self):
         """大ボタンの活殺と文言を決める（§5.3 / §5.5）。
@@ -1058,7 +2008,7 @@ class NovelDownloaderApp(ctk.CTk):
             return
         unsupported = (self._site_info is not None
                        and self._site_info_url == url
-                       and self._site_info.get("site") is None)
+                       and is_unsupported(self._site_info))
         self.btn_main.configure(text=self._t("download"),
                                 state=("disabled" if unsupported else "normal"))
 
@@ -1178,6 +2128,45 @@ class NovelDownloaderApp(ctk.CTk):
             self._update_download_enabled()
         return added, dup
 
+    def _add_jobs(self, jobs, staged: bool = True) -> list:
+        """組み立て済みのジョブをそのまま積む（受信箱・本棚から・§8）。
+
+        `_add_urls()` は URL 専用（サイト判定スレッドへ投げる）なので、
+        判定済み／URL ですらない（append）ジョブのために分けてある。
+        """
+        if self._jobs and self._proc is None and not any(
+                j["status"] in ("waiting", "running") for j in self._jobs):
+            self._jobs = []
+            self._queue_staged = False
+            self._reset_result_view()
+        if staged:
+            self._queue_staged = True
+        added = []
+        for job in jobs:
+            if any(j["target"] == job["target"] and j["kind"] == job["kind"]
+                   for j in self._jobs):
+                continue        # 同じ対象を二重に積まない（§7.8）
+            self._jobs.append(job)
+            added.append(job)
+        if added:
+            self._refresh_queue_list()
+            self._sync_queue_visibility()
+            self._update_download_enabled()
+        return added        # 呼び出し側が「実際に積めたもの」を知る必要がある（§8.12）
+
+    def _start_or_enqueue(self, added: list) -> list:
+        """積んだジョブを、**空いているときだけ**流し始める（§8.12）。
+
+        本棚の「続きを取得」と受信箱の「取得」は、ダウンロード実行中でも押せる
+        （行のボタンは実行状態で無効化していない）。無条件に `_queue_start()` を
+        呼ぶと `_abort_event.clear()` で進行中の中止要求を握り潰したうえ、
+        `_start_job()` が `self._proc` を上書きして**エンジンが 2 本同時に走る**。
+        走っている最中に積んだものは、今のジョブが終われば `_advance()` が拾う。
+        """
+        if added and self._proc is None:
+            self._queue_start()
+        return added
+
     def _add_from_entry(self):
         """＋ ボタン。積むだけで実行はしない。"""
         text = self.var_url.get().strip()
@@ -1285,6 +2274,11 @@ class NovelDownloaderApp(ctk.CTk):
         job, row = self._jobs[i], self._queue_rows[i]
         row["icon"].configure(text=_JOB_ICON.get(job["status"], "・"))
         label = job.get("label") or job["target"]
+        if job.get("kind") == "append":
+            # 本棚からの「続きを取得」。対象がパスなので、そのままだと
+            # 一覧に長いファイルパスが並んで何の作品か分からない
+            label = _JOB_KIND_ICON["append"] + (job.get("label") or os.path.basename(
+                job["target"]))
         if job.get("site_name"):
             label = "%s  [%s]" % (self._ellipsis(label, 30), job["site_name"])
         else:
@@ -1328,7 +2322,7 @@ class NovelDownloaderApp(ctk.CTk):
         if i < 0 or job["status"] != "waiting":
             return          # 一覧から消された / すでに走り出している
         job["info"] = info or {}
-        if not info or info.get("site") is None:
+        if is_unsupported(info):
             job["status"] = "skipped"
             job["detail"] = self._t("q_skipped")
         else:
@@ -1424,8 +2418,9 @@ class NovelDownloaderApp(ctk.CTk):
             aux.append(self.btn_retry)
         if self._epub_path and os.path.isfile(self._epub_path):
             aux.append(self.btn_open_epub)
-        aux += [self.btn_open, self.btn_log, self.btn_savelog]
+        aux += [self.btn_open, self.btn_savelog]
         self._show_aux(*aux)
+        self._sync_log_section()
         self._update_download_enabled()
 
     def _retry_failed(self):
@@ -1462,6 +2457,14 @@ class NovelDownloaderApp(ctk.CTk):
                 job["detail"] = self._error_detail() or self._t("q_" + status)
             self._update_queue_row(self._job_i)
             self._update_queue_count()
+            # §8: 受信箱の元ファイルを done へ／本棚の該当行を更新する。
+            # ここに置くのは、終端が必ずこの 1 箇所を通るから（§7.5）
+            try:
+                self._inbox_settle(job)
+                if status == "done" and job.get("kind") == "append":
+                    self._shelf_after_append(job)
+            except Exception as e:
+                self._raw_log.append(f"[アプリ内エラー] {e}")
         if status == "aborted":
             self._queue_done()            # 中止はキュー全体を止める（§7.6）
             return
@@ -1474,6 +2477,7 @@ class NovelDownloaderApp(ctk.CTk):
         """
         self._job_i = -1
         self._sync_queue_visibility()
+        self._shelf_flush_pending()      # 追記があったなら本棚を 1 回だけ読み直す
         job = self._jobs[-1] if self._jobs else None
         if job is None:
             self._set_state_idle()
@@ -1505,11 +2509,16 @@ class NovelDownloaderApp(ctk.CTk):
     def _build_cli_args(self, job: dict, s: dict) -> list:
         """ジョブ 1 件分の CLI 引数を組む。
 
-        job を受け取るのは §8 への布石（`kind="append"` は `--append FILE` になる）。
-        v1.3 の時点では "download" しか作らないので分岐は置かない。
+        `kind="append"`（本棚の「続きを取得」・§8.4）は URL ではなく
+        `.txt` のパスを `--append` に渡す。**`--output-dir` は付けない。**
+        エンジンは `--output-dir` が無いときだけ元ファイルの親フォルダへ書き戻すので、
+        付けると走査した場所と別の場所に出力され、本棚に同じ作品が 2 つ並ぶ。
         """
-        target = job["info"].get("normalized_url") if job.get("info") else None
-        args = [target or job["target"], "--output-dir", s["output_dir"]]
+        if job.get("kind") == "append":
+            args = ["--append", job["target"]]
+        else:
+            target = job["info"].get("normalized_url") if job.get("info") else None
+            args = [target or job["target"], "--output-dir", s["output_dir"]]
         if s["cover_mode"] == "site":
             args.append("--use-site-cover")
         elif s["cover_mode"] == "file" and s.get("cover_image_path") and \
@@ -1538,13 +2547,28 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _download_worker_inner(self, job: dict, s: dict):
         # 1) 事前チェック（未対応かどうかだけ）
+        # append は対象が URL ではなく .txt のパスなので --detect-site に掛けない
+        # （掛けると必ず site:None になり「未対応サイト」で門前払いになる）。
+        # 底本URL の有無はエンジン側が --append で検査する
+        if job.get("kind") == "append":
+            info = job.get("info") or {}
+            self._needs_playwright = bool(info.get("needs_playwright"))
+            if self._abort_event.is_set():
+                self._queue.put(("aborted",))
+                return
+            rc, _ = self._run_engine(self._build_cli_args(job, s))
+            if rc is not None:
+                self._queue.put(("finished", rc))
+            return
         info = job.get("info")
         if info is None:
             info = detect_site(job["target"])
             job["info"] = info
-        if not info or info.get("site") is None:
+        if is_unsupported(info):
             self._queue.put(("precheck", "unsupported"))
             return
+        # 短縮URL（site:null かつ short_url:true）はここで止めない。
+        # エンジンが expand_short_url() で展開し、未対応ならその時点で失敗する
         # playwright が要るサイトでも**ここでは止めない**（design_gui_v2 §3.4）。
         # --detect-site の needs_playwright は「このサイトの性質」であって
         # 「この環境で動かない」ではない。v1 は導入済みの環境でも門前払いしていた。
@@ -1659,6 +2683,15 @@ class NovelDownloaderApp(ctk.CTk):
             if md:
                 self._queue.put(("epub", md.group(1).strip()))
 
+    def _read_log_plain(self, stream):
+        """補助プロセス（本棚の新着チェック）の stderr を生ログへ流すだけ。
+
+        進捗行・ePub 完了行の抽出はしない（§8.12）。ダウンロードのイベントと
+        混ぜると、本棚を確認しているだけで進捗バーが動く。
+        """
+        for line in stream:
+            self._queue.put(("rawlog", line.rstrip("\n")))
+
     # ── キュー監視（UIスレッド・§6） ──────────────────────────
     def _poll_queue(self):
         if self._closing:
@@ -1699,6 +2732,25 @@ class NovelDownloaderApp(ctk.CTk):
             return
         if kind == "jobinfo":
             self._apply_job_info(msg[1], msg[2])
+            return
+        # ── 受信箱・本棚（§8）。ダウンロードの中止フラグとは無関係 ──
+        if kind == "shelf":
+            self._apply_shelf_rows(msg[1])
+            return
+        if kind == "checkresult":
+            self._apply_checkresult(msg[1])
+            return
+        if kind == "shelfcheck_done":
+            self._shelf_check_finished(msg[1])
+            return
+        if kind == "inbox":
+            self._apply_inbox_items(msg[1])
+            return
+        if kind == "inboxinfo":
+            self._apply_inbox_info(msg[1], msg[2])
+            return
+        if kind == "inboxdone":
+            self._inbox_scan_finished()
             return
         if kind == "workinfo":
             # 作品情報をジョブに控える（§7.4 の label / §7.3 の一覧表示に使う）。
@@ -1925,48 +2977,82 @@ class NovelDownloaderApp(ctk.CTk):
         self.update_idletasks()
         return int(self.winfo_reqheight() / self._window_scale() + 0.999)
 
-    def _fit_flexible_panels(self):
-        """伸縮する 2 つのパネル（詳細設定・一覧）の**見える**高さを決める。
+    def _flex_panels(self) -> list:
+        """開いている伸縮パネルを**画面の並び順**で返す。
 
-        どちらも中身が全部入るならその高さ。画面に収まらないなら詰めて、
-        足りない分はパネル内でスクロールさせる。
-        **両方開くと画面に入らない**ことがあるので、まとめて配分する
-        （片方ずつ決めると、もう片方の存在を無視して画面からはみ出す）。
+        要素は `[ウィジェット, want, min, floor]`。`want` が None のものは
+        「中身の自然な高さ」を実測して決める（詳細設定がこれ）。
+        一覧・受信箱・本棚はどれも同じスクロール一覧なので寸法を共用する。
         """
-        d_open, q_open = self._detail_open, self._queue_shown
-        if not (d_open or q_open):
+        out = []
+        if self._queue_shown:
+            out.append([self.frm_queue_list, QUEUE_LIST_PX, QUEUE_MIN_PX, QUEUE_FLOOR_PX])
+        if self._inbox_open:
+            out.append([self.frm_inbox_list, QUEUE_LIST_PX, QUEUE_MIN_PX, QUEUE_FLOOR_PX])
+        if self._shelf_open:
+            out.append([self.frm_shelf_list, QUEUE_LIST_PX, QUEUE_MIN_PX, QUEUE_FLOOR_PX])
+        if self._detail_open:
+            out.append([self.frm_detail, None, DETAIL_MIN_PX, DETAIL_FLOOR_PX])
+        return out
+
+    @staticmethod
+    def _allocate_heights(spec: list, avail: int) -> list:
+        """開いているパネルに高さを配る（design_gui_v2 §8.5）。
+
+        v1.3 までは「詳細設定・一覧」の 2 枠決め打ちだった。§8 で受信箱・本棚が
+        増えるため N 枠へ一般化した。段階は 3 つ:
+
+          1. 全部の希望が入る → 希望どおり
+          2. 入らないが**快適な下限**の合計は入る → 下限を配り、余りを
+             画面の並び順に希望まで足す
+          3. それも入らない → **絶対最小**を配り、同じ要領で余りを足す
+
+        どの段でも足りなければ絶対最小のまま。はみ出した分は各パネルの中で
+        スクロールできるので、画面外に押し出すよりこの方が実害がない。
+        """
+        wants  = [p[1] for p in spec]
+        mins   = [p[2] for p in spec]
+        floors = [p[3] for p in spec]
+        if sum(wants) <= avail:
+            return wants
+        for base in (mins, floors):
+            if sum(base) <= avail:
+                h = list(base)
+                extra = avail - sum(base)
+                for i in range(len(h)):
+                    if extra <= 0:
+                        break
+                    add = min(extra, max(0, wants[i] - h[i]))
+                    h[i] += add
+                    extra -= add
+                return h
+        return list(floors)
+
+    def _fit_flexible_panels(self):
+        """伸縮パネル（一覧・受信箱・本棚・詳細設定）の**見える**高さを決める。
+
+        中身が全部入るならその高さ。画面に収まらないなら詰めて、足りない分は
+        パネル内でスクロールさせる。**まとめて配分する**のが要点で、
+        片方ずつ決めると他のパネルの存在を無視して画面からはみ出す。
+        """
+        spec = self._flex_panels()
+        if not spec:
             return
         scale = self._window_scale()
         self.update_idletasks()
         # 中身の自然な高さ。CTkScrollableFrame 自身が内側の内容フレームなので、
         # winfo_reqheight() が中身の高さを返す（見える高さは configure(height=) 側）
-        d_want = int(self.frm_detail.winfo_reqheight() / scale + 0.999) if d_open else 0
-        q_want = QUEUE_LIST_PX if q_open else 0
-        # 両方 1px に潰して「パネル以外に要る高さ」を測る
-        if d_open:
-            self.frm_detail.configure(height=1)
-        if q_open:
-            self.frm_queue_list.configure(height=1)
+        for p in spec:
+            if p[1] is None:
+                p[1] = int(p[0].winfo_reqheight() / scale + 0.999)
+        # 全部 1px に潰して「パネル以外に要る高さ」を測る
+        for p in spec:
+            p[0].configure(height=1)
         self.update_idletasks()
         base = int(self.winfo_reqheight() / scale + 0.999)
         avail = self._max_logical_height() - base - FIT_MARGIN_PX
-
-        q_h = min(q_want, max(QUEUE_MIN_PX, avail - DETAIL_MIN_PX)) if q_open else 0
-        d_h = min(d_want, max(DETAIL_MIN_PX, avail - q_h)) if d_open else 0
-        if d_h + q_h > avail:
-            # 快適な下限の合計すら入らない（1366x768 のノート等）。
-            # 絶対最小まで詰めて分け合う。中身はどちらもスクロールで届く
-            if d_open and q_open:
-                q_h = max(QUEUE_FLOOR_PX, min(q_h, avail - DETAIL_FLOOR_PX))
-                d_h = max(DETAIL_FLOOR_PX, avail - q_h)
-            elif d_open:
-                d_h = max(DETAIL_FLOOR_PX, avail)
-            else:
-                q_h = max(QUEUE_FLOOR_PX, avail)
-        if d_open:
-            self.frm_detail.configure(height=d_h)
-        if q_open:
-            self.frm_queue_list.configure(height=q_h)
+        for p, h in zip(spec, self._allocate_heights(spec, avail)):
+            p[0].configure(height=max(1, h))
 
     def _fit_window(self, grow_only: bool = False, restore_to: int = 0):
         """内容が収まる高さにウィンドウを合わせる。
@@ -1987,6 +3073,14 @@ class NovelDownloaderApp(ctk.CTk):
         except Exception:
             return
         w, h = self._logical_size()
+        if restore_to and not self._any_panel_open():
+            # **入れ子で開閉したときに戻りきらないのを防ぐ。**
+            # restore_to は「そのパネルを開く直前の高さ」だが、別のパネルが
+            # 既に開いていればその分だけ嵩上げされた値になる。外側を先に閉じて
+            # 内側を後から閉じると、最後に残るのが嵩上げ済みの値になり、
+            # 全部閉じたのに窓だけ広いままになる（パネルが 4 枠になって顕在化した）。
+            # 何も開いていない状態へ戻るときは「何も開いていないときの高さ」を使う。
+            restore_to = min(restore_to, self._base_height or restore_to)
         if grow_only:
             target = max(h, need)
         else:
@@ -1998,13 +3092,18 @@ class NovelDownloaderApp(ctk.CTk):
         # 古い値が返るため、基準高さが 1 世代ずれる
         self._remember_base_height(target)
 
+    def _any_panel_open(self) -> bool:
+        """伸縮パネル（一覧・受信箱・本棚・詳細設定・ログ）が 1 つでも開いているか。"""
+        return bool(self._detail_open or self._log_open or self._queue_shown
+                    or self._inbox_open or self._shelf_open)
+
     def _remember_base_height(self, height: int = None):
         """パネルを何も開いていないときの高さを覚える。
 
         終了時に保存する高さはこれ。固定値を引き算する方式だと、
         値がずれた瞬間に「次回は縦に間延びした窓で開く」が復活する。
         """
-        if self._detail_open or self._log_open or self._queue_shown:
+        if self._any_panel_open():
             return
         self._base_height = height if height is not None else self._logical_size()[1]
 
@@ -2026,11 +3125,26 @@ class NovelDownloaderApp(ctk.CTk):
             self.frm_detail.grid_forget()
             self._fit_window(restore_to=self._h_before_detail)
 
+    def _sync_log_section(self):
+        """詳細ログの見出しを、ログがあるときだけ出す（§8.9）。
+
+        実行中は `_start_job()` が `_raw_log` を空にするので自動的に隠れる。
+        見出しが消えるときに開きっぱなしにしない（本体だけ宙に浮く）。
+        """
+        if self._raw_log:
+            self.btn_logsec.configure(
+                text=self._t("logsec_open" if self._log_open else "logsec_closed"))
+            self.btn_logsec.grid()
+            return
+        if self._log_open:
+            self._toggle_log()     # _toggle_log は _sync_log_section を呼ばない（再帰しない）
+        self.btn_logsec.grid_remove()
+
     def _toggle_log(self):
         self._log_open = not self._log_open
         if self._log_open:
             self._h_before_log = self._logical_size()[1]
-            self.btn_log.configure(text=self._t("hide_log"))
+            self.btn_logsec.configure(text=self._t("logsec_open"))
             # sticky="nsew" ＋ weight=1 で、ウィンドウの余った高さをログ欄が吸う。
             # これが無いと窓をいくら大きくしてもログ欄は 120px のままだった
             self.txt_log.grid(row=ROW_LOG, column=0, sticky="nsew", padx=20, pady=(2, 2))
@@ -2041,7 +3155,7 @@ class NovelDownloaderApp(ctk.CTk):
             self.txt_log.see("end")
             self._fit_window(grow_only=True)
         else:
-            self.btn_log.configure(text=self._t("show_log"))
+            self.btn_logsec.configure(text=self._t("logsec_closed"))
             self.txt_log.grid_forget()
             self.grip_log.grid_forget()
             self.grid_rowconfigure(ROW_LOG, weight=0)
@@ -2075,11 +3189,22 @@ class NovelDownloaderApp(ctk.CTk):
         self.lbl_cover_file.configure(text_color=("gray10", "gray90") if is_file else "gray")
         self._persist()
 
+    def _reload_shelf_if_open(self):
+        """保存先が変わったら本棚を作り直す（本棚は保存先フォルダそのもの）。"""
+        self._shelf_loaded = False
+        self._shelf_new = {}
+        if self._shelf_open:
+            self._shelf_reload()
+        else:
+            self._shelf = []
+            self._sync_shelf_header()
+
     def _pick_output_dir(self):
         d = filedialog.askdirectory(initialdir=self.var_outdir.get() or default_output_dir())
         if d:
             self.var_outdir.set(d)
             self._persist()
+            self._reload_shelf_if_open()   # 本棚は保存先フォルダそのもの（§8.4）
 
     def _pick_cover_image(self):
         f = filedialog.askopenfilename(
@@ -2221,6 +3346,9 @@ class NovelDownloaderApp(ctk.CTk):
         if event.widget is not self:
             return
         self._maybe_autofill_from_clipboard()
+        # 受信箱も見直す（§8.10）。<FocusIn> は alt-tab のたびに飛ぶので
+        # 直近に走査していれば見送る
+        self._inbox_maybe_scan(min_gap=30.0)
 
     def _maybe_autofill_from_clipboard(self):
         """条件を全部満たしたときだけクリップボードの URL を入れる（§5.4）。"""
@@ -2299,8 +3427,12 @@ class NovelDownloaderApp(ctk.CTk):
         self._site_info = info or {}
         self._site_info_url = url
         name = (info or {}).get("display_name") or ""
-        if not info or info.get("site") is None:
+        if is_unsupported(info):
             self.lbl_site.configure(text=self._t("site_ng"), text_color=("#b3261e", "#f2b8b5"))
+        elif (info or {}).get("site") is None:
+            # 短縮URL。開いてみないと分からないので赤にはしない
+            self.lbl_site.configure(text=self._t("site_short"),
+                                    text_color=("#8a6d00", "#e3b341"))
         elif info.get("needs_playwright"):
             self.lbl_site.configure(text=self._t("site_pw", name=name),
                                     text_color=("#8a6d00", "#e3b341"))
@@ -2328,7 +3460,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.btn_open_epub.configure(text=self._t("open_epub"))
         self.btn_savelog.configure(text=self._t("save_log"))
         self.btn_sites.configure(text=self._t("sites"))
-        self.btn_log.configure(text=self._t("hide_log" if self._log_open else "show_log"))
+        self._sync_log_section()
         self.btn_detail.configure(text=self._t("adv_open" if self._detail_open else "adv_closed"))
         self.lbl_outdir.configure(
             text=self._t("save_prefix") + str(self.settings.get("output_dir", "")))
@@ -2361,8 +3493,14 @@ class NovelDownloaderApp(ctk.CTk):
             self.btn_retry.configure(text=self._t("retry_failed", n=n_err))
         if self._jobs:
             self._refresh_queue_list()
+        # 受信箱・本棚（§8）。見出しは件数を含むので専用の同期関数を通す
+        self._sync_inbox_header()
+        self._sync_shelf_header()
+        self._refresh_inbox_list()
+        self._refresh_shelf_list()
         self.chk_auto_paste.configure(text=self._t("auto_paste"))
         self.chk_open_on_done.configure(text=self._t("open_on_done"))
+        self.lbl_inbox_scan.configure(text=self._t("inbox_scan_min"))
         if self._engine_ver:
             self.lbl_ver.configure(text=self._t("engine_ver", ver=self._engine_ver))
         # サイト判定バッジは言語に依存するので、判定済みなら出し直す
@@ -2374,6 +3512,11 @@ class NovelDownloaderApp(ctk.CTk):
         return sum(1 for j in self._jobs if j["status"] in ("waiting", "running"))
 
     def _on_close(self):
+        # 本棚の新着チェックは終了を待たずに殺す（§8.4）。読み取り専用なので
+        # 途中で止めても手元のファイルは壊れない
+        if self._shelf_proc is not None:
+            threading.Thread(target=_terminate_tree, args=(self._shelf_proc,),
+                             daemon=True).start()
         # 未完了のキューがあるなら確認する（§7.12）。キューは保存しないので、
         # ここで黙って閉じると積んだものが消える
         n = self._unfinished_count()
@@ -2391,7 +3534,7 @@ class NovelDownloaderApp(ctk.CTk):
             self._detect_jobs_q.put(None)      # 判定スレッドを終わらせる
         except Exception:
             pass
-        for attr in ("_poll_after", "_detect_after"):
+        for attr in ("_poll_after", "_detect_after", "_inbox_after"):
             aid = getattr(self, attr, None)
             if aid is not None:
                 try:
