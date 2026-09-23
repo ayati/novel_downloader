@@ -296,6 +296,11 @@ UI = {
     "shelf_append_all": ("✅ 新着のある {n} 件をまとめて取得", "✅ Get updates for {n} works"),
     "shelf_eps":    ("{n}話", "{n} eps"),
     "shelf_busy":   ("ダウンロード中はチェックできません。", "Cannot check while downloading."),
+    "no_images":    ("挿絵を取り込まない", "Skip inline illustrations"),
+    "notify_webhook": ("完了・新着を Webhook で知らせる（Discord / Slack）",
+                       "Notify on completion and updates via webhook (Discord / Slack)"),
+    "webhook_ph":   ("https://discord.com/api/webhooks/…",
+                     "https://discord.com/api/webhooks/…"),
     "shelf_scan_fail": ("本棚を読み込めませんでした。もう一度お試しください。",
                         "Could not read the bookshelf. Please try again."),
     "inbox_need_shelf": ("本棚を読めなかったため、取得済みかどうかを判定できませんでした。",
@@ -368,12 +373,30 @@ def _terminate_tree(proc) -> None:
             pass
 
 
+# エンジンへ渡す表示言語（design_gui_v2 §8.13）。_engine_env() は _run_capture の
+# ようなモジュール関数からも呼ばれて設定 dict に手が届かないため、
+# アプリ側が言語を変えるたびにここへ反映する。
+_ENGINE_LANG = "ja"
+
+
+def set_engine_lang(lang: str) -> None:
+    """以後起動するエンジンの表示言語を決める。"""
+    global _ENGINE_LANG
+    _ENGINE_LANG = "en" if lang == "en" else "ja"
+
+
 def _engine_env() -> dict:
     """エンジン起動用の環境変数。ライブ進捗と UTF-8 出力を保証（§9.3 / §2.3）。"""
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"   # ライブ進捗（バッファさせない）
     env["PYTHONUTF8"] = "1"         # 日本語出力を UTF-8 に固定
     env["PYTHONIOENCODING"] = "utf-8"
+    # **エンジン側の表示言語。** これが無いと GUI を English にしてもエンジンは
+    # 日本語のままで、_error_detail() が stderr から拾ってステータス行に出す
+    # 失敗理由だけが日本語になる（§8.13）。--lang より環境変数を使うのは、
+    # ダウンロード以外（--detect-site / --shelf-scan / --check-update-dir）にも
+    # まとめて効かせるため
+    env["NOVEL_DOWNLOADER_LANG"] = _ENGINE_LANG
     return env
 
 
@@ -395,6 +418,23 @@ def settings_path() -> str:
         return os.path.join(base, APP_DIR_NAME, "settings.json")
     cfg = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
     return os.path.join(cfg, "novel_downloader_gui", "settings.json")
+
+
+def normalize_webhook(s: dict) -> dict:
+    """Webhook 設定を、成立する形に整えて返す（design_gui_v2 §8.13）。
+
+    **load_settings と _collect_settings の両方で通すこと。** 読み込み時だけに
+    置くと、画面で入力した直後の値が検査を通らないまま設定として確定し、
+    宛先が空なのにチェックだけ入った状態が画面に残る（実測で踏んだ）。
+    """
+    if s.get("webhook_format") not in ("discord", "slack"):
+        s["webhook_format"] = "discord"
+    url = str(s.get("webhook_url") or "").strip()
+    # 形式が違うものを渡すとエンジンが parser.error で即死するので、ここで弾く
+    s["webhook_url"] = url if url.startswith(("http://", "https://")) else ""
+    # 宛先が無ければ通知は成立しない
+    s["notify_webhook"] = bool(s.get("notify_webhook")) and bool(s["webhook_url"])
+    return s
 
 
 def default_settings() -> dict:
@@ -421,6 +461,11 @@ def default_settings() -> dict:
         "inbox_scan_min": 5,           # 受信箱を見に行く間隔（分・0 で無効・§8.10）
         "inbox_open": False,           # 受信箱の節を開いた状態で起動する
         "shelf_open": False,           # 本棚の節を開いた状態で起動する
+        # design_gui_v2 §8.13
+        "no_inline_images": False,     # 本文中の挿絵を取り込まない（避難口）
+        "notify_webhook": False,       # 完了・新着を Webhook で通知する
+        "webhook_url": "",             # Discord / Slack の Incoming Webhook URL
+        "webhook_format": "discord",   # "discord" | "slack"
     }
 
 
@@ -474,8 +519,10 @@ def load_settings() -> dict:
         s["ui_lang"] = "ja"
     for k in ("auto_paste", "open_folder_on_done"):
         s[k] = bool(s.get(k, True))
-    for k in ("inbox_auto", "inbox_open", "shelf_open"):
+    for k in ("inbox_auto", "inbox_open", "shelf_open",
+              "no_inline_images", "notify_webhook"):
         s[k] = bool(s.get(k, False))
+    normalize_webhook(s)
     try:
         s["inbox_scan_min"] = max(0, min(int(s.get("inbox_scan_min", 5)), 1440))
     except Exception:
@@ -562,6 +609,19 @@ def is_unsupported(info) -> bool:
     if not info:
         return True
     return info.get("site") is None and not info.get("short_url")
+
+
+def _webhook_args(s: dict) -> list:
+    """Webhook 通知の CLI 引数を返す（design_gui_v2 §8.13）。
+
+    宛先が空のまま `--notify webhook` を渡すとエンジンが起動直後に
+    parser.error で落ちるので、**URL が揃っているときだけ**渡す。
+    """
+    if not (s.get("notify_webhook") and s.get("webhook_url")):
+        return []
+    return ["--notify", "webhook",
+            "--webhook-url", s["webhook_url"],
+            "--webhook-format", s.get("webhook_format", "discord")]
 
 
 def shelf_scan(dir_path: str, timeout=180) -> list:
@@ -1062,6 +1122,28 @@ class NovelDownloaderApp(ctk.CTk):
         self.ent_inbox_scan.bind("<Return>", self._on_inbox_scan_changed, add="+")
         self.ent_inbox_scan.bind("<FocusOut>", self._on_inbox_scan_changed, add="+")
 
+        # Webhook 通知（§8.13）。エンジンは前から対応していたが GUI から設定できず、
+        # 完了・新着を手元のスマホへ飛ばす手段が GUI 利用者だけ無かった
+        self.var_notify = ctk.BooleanVar(value=False)
+        self.chk_notify = ctk.CTkCheckBox(beh, text="", variable=self.var_notify,
+                                          command=self._on_notify_changed)
+        self.chk_notify.grid(row=3, column=0, sticky="w", pady=(6, 1))
+        whbox = ctk.CTkFrame(beh, fg_color="transparent")
+        whbox.grid(row=4, column=0, sticky="ew", padx=(24, 0))
+        whbox.grid_columnconfigure(0, weight=1)
+        self.var_webhook_url = ctk.StringVar()
+        self.ent_webhook = ctk.CTkEntry(whbox, textvariable=self.var_webhook_url,
+                                        placeholder_text="https://discord.com/api/webhooks/…")
+        self.ent_webhook.grid(row=0, column=0, sticky="ew")
+        self.ent_webhook.bind("<Return>", self._on_notify_changed, add="+")
+        self.ent_webhook.bind("<FocusOut>", self._on_notify_changed, add="+")
+        self._attach_context_menu(self.ent_webhook)
+        self.var_webhook_fmt = ctk.StringVar(value="discord")
+        self.opt_webhook_fmt = ctk.CTkOptionMenu(
+            whbox, values=["discord", "slack"], variable=self.var_webhook_fmt,
+            width=100, command=lambda *_: self._on_notify_changed())
+        self.opt_webhook_fmt.grid(row=0, column=1, padx=(8, 0))
+
         sep = ctk.CTkFrame(self.frm_detail, height=1, fg_color="gray70")
         sep.grid(row=9, column=0, sticky="ew", padx=12, pady=10)
         self.lbl_rarely = ctk.CTkLabel(self.frm_detail, text="ここから下は普段は変更不要",
@@ -1082,7 +1164,14 @@ class NovelDownloaderApp(ctk.CTk):
                                       variable=self.var_toc_at_end, command=self._persist)
         self.chk_horizontal.grid(row=0, column=0, sticky="w", pady=2)
         self.chk_kobo.grid(row=0, column=1, sticky="w", padx=(16, 0), pady=2)
-        self.chk_toc.grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
+        self.chk_toc.grid(row=1, column=0, sticky="w", pady=2)
+        # 挿絵の取得はサイト側の作りに依存するので、壊れたときの避難口を
+        # GUI からも触れるようにする（CLI に逃げられない利用者ほど必要・§8.13）
+        self.var_no_images = ctk.BooleanVar(value=False)
+        self.chk_no_images = ctk.CTkCheckBox(opt, text="挿絵を取り込まない",
+                                             variable=self.var_no_images,
+                                             command=self._persist)
+        self.chk_no_images.grid(row=1, column=1, sticky="w", padx=(16, 0), pady=2)
 
         self.lbl_font = ctk.CTkLabel(opt, text="本文のフォント")
         self.lbl_font.grid(row=2, column=0, sticky="w", pady=(6, 0))
@@ -1376,7 +1465,8 @@ class NovelDownloaderApp(ctk.CTk):
     def _shelf_check_worker(self, d: str):
         try:
             proc = subprocess.Popen(
-                engine_cmd("--check-update-dir", d, "--progress-json"),
+                engine_cmd("--check-update-dir", d, "--progress-json",
+                           *_webhook_args(self.settings)),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env=_engine_env(), creationflags=_CREATE_NO_WINDOW,
                 bufsize=1, universal_newlines=True, encoding="utf-8", errors="replace")
@@ -1511,6 +1601,20 @@ class NovelDownloaderApp(ctk.CTk):
             return max(0, min(int(float(self.var_inbox_scan.get())), 1440))
         except Exception:
             return int(self.settings.get("inbox_scan_min", 5) or 0)
+
+    def _on_notify_changed(self, _event=None):
+        """Webhook 設定の確定。宛先が無いままチェックだけ入るのを防ぐ。"""
+        self._persist()
+        # load_settings 側の妥当性検査（URL 形式・宛先なし）を反映し直す
+        self.var_notify.set(bool(self.settings.get("notify_webhook")))
+        self.var_webhook_url.set(self.settings.get("webhook_url", ""))
+        self.var_webhook_fmt.set(self.settings.get("webhook_format", "discord"))
+        self._sync_notify_enabled()
+
+    def _sync_notify_enabled(self):
+        state = "normal" if self.var_notify.get() else "disabled"
+        self.ent_webhook.configure(state=state)
+        self.opt_webhook_fmt.configure(state=state)
 
     def _on_inbox_scan_changed(self, _event=None):
         """間隔を変えたら保存して予約を取り直す（次の周期から効く）。"""
@@ -1842,6 +1946,11 @@ class NovelDownloaderApp(ctk.CTk):
             self.var_font_name.set(self._t("font_default"))
         self.var_inbox_auto.set(bool(s.get("inbox_auto", False)))
         self.var_inbox_scan.set(str(s.get("inbox_scan_min", 5)))
+        self.var_no_images.set(bool(s.get("no_inline_images", False)))
+        self.var_notify.set(bool(s.get("notify_webhook", False)))
+        self.var_webhook_url.set(s.get("webhook_url", ""))
+        self.var_webhook_fmt.set(s.get("webhook_format", "discord"))
+        self._sync_notify_enabled()
         self.var_auto_paste.set(bool(s.get("auto_paste", True)))
         self.var_open_on_done.set(bool(s.get("open_folder_on_done", True)))
         self.var_delay.set(str(s["delay"]))
@@ -1854,7 +1963,7 @@ class NovelDownloaderApp(ctk.CTk):
             delay = float(self.var_delay.get())
         except Exception:
             delay = 1.5
-        return {
+        return normalize_webhook({
             "schema": SETTINGS_SCHEMA,
             "output_dir": self.var_outdir.get().strip() or default_output_dir(),
             "cover_mode": self.var_cover.get(),
@@ -1874,9 +1983,13 @@ class NovelDownloaderApp(ctk.CTk):
             "inbox_dir": self.settings.get("inbox_dir", ""),
             "inbox_auto": bool(self.var_inbox_auto.get()),
             "inbox_scan_min": self._inbox_scan_min_from_widget(),
+            "no_inline_images": bool(self.var_no_images.get()),
+            "notify_webhook": bool(self.var_notify.get()),
+            "webhook_url": self.var_webhook_url.get().strip(),
+            "webhook_format": self.var_webhook_fmt.get(),
             "inbox_open": bool(self._inbox_open),
             "shelf_open": bool(self._shelf_open),
-        }
+        })
 
     def _persist(self):
         self.settings = self._collect_settings()
@@ -2532,7 +2645,10 @@ class NovelDownloaderApp(ctk.CTk):
             args.append("--toc-at-end")
         if s.get("font_path") and os.path.isfile(s["font_path"]):
             args += ["--font", s["font_path"]]
+        if s.get("no_inline_images"):
+            args.append("--no-inline-images")
         args += ["--delay", str(s["delay"]), "--encoding", s["encoding"]]
+        args += _webhook_args(s)
         # 進捗・完了は JSON イベントで受け取る（design_progress_json.md）
         args.append("--progress-json")
         return args
@@ -3451,6 +3567,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._persist()
 
     def _apply_ui_lang(self):
+        set_engine_lang(self._lang())   # 以後のエンジン起動に効かせる（§8.13）
         self.title(self._t("title"))
         self.lbl_url.configure(text=self._t("paste_url"))
         self.ent_url.configure(placeholder_text=self._t("url_ph"))
@@ -3501,6 +3618,9 @@ class NovelDownloaderApp(ctk.CTk):
         self.chk_auto_paste.configure(text=self._t("auto_paste"))
         self.chk_open_on_done.configure(text=self._t("open_on_done"))
         self.lbl_inbox_scan.configure(text=self._t("inbox_scan_min"))
+        self.chk_no_images.configure(text=self._t("no_images"))
+        self.chk_notify.configure(text=self._t("notify_webhook"))
+        self.ent_webhook.configure(placeholder_text=self._t("webhook_ph"))
         if self._engine_ver:
             self.lbl_ver.configure(text=self._t("engine_ver", ver=self._engine_ver))
         # サイト判定バッジは言語に依存するので、判定済みなら出し直す

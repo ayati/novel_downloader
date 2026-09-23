@@ -353,6 +353,7 @@ GUI（Android アプリ・将来の組み込み利用）から本モジュール
 | `AbortRequested` | 中止要求例外。`main()` が `KeyboardInterrupt` と共に捕捉し「中止しました。」を stderr に表示して**終了コード 130** で終了する（CLI の Ctrl+C も同様） |
 | `PROGRESS_CALLBACK` | `fn(n: int, total: int, title: str)` を代入すると話数進捗の print と同じタイミングで呼ばれる（print 出力は従来どおり維持）。呼び出しは `_progress()` ヘルパー経由でフック側の例外は握りつぶす。なろうの `total` は `--end` 指定時も全話数を返す点に注意 |
 | 環境変数 `NOVEL_DL_COVER_FONT` | 表紙用フォントファイルのパスを明示指定。`_find_cjk_fonts()` が最優先で採用し、fc-list 等の探索をスキップする（Android では同梱 TTF を指定） |
+| 環境変数 `NOVEL_DOWNLOADER_LANG` | エンジンの表示言語（`--lang` と同じ・`--lang` の方が優先）。**GUI はこれでエンジンに言語を伝える**（`_engine_env()` が設定する）。GUI の失敗理由はエンジンの stderr から拾って表示するため、これが無いと英語 UI に日本語のエラーが混ざる（design_gui_v2.md §8.13） |
 | 環境変数 `NOVEL_DL_TRACEBACK` | `1` を指定すると、想定内の失敗（`_FATAL_ERRORS`）でも従来どおり全スタックトレースを出す。既定では `_friendly_error()` の 1 行（必ず `エラー: ` で始まる）だけを stderr に出して終了コード 1 で終わる |
 
 **失敗の出し方**: 通信エラー・作品削除（404）・ディスク不足は `main()` 直前の `_friendly_error()` / `_exit_fatal()` が `エラー: …` の 1 行に整えて終了コード 1 で終わる（GUI は stderr の `エラー:` 行を失敗理由に使う）。`*_fetch()` がリトライを使い切って `RuntimeError` を投げるときは、**最後の例外を必ず文面に含めること**（`f"取得失敗: {url} — {e}"`）。含めないと 404 も接続断も同じ文面に潰れる。

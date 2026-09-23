@@ -27,7 +27,11 @@ The engine still targets Japanese posting sites (Syosetu / Narou, Kakuyomu, Alph
 
 ## Desktop GUI
 
-`novel_downloader_gui.py` (requires `pip install customtkinter`) wraps the engine so it can be driven without a terminal. Two panels were added in v2.14.0:
+`novel_downloader_gui.py` (requires `pip install customtkinter`) wraps the engine so it can be driven without a terminal. The **Japanese / English** control in the top-right switches the GUI *and* the engine messages it shows, including the failure reason printed under a failed download.
+
+Advanced settings cover the output folder, cover art, embedded font, request delay, encoding, horizontal / Kobo / table-of-contents placement, skipping inline illustrations, and webhook notifications (Discord / Slack).
+
+Two panels were added in v2.14.0:
 
 - **Inbox** — watches a folder you share from your phone (OneDrive, Google Drive, a network share). It pulls every URL out of the dropped text files, expands short links, and shows the title, author and episode count *before* you download, so you can decide once you remember what the work was. Files that downloaded successfully move to `done\`; files with no URL are left alone. It rescans on launch, on a timer (5 minutes by default, 0 disables it), when the window regains focus, and on demand.
 - **Bookshelf** — lists the `.txt` files in your output folder, checks them all for new episodes, and appends the ones that have any. There is no separate database; the `底本URL：` header line in each `.txt` is the index.
