@@ -116,13 +116,14 @@ def main() -> int:
     # ── 一括チェックの並び順（§8.17）──
     with tempfile.TemporaryDirectory() as d:
         from pathlib import Path
-        #        名前順 / 更新日 / 話数
-        make_work_txt(d, "a.txt", "A", "n0001aa", 2,
-                      {"updated": "2020-01-01", "episode_count": 10})
-        make_work_txt(d, "b.txt", "B", "n0002bb", 2,
+        # 手元の話数（第5引数）と meta の episode_count を**わざと逆にする**。
+        # 話数順は手元の数で並ぶべきで、meta で並べていたら逆順になる（§8.19）
+        make_work_txt(d, "a.txt", "A", "n0001aa", 1,
+                      {"updated": "2020-01-01", "episode_count": 500})
+        make_work_txt(d, "b.txt", "B", "n0002bb", 3,
                       {"updated": "2026-09-20", "episode_count": 100})
-        make_work_txt(d, "c.txt", "C", "n0003cc", 2,
-                      {"updated": "2024-05-05", "episode_count": 500})
+        make_work_txt(d, "c.txt", "C", "n0003cc", 5,
+                      {"updated": "2024-05-05", "episode_count": 10})
         files = sorted(Path(d).glob("*.txt"))
         for mode, exp in (("name", ["a.txt", "b.txt", "c.txt"]),
                           ("updated", ["b.txt", "c.txt", "a.txt"]),
@@ -132,6 +133,63 @@ def main() -> int:
         ck("知らない並び順は元のまま",
            [q.name for q in N._order_txt_files(list(files), "zzz")]
            == [q.name for q in files])
+        ck("話数順は手元の節数で並べる（meta の総話数だと逆順になる）",
+           [q.name for q in N._order_txt_files(list(files), "episodes")]
+           == ["c.txt", "b.txt", "a.txt"])
+
+    # 更新日が無いファイルは mtime で代用する（§8.19）
+    with tempfile.TemporaryDirectory() as d:
+        from pathlib import Path
+        import time as _t
+        old_p = make_work_txt(d, "old.txt", "古い", "n0001aa", 1)
+        _t.sleep(1.1)
+        new_p = make_work_txt(d, "new.txt", "新しい", "n0002bb", 1)
+        dated = make_work_txt(d, "dated.txt", "日付あり", "n0003cc", 1,
+                              {"updated": "2035-01-01"})
+        got = [q.name for q in N._order_txt_files(sorted(Path(d).glob("*.txt")),
+                                                  "updated")]
+        ck("更新日を持つものが先頭", got[0] == "dated.txt", str(got))
+        ck("更新日が無くても mtime で新しい方が先",
+           got.index("new.txt") < got.index("old.txt"), str(got))
+        ck("更新日と mtime を同じ尺度で比べている",
+           N._txt_recency(dated) > N._txt_recency(new_p) > N._txt_recency(old_p))
+
+    # ── 一覧の行番号を --start に渡せるサイトか（§8.19）──
+    for site in ("narou", "kakuyomu", "alphapolis", "hameln", "monogatary",
+                 "novelup", "sutekibungei", "days", "solispia", "novema",
+                 "neopage", "noichigo", "berrys"):
+        ck(f"行番号を渡せる: {site}", N.start_from_list_ok(site) is True)
+    for site in ("estar", "genpaku", "hyuki", "aozora"):
+        ck(f"行番号を渡せない: {site}", N.start_from_list_ok(site) is False)
+    ck("未判定のサイトには渡さない", N.start_from_list_ok(None) is False)
+
+    # ── 部分取得の印（§8.19）──
+    with tempfile.TemporaryDirectory() as d:
+        url = "https://ncode.syosetu.com/n0001aa/"
+        meta = {"site": "小説家になろう"}
+        N._START_OFFSET = 0
+        ck("--start 無しなら印を付けない",
+           "開始位置" not in N.aozora_header("作", "者", "", url, meta))
+        N._START_OFFSET = 1
+        ck("--start 1 は先頭からなので印を付けない",
+           "開始位置" not in N.aozora_header("作", "者", "", url, meta))
+        N._START_OFFSET = 500
+        hdr = N.aozora_header("作", "者", "", url, meta)
+        ck("--start 500 で印が付く", "開始位置：500" in hdr)
+        path = os.path.join(d, "P.txt")
+        N.write_file(path, hdr, [f"{N.aozora_chapter_title('第500話')}\n\n本文\n"],
+                     N.aozora_colophon("作", url, "小説家になろう"))
+        ck("読み戻せる",
+           N._extract_meta_from_txt(path).get("start_offset") == 500)
+        ck("shelf-scan からも見える",
+           (N.shelf_scan(d)[0].get("meta") or {}).get("start_offset") == 500)
+        N._START_OFFSET = 0
+        _t, _a, _s2, _e, m2 = N.parse_aozora_text(
+            open(path, encoding="utf-8").read())
+        ck("--from-file で作り直しても印が消えない",
+           "開始位置：500" in N.aozora_header(_t, _a, _s2, url, m2))
+        ck("渡された meta を書き換えない（呼び出し側に漏らさない）",
+           "start_offset" not in meta)
 
     # ── checkresult の path は realpath（§8.12 (9)）──
     with tempfile.TemporaryDirectory() as d:

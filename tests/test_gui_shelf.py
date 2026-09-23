@@ -132,20 +132,30 @@ def main() -> int:
 
             # ── 並び順（表示＝確認順・§8.17）──
             saved_shelf = app._shelf
+            # 題名とファイル名の順を**わざとずらす**。エンジンの name は
+            # ファイル名順なので、題名で並べていると気づけない（§8.19）
             app._shelf = [
-                {"path": "/x/a.txt", "file": "a.txt", "title": "A", "url": "u1",
+                {"path": "/x/a.txt", "file": "a.txt", "title": "Z", "url": "u1",
                  "episodes": 10, "mtime": 1, "meta": {"updated": "2020-01-01"}},
-                {"path": "/x/b.txt", "file": "b.txt", "title": "B", "url": "u2",
+                {"path": "/x/b.txt", "file": "b.txt", "title": "Y", "url": "u2",
                  "episodes": 100, "mtime": 2, "meta": {"updated": "2026-09-20"}},
-                {"path": "/x/c.txt", "file": "c.txt", "title": "C", "url": "u3",
+                {"path": "/x/c.txt", "file": "c.txt", "title": "X", "url": "u3",
                  "episodes": 500, "mtime": 3, "meta": {"updated": "2024-05-05"}},
             ]
-            for mode, exp in (("name", ["A", "B", "C"]),
-                              ("updated", ["B", "C", "A"]),
-                              ("episodes", ["C", "B", "A"])):
+            for mode, exp in (("name", ["a.txt", "b.txt", "c.txt"]),
+                              ("updated", ["b.txt", "c.txt", "a.txt"]),
+                              ("episodes", ["c.txt", "b.txt", "a.txt"])):
                 app.settings["shelf_sort"] = mode
-                got = [r["title"] for r in app._shelf_sorted_works()]
-                ck(f"並び順 {mode}", got == exp, str(got))
+                got = [r["file"] for r in app._shelf_sorted_works()]
+                ck(f"並び順 {mode}（エンジンと同じ基準）", got == exp, str(got))
+            # 更新日が無い行は mtime で代用する（タプル比較だと常に最後になる）
+            app._shelf.append({"path": "/x/d.txt", "file": "d.txt", "title": "W",
+                               "url": "u4", "episodes": 1, "mtime": 10**10,
+                               "meta": {}})
+            app.settings["shelf_sort"] = "updated"
+            got = [r["file"] for r in app._shelf_sorted_works()]
+            ck("更新日が無くても mtime で代用する", got[0] == "d.txt", str(got))
+            app._shelf.pop()
             ck("既定は更新が新しい順",
                G.load_settings().get("shelf_sort") == "updated")
             app.settings["shelf_sort"] = "updated"
@@ -201,6 +211,30 @@ def main() -> int:
             ck("確認できなかった行が分かる",
                "確認できず" in app._shelf_rows[j]["state"].cget("text"),
                app._shelf_rows[j]["state"].cget("text"))
+
+            # ── 部分取得のファイルは追記させない（§8.19）──
+            saved_new = dict(app._shelf_new)      # 後続の確認が使うので退避
+            part = dict(app._shelf_works()[0])
+            part.update(path="/x/part.txt", file="part.txt", title="部分作品",
+                        meta={"start_offset": 500})
+            app._shelf = [part]
+            app._shelf_new = {"/x/part.txt": {"new": 400, "status": "updated"}}
+            app._refresh_shelf_list()
+            app.pump(0.2)
+            ck("部分取得だと分かる表示になる",
+               "部分" in app._shelf_rows[0]["state"].cget("text"),
+               app._shelf_rows[0]["state"].cget("text"))
+            ck("新着があっても『続きを取得』を押せない",
+               app._shelf_rows[0]["button"].cget("state") == "disabled")
+            ck("新着の件数に数えない", app._shelf_new_count() == 0)
+            ck("まとめ取得ボタンも出さない",
+               not app.btn_shelf_all.winfo_ismapped())
+            ck("開始位置を読めている", app._shelf_partial_from(part) == 500)
+            ck("壊れた値でも 0 として扱う",
+               app._shelf_partial_from({"meta": {"start_offset": "x"}}) == 0)
+            app._shelf = saved_shelf
+            app._shelf_new = saved_new
+            app._refresh_shelf_list()
 
             # ── 中止できる（§8.17）──
             ck("ふだんは『新着チェック』", "中止" not in app.btn_shelf_check.cget("text"))

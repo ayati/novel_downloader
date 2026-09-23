@@ -297,6 +297,14 @@ UI = {
     "shelf_checking_now": ("確認中 {n}/{m}：{name}", "Checking {n}/{m}: {name}"),
     "shelf_row_checking": ("確認中…", "Checking…"),
     "shelf_row_error": ("確認できず", "Check failed"),
+    "shelf_partial": ("部分（{n}番目から）", "Partial (from #{n})"),
+    "tip_shelf_partial": ("途中から取得したファイルです。先頭が欠けているため"
+                          "「続きを取得」は使えません。",
+                          "Fetched from partway, so the beginning is missing. "
+                          "“Get new episodes” is unavailable."),
+    "ep_start_note": ("選んだ話から最新までを取得します（あとから続きの追記はできません）",
+                      "Fetches from the selected episode to the latest "
+                      "(appending more later is not possible)"),
     "tip_shelf_list": ("話の一覧を見る（手元のファイルから）",
                        "Show the episode list (from the local file)"),
     "tip_shelf_open": ("ePub を開く", "Open the EPUB"),
@@ -758,6 +766,25 @@ def dry_run_info(url: str, timeout=180) -> dict:
         if ev.get("event") == "workinfo":
             info = ev
     return info
+
+
+def _row_recency(row) -> float:
+    """本棚の 1 行の「新しさ」を秒で返す（エンジンの `_txt_recency` と同じ基準）。
+
+    サイト側の `更新日` を優先し、**無ければファイルの更新時刻で代用する**。
+    日付文字列と mtime を別要素のタプルで比べると、更新日を持たないサイトが
+    常に最後へ回って代用にならない。同じ尺度に載せて比べる。
+    """
+    upd = str((row.get("meta") or {}).get("updated") or "")
+    for fmt, n in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d", 10)):
+        try:
+            return time.mktime(time.strptime(upd[:n], fmt))
+        except Exception:
+            continue
+    try:
+        return float(row.get("mtime") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def flash_taskbar(window) -> bool:
@@ -1510,6 +1537,10 @@ class NovelDownloaderApp(ctk.CTk):
         """
         return [r for r in self._shelf if r.get("url")]
 
+    @staticmethod
+    def _recency(row) -> float:
+        return _row_recency(row)
+
     def _shelf_sorted_works(self) -> list:
         """本棚に出す順番（§8.17）。**この並びがそのまま確認順になる。**
 
@@ -1520,14 +1551,15 @@ class NovelDownloaderApp(ctk.CTk):
         works = self._shelf_works()
         mode = self.settings.get("shelf_sort", "updated")
         if mode == "name":
-            return sorted(works, key=lambda r: (r.get("title")
-                                                or r.get("file", "")).lower())
+            # **ファイル名で並べる。** エンジン側の `name` は
+            # sorted(glob("*.txt")) すなわちファイル名順なので、題名で並べると
+            # 表示と確認順がずれる（題名とファイル名は safe_filename や -o で
+            # 別々に決まりうる）
+            return sorted(works, key=lambda r: r.get("file", "").lower())
         if mode == "episodes":
             return sorted(works, key=lambda r: int(r.get("episodes") or 0),
                           reverse=True)
-        return sorted(works, key=lambda r: (
-            str((r.get("meta") or {}).get("updated") or ""),
-            "%020d" % int(r.get("mtime") or 0)), reverse=True)
+        return sorted(works, key=_row_recency, reverse=True)
 
     _SORT_KEYS = ("updated", "name", "episodes")
 
@@ -1547,9 +1579,25 @@ class NovelDownloaderApp(ctk.CTk):
         key = self.settings.get("shelf_sort", "updated")
         self.var_shelf_sort.set(self._t("sort_" + key))
 
+    @staticmethod
+    def _shelf_partial_from(row) -> int:
+        """途中から取得したファイルなら開始位置、そうでなければ 0（§8.19）。
+
+        先頭が欠けているので「既存の節数＝取得済みの話数」が成り立たず、
+        `--append` は**サイト側の先頭から**継ぎ足して重複・順序崩れを起こす。
+        本棚では印を付けて「続きを取得」を押せなくする。
+        """
+        try:
+            return int((row.get("meta") or {}).get("start_offset") or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def _shelf_new_count(self) -> int:
+        # 部分取得のファイルは数に入れない。追記できないので「新着あり」と
+        # 数えても押せるボタンが無い（§8.19）
         return sum(1 for r in self._shelf_works()
-                   if (self._shelf_new.get(r["path"]) or {}).get("new", 0) > 0)
+                   if (self._shelf_new.get(r["path"]) or {}).get("new", 0) > 0
+                   and not self._shelf_partial_from(r))
 
     def _sync_shelf_header(self):
         n = len(self._shelf_works())
@@ -1663,6 +1711,9 @@ class NovelDownloaderApp(ctk.CTk):
             state = ctk.CTkLabel(self.frm_shelf_list, text="", anchor="e",
                                  font=ctk.CTkFont(size=11))
             state.grid(row=i, column=3, sticky="e", padx=(4, 4), pady=1)
+            # 「部分」とだけ出しても理由が分からないので添える（§8.19）
+            if self._shelf_partial_from(r):
+                _Tooltip(state, lambda: self._t("tip_shelf_partial"))
             # 話の一覧（手元の .txt を読むだけ・通信しない）
             b_list = ctk.CTkButton(self.frm_shelf_list, text="☰", width=28, height=22,
                                    fg_color="gray40", font=ctk.CTkFont(size=11),
@@ -1700,10 +1751,15 @@ class NovelDownloaderApp(ctk.CTk):
         r = e["row"]
         cr = self._shelf_new.get(r["path"]) or {}
         new = int(cr.get("new", 0) or 0)
+        partial = self._shelf_partial_from(r)
         checking = bool(self._shelf_checking) and self._shelf_checking == r["path"]
-        e["icon"].configure(text="⏳" if checking else ("●" if new else "○"))
+        e["icon"].configure(text="⏳" if checking else ("●" if new and not partial
+                                                       else "○"))
         if checking:
             text, color = self._t("shelf_row_checking"), ("#8a6d00", "#e3b341")
+        elif partial:
+            # 追記できないので、新着の件数より「部分である」ことを先に伝える
+            text, color = self._t("shelf_partial", n=partial), ("#8a6d00", "#e3b341")
         elif cr.get("status") == "error":
             text, color = self._t("shelf_row_error"), ("#b3261e", "#f2b8b5")
         elif new:
@@ -1713,8 +1769,9 @@ class NovelDownloaderApp(ctk.CTk):
         else:
             text, color = self._t("shelf_unknown"), "gray"
         e["state"].configure(text=text, text_color=color)
-        e["button"].configure(state="normal" if new else "disabled",
-                              fg_color=e["btn_fg"] if new else "gray40")
+        can_append = bool(new) and not partial
+        e["button"].configure(state="normal" if can_append else "disabled",
+                              fg_color=e["btn_fg"] if can_append else "gray40")
 
     def _shelf_row_index(self, path: str) -> int:
         for i, e in enumerate(self._shelf_rows):
@@ -1778,6 +1835,11 @@ class NovelDownloaderApp(ctk.CTk):
             self._queue.put(("shelfcheck_done", 1))
             return
         self._shelf_proc = proc
+        # **起動と中止の競合を閉じる。** Popen が返る前に「中止」を押されると
+        # _shelf_check_cancel は殺す相手がおらず、engine は最後まで走りきるのに
+        # 「中止しました」と表示されてしまう（§8.19）
+        if self._shelf_stop:
+            _terminate_tree(proc)
         rc = 1
         # **_read_log は使わない。** あれは進捗行と ePub 完了行を拾って
         # ダウンロード用のイベントに変えるので、作品ごとに進捗行を出す
@@ -1901,8 +1963,13 @@ class NovelDownloaderApp(ctk.CTk):
             source_url=(row.get("resolved") or row.get("url", "")),
             # **「ここから取得」は受信箱だけ。** 本棚は手元にある作品なので、
             # 続きは --append が担う。ここで部分ファイルを作らせない（§8.16）
+            #
+            # さらに、**一覧の行番号をそのまま --start に渡せるサイトに限る**
+            # （§8.19）。エブリスタは一覧が「話」で --start が「ページ」を刻むため
+            # 行番号を渡すとずれ、杉田玄白・結城浩・青空文庫は --start を読まない
             on_start=((lambda n, it=row: self._inbox_fetch_from(it, n))
-                      if inbox else None))
+                      if inbox and (row.get("site_info") or {}).get("start_from_list")
+                      else None))
 
     def _show_episode_window(self, title: str, subtitle: str, titles: list,
                              *, source_url: str = "", on_start=None):
@@ -1948,6 +2015,11 @@ class NovelDownloaderApp(ctk.CTk):
                                 state="disabled")
             btn.pack(side="right")
             win.start_button = btn
+            # あとから追記できないことは、押す前に伝えておく（§8.19）
+            ctk.CTkLabel(win, text=self._t("ep_start_note"), anchor="w",
+                         text_color="gray", wraplength=440, justify="left",
+                         font=ctk.CTkFont(size=11)).pack(fill="x", padx=12,
+                                                         pady=(0, 10))
 
             def fetch():
                 if win.picked:
@@ -1991,7 +2063,8 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _shelf_append_all(self):
         rows = [r for r in self._shelf_works()
-                if (self._shelf_new.get(r["path"]) or {}).get("new", 0) > 0]
+                if (self._shelf_new.get(r["path"]) or {}).get("new", 0) > 0
+                and not self._shelf_partial_from(r)]
         if rows:
             self._shelf_append(rows)
 

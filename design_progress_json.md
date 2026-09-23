@@ -48,6 +48,7 @@ i18n で進捗表示を訳せないのも、Step 0 で出力完了の書式を�
 | `workinfo` | `title`, `author`, `total`（任意）, `unit`, `url` | `_dry_run_exit()` |
 | `checkresult` | `file`, `path`, `title`, `author`, `existing`, `total`, `new`, `status`, `error` | `_emit_checkresult()` |
 | `episodes` | `title`, `author`, `total`, `titles`（配列） | `_show_episode_list()` |
+| `checkstart` | `index`, `total`, `file`, `path` | `--check-update-dir` のループ |
 
 ```json
 {"schema":1,"event":"stage","n":1,"total":3,"label":"作品情報を取得中: https://…"}
@@ -142,6 +143,23 @@ i18n で進捗表示を訳せないのも、Step 0 で出力完了の書式を�
   935 話で 1 行あたり 60KB 程度になるが、`for line in stream` で読む分には支障ない
 - `_CHECK_UPDATE_MODE` のときは従来どおり `_CheckUpdateDone` を送出して
   イベントは出さない（`--check-update` 系の内部利用と混ざらない）
+
+### 3.5 `checkstart`（v2.15.0+ / design_gui_v2.md §8.17）
+
+`--check-update-dir` が 1 作品の確認を**始める前**に出す。
+
+```json
+{"schema":1,"event":"checkstart","index":3,"total":47,
+ "file":"作品A.txt","path":"/…/作品A.txt"}
+```
+
+- 全件終わるまで `checkresult` が来ないと、受け手は進んでいるのか判断できない。
+  「確認中 3/47：作品名」を出すためだけの軽いイベント
+- `path` は `checkresult` と同じ `os.path.realpath()`（鍵として突き合わせるため）
+- **`--check-update-dir` でのみ出る。** 単発の `--check-update` では出ない
+  （1 件しかないので進捗の意味がない）
+- 確認順は `--check-update-order` に従う。受け手が自前で並べた順と
+  突き合わせるなら、同じ値を渡しておくこと
 
 ## 4. GUI 側
 

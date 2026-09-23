@@ -1001,6 +1001,10 @@ _META_FIELDS = [
     ("age_rating",    "年齢制限",       "str"),
     ("series",        "シリーズ",       "str"),
     ("theme_color",   "テーマカラー",   "str"),
+    # --start で途中から落としたファイルの印（design_gui_v2.md §8.19）。
+    # このファイルは先頭が欠けているので、--append / --resume の
+    # 「既存の節数＝取得済みの話数」という前提が成り立たない
+    ("start_offset",  "開始位置",       "int"),
 ]
 
 
@@ -1120,6 +1124,12 @@ def _extract_meta_from_txt(txt_path: str) -> dict:
     return _parse_meta_lines(_header_slice(content))
 
 
+# --start で途中から取得しているか（design_gui_v2.md §8.19）。
+# meta は 17 個の run_* がそれぞれ組み立てるので、全部に配るのではなく
+# 唯一の合流点である aozora_header() で差し込む。
+_START_OFFSET = 0
+
+
 def aozora_header(title: str, author: str, synopsis: str = "",
                   source_url: str = "", meta: dict = None) -> str:
     """青空文庫書式のファイル先頭ヘッダーを生成する。
@@ -1129,6 +1139,11 @@ def aozora_header(title: str, author: str, synopsis: str = "",
     区切り線まで続くものとして読まれるため、後ろに置くとラベル行が
     あらすじへ取り込まれてしまう。
     """
+    # 途中から取得したファイルには印を残す。--from-file で作り直すときは
+    # グローバルが 1 のままなので、ヘッダーから読み戻した値がそのまま残る
+    if _START_OFFSET > 1 and meta is not None and not meta.get("start_offset"):
+        meta = dict(meta)
+        meta["start_offset"] = _START_OFFSET
     synopsis  = _normalize_synopsis(synopsis)
     syn_block = f"\n【あらすじ】\n{synopsis}\n" if synopsis else ""
     url_block = f"底本URL：{source_url}\n" if source_url else ""
@@ -10766,6 +10781,19 @@ def _fetch_ogp_cover(page_url: str, site: str = "") -> str:
     return tmp_path
 
 
+# 「話の一覧の行番号を、そのまま --start に渡してよいか」（design_gui_v2.md §8.19）。
+# --start に対応しているかどうかとは別で、**一覧に出している単位と --start が
+# 刻む単位が一致しているか**を見る。
+#   estar   : 一覧は「話」だが --start は「ページ」を刻む → 行番号を渡すとずれる
+#   genpaku / hyuki / aozora : --start を読まない（話数中心の構造ではない）
+_NO_START_FROM_LIST = {"estar", "genpaku", "hyuki", "aozora"}
+
+
+def start_from_list_ok(site: str) -> bool:
+    """一覧で選んだ行番号を `--start` に渡してよいサイトか。"""
+    return bool(site) and site not in _NO_START_FROM_LIST
+
+
 def is_short_url(url: str) -> bool:
     """短縮URLサービスのホストかを返す（**オフライン・ホスト名だけ見る**）。
 
@@ -11147,6 +11175,27 @@ def shelf_scan(dir_path: str) -> list[dict]:
     return out
 
 
+def _txt_recency(path: str) -> float:
+    """その .txt の「新しさ」を秒で返す（design_gui_v2.md §8.17）。
+
+    サイト側の `更新日：` を優先し、**無ければファイルの更新時刻で代用する**。
+    日付の文字列と mtime を別々の要素に持つタプルで比べると、更新日を持たない
+    サイト（ソリスピア・ステキブンゲイ等）が常に最後へ回り、代用にならない。
+    同じ秒の尺度に載せて初めて比較できる。
+    """
+    upd = str((_extract_meta_from_txt(path) or {}).get("updated") or "")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return time.mktime(time.strptime(upd[:len("2026-09-23 00:00:00")
+                                                 if " " in upd else 10], fmt))
+        except Exception:
+            continue
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
 def _order_txt_files(paths: list, order: str) -> list:
     """一括モードの処理順を決める（design_gui_v2.md §8.17）。
 
@@ -11157,16 +11206,14 @@ def _order_txt_files(paths: list, order: str) -> list:
     """
     if order not in ("updated", "episodes"):
         return paths
-    def key(p):
-        meta = _extract_meta_from_txt(str(p))
-        if order == "episodes":
-            return (int(meta.get("episode_count") or 0), "")
-        try:
-            mt = os.path.getmtime(str(p))
-        except OSError:
-            mt = 0.0
-        return (str(meta.get("updated") or ""), "%020d" % int(mt))
-    return sorted(paths, key=key, reverse=True)
+    if order == "episodes":
+        # **手元が持っている話数**で並べる。`meta["episode_count"]` は
+        # ダウンロード時点のサイト側総話数で別物のうえ、サイトが出さなければ
+        # 空になる。GUI の本棚が見せている数（_load_existing_txt の節数）と
+        # 揃えないと、表示の並びと確認順がずれる（§8.17 の前提が崩れる）
+        return sorted(paths, key=lambda p: len(_load_existing_txt(str(p))[0]),
+                      reverse=True)
+    return sorted(paths, key=lambda p: _txt_recency(str(p)), reverse=True)
 
 
 def _emit_checkresult(result: dict, txt_path: str = "") -> dict:
@@ -12035,7 +12082,9 @@ def _main(argv=None):
                 "needs_playwright": False, "normalized_url": None,
                 # 短縮URLは展開しないと判定できない（このモードはオフライン契約）。
                 # site:null でも「開けば分かるかもしれない」ことを呼び出し側に伝える
-                "short_url": False}
+                "short_url": False,
+                # 一覧の行番号をそのまま --start に渡せるか（§8.19）
+                "start_from_list": False}
         try:
             _res["short_url"] = is_short_url(_url)
             _site = detect_site(_url)
@@ -12046,7 +12095,8 @@ def _main(argv=None):
                     _norm = normalize_url(_url, _site)
                 _res.update(site=_site, display_name=_label,
                             needs_playwright=(_site == "hameln"),
-                            normalized_url=_norm)
+                            normalized_url=_norm,
+                            start_from_list=start_from_list_ok(_site))
         except Exception:
             pass  # 解析不能は site=None のまま返す
         sys.stdout.buffer.write(
@@ -12376,6 +12426,8 @@ def _main(argv=None):
         # --notify webhook のバリデーション（全 URL モード共通）
         if args.notify == "webhook" and not getattr(args, "webhook_url", None):
             parser.error(T("--notify webhook には --webhook-url が必要です"))
+        global _START_OFFSET
+        _START_OFFSET = int(getattr(args, "start", None) or 0)
         args.url = expand_short_url(args.url)
         site = detect_site(args.url)
         args.url = normalize_url(args.url, site)
