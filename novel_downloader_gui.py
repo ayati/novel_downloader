@@ -285,6 +285,7 @@ UI = {
     "shelf_open":   ("▾ 📚 本棚", "▾ 📚 Bookshelf"),
     "shelf_count":  ("（{n}件）", " ({n})"),
     "shelf_count_new": ("（{n}件・新着{u}）", " ({n}, {u} updated)"),
+    "shelf_refresh": ("一覧を更新", "Refresh list"),
     "shelf_check":  ("🔄 新着チェック", "🔄 Check for updates"),
     "shelf_checking": ("確認中 {n}/{m}…", "Checking {n}/{m}…"),
     "shelf_empty":  ("保存先にダウンロード済みの作品がありません。",
@@ -851,7 +852,8 @@ class NovelDownloaderApp(ctk.CTk):
         self._shelf_scanning = False
         self._shelf_proc = None        # 新着チェックのプロセス（終了時に殺す）
         self._shelf_rows = []
-        self._shelf_dirty = False      # 追記でずれたので走査し直したい（キュー終了後）
+        self._shelf_dirty = False      # 追記・DL でずれたので走査し直したい（キュー終了後）
+        self._shelf_dir_mtime = None   # 走査した時点の出力先フォルダの更新時刻
         self._shelf_chk_done = 0       # checkresult の到着数（§8.2: stage は使わない）
         self._shelf_chk_total = 0
         self._h_before_shelf = 0
@@ -1290,9 +1292,16 @@ class NovelDownloaderApp(ctk.CTk):
                                              justify="left",
                                              font=ctk.CTkFont(size=11))
         self.lbl_shelf_status.grid(row=0, column=0, sticky="ew")
+        # 一覧の読み直し（手元のフォルダを見るだけ・オフライン）。
+        # 「新着チェック」はサイトへ問い合わせる別の操作なので、絵文字を重ねず
+        # 文言で区別する（§8.14）
+        self.btn_shelf_reload = ctk.CTkButton(head, text="", width=104, height=24,
+                                              fg_color="gray40",
+                                              command=self._shelf_reload)
+        self.btn_shelf_reload.grid(row=0, column=1, sticky="e", padx=(6, 0))
         self.btn_shelf_check = ctk.CTkButton(head, text="", width=132, height=24,
                                              command=self._shelf_check_updates)
-        self.btn_shelf_check.grid(row=0, column=1, sticky="e", padx=(6, 0))
+        self.btn_shelf_check.grid(row=0, column=2, sticky="e", padx=(6, 0))
 
         self.frm_shelf_list = ctk.CTkScrollableFrame(self.frm_shelf, height=QUEUE_LIST_PX)
         self.frm_shelf_list.grid(row=1, column=0, sticky="ew", pady=(4, 0))
@@ -1335,7 +1344,7 @@ class NovelDownloaderApp(ctk.CTk):
             self.frm_shelf.grid(row=ROW_SHELF, column=0, sticky="ew",
                                 padx=16, pady=(2, 6))
             self._fit_window(grow_only=True)
-            if not self._shelf_loaded and not self._shelf_scanning:
+            if self._shelf_stale() and not self._shelf_scanning:
                 self._shelf_reload()
         else:
             self.frm_shelf.grid_forget()
@@ -1367,7 +1376,29 @@ class NovelDownloaderApp(ctk.CTk):
         elif n or self._shelf_loaded:
             label += self._t("shelf_count", n=n)
         self.btn_shelf.configure(text=label)
+        self.btn_shelf_reload.configure(text=self._t("shelf_refresh"))
         self.btn_shelf_check.configure(text=self._t("shelf_check"))
+
+    def _output_dir_mtime(self):
+        """出力先フォルダの更新時刻。取れなければ None。"""
+        try:
+            return os.stat(self.settings.get("output_dir", "")).st_mtime
+        except OSError:
+            return None
+
+    def _shelf_stale(self) -> bool:
+        """本棚の表示が実体とずれている可能性があるか（§8.14）。
+
+        一度読んだら二度と読み直さない作りだったため、**節を閉じて開き直しても
+        更新されなかった**。ダウンロード後の `_shelf_dirty` に加えて、
+        フォルダ自体の更新時刻も見る。CLI で落とした・別のPCから同期された・
+        手で消した、のいずれもここで拾える（中身の書き換えは mtime が動かないが、
+        それは追記後の `_shelf_dirty` が受け持つ）。
+        """
+        if not self._shelf_loaded or self._shelf_dirty:
+            return True
+        now = self._output_dir_mtime()
+        return now is None or now != self._shelf_dir_mtime
 
     def _shelf_reload(self):
         """--shelf-scan を別スレッドで叩いて一覧を作り直す。"""
@@ -1396,6 +1427,7 @@ class NovelDownloaderApp(ctk.CTk):
             return
         self._shelf = rows
         self._shelf_loaded = True
+        self._shelf_dir_mtime = self._output_dir_mtime()
         # 消えたファイルのチェック結果は落とす（残すと存在しない行の新着が数に乗る）
         alive = {r["path"] for r in rows}
         self._shelf_new = {k: v for k, v in self._shelf_new.items() if k in alive}
@@ -2602,8 +2634,13 @@ class NovelDownloaderApp(ctk.CTk):
             # ここに置くのは、終端が必ずこの 1 箇所を通るから（§7.5）
             try:
                 self._inbox_settle(job)
-                if status == "done" and job.get("kind") == "append":
-                    self._shelf_after_append(job)
+                if status == "done":
+                    # **追記だけでなく新規ダウンロードでも本棚はずれる**
+                    # （出力先に新しい .txt が増える）。kind で絞っていたため、
+                    # 落とした作品が本棚に出てこなかった（実機指摘・§8.14）
+                    self._shelf_dirty = True
+                    if job.get("kind") == "append":
+                        self._shelf_after_append(job)
             except Exception as e:
                 self._raw_log.append(f"[アプリ内エラー] {e}")
         if status == "aborted":
