@@ -111,6 +111,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `--list-only` | — | ダウンロードせずエピソード一覧と話数のみ表示して終了する。**`--from-file FILE` と併用すると手元の `.txt` の話一覧を通信せずに出す**（GUI の本棚が使う）。`--progress-json` 併用時は `episodes` イベントも出る |
 | `--check-update FILE` | — | 既存 `.txt` を渡してサイトの最新話数と比較し、新着話数・タイトルを表示して終了。ダウンロード・ファイル上書きは一切行わない。`--append` の前の確認に使う。`--notify webhook` 対応 |
 | `--check-update-dir DIR` | — | ディレクトリ内の全 `.txt` を走査し、各作品の新着エピソードを一括確認する。底本URL のないファイルは自動スキップ。ダウンロード・ファイル上書きは一切行わない。`--notify webhook` 対応 |
+| `--check-update-order {name,updated,episodes}` | `name` | `--check-update-dir` が作品を確認する順番。`name`=ファイル名順（従来どおり）／`updated`=更新日の新しい順／`episodes`=手元の話数が多い順。1 件あたり目次の全ページ取得が要るので全件の確認には時間がかかり、**先に終わる順番が待ち時間の体感を大きく変える**。`updated` は `更新日：` を優先し、無ければファイルの更新時刻で代用する（`_txt_recency`・**同じ秒の尺度に載せて比べること**。日付文字列と mtime を別要素のタプルで比べると更新日を持たないサイトが常に最後へ回る）。GUI は本棚の並び替えの値をそのまま渡し、**表示の並び順＝確認順**にしている（design_gui_v2.md §8.17 / §8.19） |
 | `--dry-run` | — | 作品情報（タイトル・著者・総話数）を取得して表示したあと終了する。ダウンロード・ファイル出力は一切行わない。`--list-only` より軽量な接続確認用 |
 | `--title TITLE` | — | タイトルを上書き（`--from-file` 使用時） |
 | `--author AUTHOR` | — | 著者名を上書き（`--from-file` 使用時） |
@@ -176,6 +177,7 @@ python novel_downloader.py --from-file mynovel.txt
 6b. **配信元メタデータ（ジャンル・タグ・連載状態など）** — サイトから取得した書誌情報を `meta: dict` で持ち回す。`.txt` ヘッダーの「ラベル：値」行として保存されるため、`--from-file` / `--append` / `--from-epub` で作り直しても失われない。主要関数：
    - `_GENRE_LABELS` / `_GENRE_IDS` — 共通ジャンル軸（`fantasy` / `romance` / `sf` / `mystery` / `drama` / `history` / `literature` / `nonfiction` / `fanfic` / `other` の10種）。サイト側の細分類をそのまま持ち込むと1冊しかない分類が並ぶだけになるため粗くまとめる。サイト原文は `genre_raw` に別途保持
    - `_META_FIELDS` — `(meta キー, ヘッダーのラベル, 種別)` の一覧。種別は `str` / `int` / `list` / `genre`。`theme_color`（テーマカラー）もここに含まれ、表紙の地の色に使われる
+   - `start_offset`（`開始位置：N`）は **`--start` で途中から落としたファイルの印**。`aozora_header()` がモジュール変数 `_START_OFFSET`（`_main` が `args.start` から設定）を見て差し込む。meta は 17 個の `run_*` がそれぞれ組み立てるので、全部に配らず**唯一の合流点**に置いている。**呼び出し側の meta は書き換えない**（`dict(meta)` でコピーしてから足す）。`--from-file` で作り直すときはグローバルが 0 のままなので、ヘッダーから読み戻した値がそのまま残る。**この印が付いたファイルは先頭が欠けているので「既存の節数＝取得済みの話数」が成り立たず、`--append` / `--resume` はサイト側の先頭から継ぎ足して重複・順序崩れを起こす**。GUI の本棚は印を見て「続きを取得」を押せなくしている（design_gui_v2.md §8.19。resume 側の根治は未実施）
    - `_format_meta_lines(meta)` / `_parse_meta_lines(header)` — ヘッダー行と dict の相互変換。**値が空のキーは行ごと出さない**（行の有無で有無を判定する）
    - `_header_slice(content)` — 本文を除いたヘッダー部分だけを返す（本文中の「状態：」等の誤検出を防ぐ）
    - `_extract_meta_from_txt(txt_path)` — `.txt` から meta を取り出す（`_extract_url_from_txt` の meta 版）
