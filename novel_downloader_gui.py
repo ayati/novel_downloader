@@ -327,6 +327,16 @@ UI = {
     "shelf_eps":    ("{n}話", "{n} eps"),
     "shelf_busy":   ("ダウンロード中はチェックできません。", "Cannot check while downloading."),
     "no_images":    ("挿絵を取り込まない", "Skip inline illustrations"),
+    "notify_taskbar": ("終わったらタスクバーを光らせる（窓を見ていないときだけ）",
+                       "Flash the taskbar when finished (only while unfocused)"),
+    "notify_sound": ("終わったら音を鳴らす", "Play a sound when finished"),
+    "notice_done_one": ("✅ 完了", "✅ Done"),
+    "notice_done":  ("✅ {n} 件完了", "✅ {n} done"),
+    "notice_mixed": ("✅ {ok} 件 / ⚠ {ng} 件", "✅ {ok} / ⚠ {ng}"),
+    "notice_failed": ("⚠ 失敗", "⚠ Failed"),
+    "notice_new":   ("🆕 新着 {n} 件", "🆕 {n} updated"),
+    "notice_nonew": ("新着なし", "No updates"),
+    "notice_inbox": ("📥 受信箱から {n} 件を取得中", "📥 Fetching {n} from the inbox"),
     "notify_webhook": ("完了・新着を Webhook で知らせる（Discord / Slack）",
                        "Notify on completion and updates via webhook (Discord / Slack)"),
     "webhook_ph":   ("https://discord.com/api/webhooks/…",
@@ -505,6 +515,9 @@ def default_settings() -> dict:
         "shelf_open": False,           # 本棚の節を開いた状態で起動する
         # design_gui_v2 §8.17。表示の並び順＝新着チェックの確認順
         "shelf_sort": "updated",       # "updated" | "name" | "episodes"
+        # design_gui_v2 §8.18。窓を見ていないときだけ知らせる
+        "notify_taskbar": True,        # タスクバーを点滅させる
+        "notify_sound": False,         # 音を鳴らす（好みが割れるので既定 OFF）
         # design_gui_v2 §8.13
         "no_inline_images": False,     # 本文中の挿絵を取り込まない（避難口）
         "notify_webhook": False,       # 完了・新着を Webhook で通知する
@@ -566,8 +579,9 @@ def load_settings() -> dict:
     if s.get("shelf_sort") not in ("updated", "name", "episodes"):
         s["shelf_sort"] = "updated"
     for k in ("inbox_auto", "inbox_open", "shelf_open",
-              "no_inline_images", "notify_webhook"):
+              "no_inline_images", "notify_webhook", "notify_sound"):
         s[k] = bool(s.get(k, False))
+    s["notify_taskbar"] = bool(s.get("notify_taskbar", True))
     normalize_webhook(s)
     try:
         s["inbox_scan_min"] = max(0, min(int(s.get("inbox_scan_min", 5)), 1440))
@@ -744,6 +758,42 @@ def dry_run_info(url: str, timeout=180) -> dict:
         if ev.get("event") == "workinfo":
             info = ev
     return info
+
+
+def flash_taskbar(window) -> bool:
+    """タスクバーのボタンを点滅させる（Windows のみ・依存ゼロ・§8.18）。
+
+    Windows 標準の「終わりました」の出し方。**ウィンドウを前面に引き出さない**ので
+    作業の邪魔をしない。完了時にフォルダを開く（`open_folder_on_done`）が
+    フォーカスを奪うのとは対照的。
+
+    他の OS では何もせず False を返す。ここで失敗してもアプリを止めない
+    （通知が出ないだけで、やるべきことは終わっている）。
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class FLASHWINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("hwnd", wintypes.HWND),
+                        ("dwFlags", wintypes.DWORD), ("uCount", wintypes.UINT),
+                        ("dwTimeout", wintypes.DWORD)]
+
+        # タスクバーのボタンは Tk の子ウィンドウではなく WM のフレームが持つので、
+        # winfo_id() ではなく wm_frame() を優先する
+        hwnd = 0
+        try:
+            hwnd = int(window.wm_frame(), 16)
+        except Exception:
+            hwnd = int(window.winfo_id())
+        FLASHW_ALL, FLASHW_TIMERNOFG = 0x03, 0x0C
+        info = FLASHWINFO(ctypes.sizeof(FLASHWINFO), wintypes.HWND(hwnd),
+                          FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0)
+        return bool(ctypes.windll.user32.FlashWindowEx(ctypes.byref(info)))
+    except Exception:
+        return False
 
 
 def open_external_url(url: str) -> bool:
@@ -932,6 +982,8 @@ class NovelDownloaderApp(ctk.CTk):
         self._shelf_listing = False    # 話一覧を読み込み中（§8.15）
         self._shelf_checking = ""      # いま確認中の作品のパス（§8.17）
         self._shelf_stop = False       # 新着チェックの中止要求
+        self._focused = True           # 窓を見ているか（§8.18）
+        self._notice = ""              # タイトルに出している結果
         self._shelf_chk_done = 0       # checkresult の到着数（§8.2: stage は使わない）
         self._shelf_chk_total = 0
         self._h_before_shelf = 0
@@ -969,6 +1021,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.bind("<Escape>", self._on_escape, add="+")
         # ウィンドウがフォーカスを得るたびにクリップボードを見直す（§5.4）
         self.bind("<FocusIn>", self._on_focus_in, add="+")
+        self.bind("<FocusOut>", self._on_focus_out, add="+")
 
         # 起動時クリップボード自動入力（別スレッドで判定・§7.2）
         self._maybe_autofill_from_clipboard()
@@ -1222,6 +1275,15 @@ class NovelDownloaderApp(ctk.CTk):
         self.chk_notify = ctk.CTkCheckBox(beh, text="", variable=self.var_notify,
                                           command=self._on_notify_changed)
         self.chk_notify.grid(row=3, column=0, sticky="w", pady=(6, 1))
+        # 知らせ方（§8.18）。窓を見ていないときだけ光る／鳴る
+        self.var_flash = ctk.BooleanVar(value=True)
+        self.chk_flash = ctk.CTkCheckBox(beh, text="", variable=self.var_flash,
+                                         command=self._persist)
+        self.chk_flash.grid(row=5, column=0, sticky="w", pady=(6, 1))
+        self.var_sound = ctk.BooleanVar(value=False)
+        self.chk_sound = ctk.CTkCheckBox(beh, text="", variable=self.var_sound,
+                                         command=self._persist)
+        self.chk_sound.grid(row=6, column=0, sticky="w", pady=1)
         whbox = ctk.CTkFrame(beh, fg_color="transparent")
         whbox.grid(row=4, column=0, sticky="ew", padx=(24, 0))
         whbox.grid_columnconfigure(0, weight=1)
@@ -1795,6 +1857,9 @@ class NovelDownloaderApp(ctk.CTk):
         self.lbl_shelf_status.configure(
             text=self._t("shelf_check_stopped", n=self._shelf_chk_done)
             if stopped else "")
+        if not stopped:
+            n_new = self._shelf_new_count()
+            self._notify("notice_new" if n_new else "notice_nonew", n=n_new)
 
     def _shelf_open_epub(self, row):
         """本棚の行の ePub を開く。無ければ保存先フォルダに退避する。"""
@@ -2326,6 +2391,9 @@ class NovelDownloaderApp(ctk.CTk):
             job["inbox_file"] = it["path"]
             jobs.append(job)
         added = self._start_or_enqueue(self._add_jobs(jobs))
+        if auto and added:
+            # 頼んでいないのに動いているので、黙って落とさない（§8.18）
+            self._notify("notice_inbox", n=len(added))
         if auto:
             # **積めたものだけ「試した」印を付ける。** _add_jobs は既に同じ対象が
             # キューにあると黙って捨てるので、投入前に印を付けると
@@ -2400,6 +2468,8 @@ class NovelDownloaderApp(ctk.CTk):
         self.var_inbox_auto.set(bool(s.get("inbox_auto", False)))
         self.var_inbox_scan.set(str(s.get("inbox_scan_min", 5)))
         self.var_no_images.set(bool(s.get("no_inline_images", False)))
+        self.var_flash.set(bool(s.get("notify_taskbar", True)))
+        self.var_sound.set(bool(s.get("notify_sound", False)))
         self.var_notify.set(bool(s.get("notify_webhook", False)))
         self.var_webhook_url.set(s.get("webhook_url", ""))
         self.var_webhook_fmt.set(s.get("webhook_format", "discord"))
@@ -2437,6 +2507,8 @@ class NovelDownloaderApp(ctk.CTk):
             "inbox_auto": bool(self.var_inbox_auto.get()),
             "inbox_scan_min": self._inbox_scan_min_from_widget(),
             "no_inline_images": bool(self.var_no_images.get()),
+            "notify_taskbar": bool(self.var_flash.get()),
+            "notify_sound": bool(self.var_sound.get()),
             "notify_webhook": bool(self.var_notify.get()),
             "webhook_url": self.var_webhook_url.get().strip(),
             "webhook_format": self.var_webhook_fmt.get(),
@@ -2508,6 +2580,7 @@ class NovelDownloaderApp(ctk.CTk):
         aux += [self.btn_open, self.btn_savelog]
         self._show_aux(*aux)
         self._sync_log_section()
+        self._notify("notice_done_one")
 
     @staticmethod
     def _clip_line(text: str) -> str:
@@ -2549,6 +2622,7 @@ class NovelDownloaderApp(ctk.CTk):
             self._show_aux(self.btn_savelog)
         self.lbl_status.configure(text=msg, text_color=("#b3261e", "#f2b8b5"))
         self._sync_log_section()
+        self._notify("notice_failed")
 
     def _update_download_enabled(self):
         """大ボタンの活殺と文言を決める（§5.3 / §5.5）。
@@ -2992,6 +3066,10 @@ class NovelDownloaderApp(ctk.CTk):
         self._show_aux(*aux)
         self._sync_log_section()
         self._update_download_enabled()
+        if ng == 0 and rest == 0:
+            self._notify("notice_done", n=ok)
+        else:
+            self._notify("notice_mixed", ok=ok, ng=ng + rest)
 
     def _retry_failed(self):
         """失敗した分だけ待機に戻して流し直す（§7.7）。"""
@@ -3940,10 +4018,43 @@ class NovelDownloaderApp(ctk.CTk):
         # するたびに走る（必須のガード）
         if event.widget is not self:
             return
+        self._focused = True
+        # 見たのだから知らせは役目を終えている（§8.18）
+        if self._notice:
+            self._notice = ""
+            self._sync_title()
         self._maybe_autofill_from_clipboard()
         # 受信箱も見直す（§8.10）。<FocusIn> は alt-tab のたびに飛ぶので
         # 直近に走査していれば見送る
         self._inbox_maybe_scan(min_gap=30.0)
+
+    def _on_focus_out(self, event):
+        # <FocusOut> は子ウィジェットでも飛ぶ。窓そのものから外れたときだけ見る
+        if event.widget is self:
+            self._focused = False
+
+    def _sync_title(self):
+        base = self._t("title")
+        self.title(f"{self._notice} — {base}" if self._notice else base)
+
+    def _notify(self, key: str, **kw):
+        """結果を知らせる（§8.18）。
+
+        タイトルには常に出す（雑音にならない）。**タスクバーの点滅と音は、
+        窓を見ていないときだけ。** 見ている人に点滅を出すのはただの雑音で、
+        「完了したらフォルダを開く」がフォーカスを奪うのと同じ失敗になる。
+        """
+        self._notice = self._t(key, **kw) if key else ""
+        self._sync_title()
+        if not self._notice or self._focused:
+            return
+        if self.settings.get("notify_taskbar", True):
+            flash_taskbar(self)
+        if self.settings.get("notify_sound"):
+            try:
+                self.bell()
+            except Exception:
+                pass          # 音が出せない環境でも本筋は済んでいる
 
     def _maybe_autofill_from_clipboard(self):
         """条件を全部満たしたときだけクリップボードの URL を入れる（§5.4）。"""
@@ -4047,7 +4158,7 @@ class NovelDownloaderApp(ctk.CTk):
 
     def _apply_ui_lang(self):
         set_engine_lang(self._lang())   # 以後のエンジン起動に効かせる（§8.13）
-        self.title(self._t("title"))
+        self._sync_title()
         self.lbl_url.configure(text=self._t("paste_url"))
         self.ent_url.configure(placeholder_text=self._t("url_ph"))
         if self._proc is None:
@@ -4098,6 +4209,8 @@ class NovelDownloaderApp(ctk.CTk):
         self.chk_open_on_done.configure(text=self._t("open_on_done"))
         self.lbl_inbox_scan.configure(text=self._t("inbox_scan_min"))
         self.chk_no_images.configure(text=self._t("no_images"))
+        self.chk_flash.configure(text=self._t("notify_taskbar"))
+        self.chk_sound.configure(text=self._t("notify_sound"))
         self.chk_notify.configure(text=self._t("notify_webhook"))
         self.ent_webhook.configure(placeholder_text=self._t("webhook_ph"))
         self._sync_notify_enabled()
