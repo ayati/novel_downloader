@@ -52,6 +52,66 @@ def main() -> int:
             ck("本棚を待ってから重複判定する（起動直後でも取得済みが分かる）",
                app._shelf_loaded is True)
 
+            # ── 話の一覧（§8.15）──
+            row0 = app._inbox_rows[0]
+            ck("取得済みの行では一覧ボタンを押せない（本棚から見られる）",
+               row0["list"].cget("state") == "disabled")
+            ck("_inbox_can_list が取得済みを弾く",
+               app._inbox_can_list(row0["row"]) is False)
+            ck("URL の無い行には一覧ボタンを出さない",
+               len(app._inbox_rows) == 1 and len(app._inbox) == 3)
+
+            base = dict(row0["row"])
+            for flag, want in (("have", False), ("unsupported", False),
+                               ("checking", False)):
+                probe = dict(base); probe.update(have=False, unsupported=False,
+                                                 checking=False)
+                probe[flag] = True
+                ck(f"{flag} の行は一覧を出せない",
+                   app._inbox_can_list(probe) is want)
+            fetchable = dict(base)
+            fetchable.update(have=False, unsupported=False, checking=False)
+            ck("未取得で判定済みの行は一覧を出せる",
+               app._inbox_can_list(fetchable) is True)
+            ck("URL が無ければ出せない",
+               app._inbox_can_list(dict(fetchable, url="")) is False)
+
+            # 実際に一覧を開く（エンジンは呼ばずに差し替える＝通信しない）
+            captured = {}
+            real = G.episode_list
+
+            def fake(target, from_file=False, timeout=300):
+                captured.update(target=target, from_file=from_file)
+                return {"title": "作品X", "author": "著者X", "total": 2,
+                        "titles": ["第1話", "第2話"]}
+
+            G.episode_list = fake
+            try:
+                item = dict(fetchable)
+                item.update(resolved="https://kakuyomu.jp/works/1",
+                            url="https://share.google/abc",
+                            sel=G.ctk.BooleanVar(value=True))
+                app._inbox = [item]
+                app._refresh_inbox_list()
+                app._inbox_show_episodes(item)
+                ck("一覧の読み込みが終わる",
+                   app.wait(lambda: not app._inbox_listing, 60))
+                ck("短縮URLではなく展開後のURLに問い合わせる",
+                   captured.get("target") == "https://kakuyomu.jp/works/1",
+                   str(captured.get("target")))
+                ck("受信箱はサイトに問い合わせる（--from-file ではない）",
+                   captured.get("from_file") is False)
+                wins = [w for w in app.winfo_children()
+                        if w.winfo_class() == "Toplevel"]
+                ck("一覧の窓が開く", len(wins) >= 1)
+                for w in wins:
+                    try:
+                        w.destroy()
+                    except Exception:
+                        pass
+            finally:
+                G.episode_list = real
+
             # ── 走査を見送る条件（§8.10）──
             app._proc = "dummy"
             ck("ダウンロード中は走査しない", app._inbox_maybe_scan() is False)

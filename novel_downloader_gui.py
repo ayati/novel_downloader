@@ -295,6 +295,11 @@ UI = {
     "shelf_list_title": ("{title} — 話の一覧", "{title} — Episodes"),
     "shelf_list_sub": ("手元に {n} 話　{author}", "{n} episodes here　{author}"),
     "shelf_last": ("最後の話: {t}", "Last episode: {t}"),
+    "inbox_list_sub": ("サイトに {n} 話　{author}", "{n} episodes on the site　{author}"),
+    "tip_inbox_list": ("話の一覧を見る（サイトに問い合わせます）",
+                       "Show the episode list (queries the site)"),
+    "tip_inbox_have": ("取得済みです。一覧は本棚から見られます",
+                       "Already downloaded — see the list in the bookshelf"),
     "shelf_check":  ("🔄 新着チェック", "🔄 Check for updates"),
     "shelf_checking": ("確認中 {n}/{m}…", "Checking {n}/{m}…"),
     "shelf_empty":  ("保存先にダウンロード済みの作品がありません。",
@@ -901,6 +906,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._inbox_last_scan = 0.0    # 直近に走査した時刻（フォーカス連打よけ）
         self._inbox_pending = False    # 本棚の走査待ちで保留中
         self._inbox_tried = set()      # 自動取得を一度試したファイル（無限再試行よけ）
+        self._inbox_listing = False    # 話一覧を読み込み中（§8.15）
         self._h_before_inbox = 0
 
         self.title(APP_NAME)
@@ -1644,17 +1650,25 @@ class NovelDownloaderApp(ctk.CTk):
                          daemon=True).start()
 
     def _shelf_list_worker(self, row):
-        self._queue.put(("episodelist", row, episode_list(row["path"], from_file=True)))
+        self._queue.put(("episodelist", "shelf", row,
+                         episode_list(row["path"], from_file=True)))
 
-    def _apply_episode_list(self, row, info):
-        self._shelf_listing = False
+    def _apply_episode_list(self, where: str, row, info):
+        """一覧の受け取り。本棚（手元の .txt）と受信箱（サイト）で共用する。"""
+        if where == "shelf":
+            self._shelf_listing = False
+            status, sub_key = self.lbl_shelf_status, "shelf_list_sub"
+        else:
+            self._inbox_listing = False
+            status, sub_key = self.lbl_inbox_status, "inbox_list_sub"
+        self._refresh_inbox_list()          # ボタンの活殺を戻す
         if not info or not info.get("titles"):
-            self.lbl_shelf_status.configure(text=self._t("shelf_list_fail"))
+            status.configure(text=self._t("shelf_list_fail"))
             return
-        self.lbl_shelf_status.configure(text="")
+        status.configure(text="")
         self._show_episode_window(
             info.get("title") or row.get("title", ""),
-            self._t("shelf_list_sub", n=info.get("total", 0),
+            self._t(sub_key, n=info.get("total", 0),
                     author=info.get("author") or row.get("author", "")),
             info["titles"])
 
@@ -2013,7 +2027,46 @@ class NovelDownloaderApp(ctk.CTk):
             ctk.CTkLabel(self.frm_inbox_list, text=state, anchor="e",
                          text_color="gray", font=ctk.CTkFont(size=11)).grid(
                              row=i, column=2, sticky="e", padx=(6, 4), pady=1)
-            self._inbox_rows.append(it)
+            # 話の一覧（サイトに取りに行く・押したときだけ）
+            b_list = ctk.CTkButton(self.frm_inbox_list, text="☰", width=28, height=22,
+                                   fg_color="gray40", font=ctk.CTkFont(size=11),
+                                   command=lambda item=it: self._inbox_show_episodes(item))
+            b_list.grid(row=i, column=3, sticky="e", padx=(4, 2), pady=1)
+            can = self._inbox_can_list(it) and not self._inbox_listing
+            if not can:
+                b_list.configure(state="disabled")
+            _Tooltip(b_list, lambda item=it: self._t(
+                "tip_inbox_list" if not item.get("have") else "tip_inbox_have"))
+            # 本棚（_shelf_rows）と同じ持ち方に揃える。行の item だけ持っても
+            # ボタンの活殺を後から確かめられない
+            self._inbox_rows.append({"row": it, "list": b_list, "check": chk})
+
+    def _inbox_can_list(self, it) -> bool:
+        """その行で話一覧を出せるか（§8.15）。
+
+        **取得済みの作品には出さない。** 手元にあるものは本棚の一覧が
+        通信せずに見せられるので、同じものをサイトへ取りに行く意味がない。
+        """
+        return bool(it.get("url")) and not it.get("checking") \
+            and not it.get("unsupported") and not it.get("have")
+
+    def _inbox_show_episodes(self, it):
+        """受信箱の行の話一覧を出す。**サイトに取りに行く**（§8.15）。
+
+        自動スキャン（5 分ごと）は `--dry-run` のままで、こちらは利用者が
+        押したときだけ走る。一覧のために定期実行を重くしない。
+        """
+        if self._inbox_listing or not self._inbox_can_list(it):
+            return
+        self._inbox_listing = True
+        self.lbl_inbox_status.configure(text=self._t("shelf_listing"))
+        self._refresh_inbox_list()          # 読み込み中はボタンを伏せる
+        threading.Thread(target=self._inbox_list_worker, args=(it,),
+                         daemon=True).start()
+
+    def _inbox_list_worker(self, it):
+        target = it.get("resolved") or it["url"]
+        self._queue.put(("episodelist", "inbox", it, episode_list(target)))
 
     def _inbox_fetch_selected(self, auto: bool = False):
         items = [it for it in self._inbox
@@ -3028,7 +3081,7 @@ class NovelDownloaderApp(ctk.CTk):
             self._apply_checkresult(msg[1])
             return
         if kind == "episodelist":
-            self._apply_episode_list(msg[1], msg[2])
+            self._apply_episode_list(msg[1], msg[2], msg[3])
             return
         if kind == "shelfcheck_done":
             self._shelf_check_finished(msg[1])
