@@ -11,6 +11,11 @@
     "url": "https://ncode.syosetu.com/n0022gd/",
     "note": "水属性の魔法使い（935話、連載中）。無効になった場合は https://yomou.syosetu.com/rank/list/type/monthly_total/ から再選定"
   },
+  "narou_tanpen": {
+    "name": "なろう（短編）",
+    "url": "https://ncode.syosetu.com/n9801mn/",
+    "note": "短編（全1話・完結）。短編は目次ページを持たず作品URL自体が本文なので、目次パースは必ず0件になる。連載用の実装のまま放置すると『話が見つかりません』で落ちる（2026-09-23 に実機で発覚）。無効になった場合は https://yomou.syosetu.com/rank/list/type/weekly_total/ から noveltype=2 の作品に差し替え"
+  },
   "kakuyomu": {
     "name": "カクヨム",
     "url": "https://kakuyomu.jp/works/822139846234329769",

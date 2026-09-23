@@ -114,8 +114,9 @@ python novel_downloader.py --from-file mynovel.txt
 | `--webhook-format {discord,slack}` | `discord` | Webhook ペイロード形式。`discord`: `{"content":"..."}` / `slack`: `{"text":"..."}` |
 | `--watch-cache FILE` | `.novel_watch_cache.json` | ウォッチキャッシュファイルのパス（アトミック書き込み・エントリ単位で即時更新） |
 | `--watch-auto-default` | — | ウォッチリストで `auto=` 未指定のエントリに自動 DL を適用する |
-| `--detect-site URL` | — | GUI 用の読み取り専用モード。URL のサイト種別を判定し JSON 1行（`{"schema":1,"site","display_name","needs_playwright","normalized_url"}`）を stdout に出力して終了。オフライン・即時・**短縮URL展開なし**。未対応サイトは `site:null`、ハーメルンは `needs_playwright:true`。`detect_site()`/`normalize_url()`/`_SITE_DISPATCH` を流用 |
+| `--detect-site URL` | — | GUI 用の読み取り専用モード。URL のサイト種別を判定し JSON 1行（`{"schema":1,"site","display_name","needs_playwright","normalized_url","short_url"}`）を stdout に出力して終了。オフライン・即時・**短縮URL展開なし**。未対応サイトは `site:null`、ハーメルンは `needs_playwright:true`。`detect_site()`/`normalize_url()`/`_SITE_DISPATCH` を流用。**`short_url` は `is_short_url()`（`_SHORT_URL_HOSTS` のホスト名照合のみ・オフライン）の結果**で、`share.google` 等は `site:null` かつ `short_url:true` になる。**呼び出し側は `site is None` だけで「未対応」と判断してはいけない** — 展開すれば落とせる URL をエンジン起動前に捨てることになる（design_gui_v2.md §8.8） |
 | `--list-sites` | — | GUI 用の読み取り専用モード。対応サイト一覧（`[{"site","display_name"}]`）を JSON で stdout に出力して終了。`_SITE_DISPATCH` を挿入順に列挙 |
+| `--shelf-scan DIR` | — | GUI 用の読み取り専用モード。ディレクトリ内の `.txt` を走査し、1 件 1 オブジェクトの JSON 配列（`path` / `file` / `title` / `author` / `url` / `site` / `display_name` / `episodes` / `epub` / `mtime` / `meta`）を stdout に出力して終了。**オフライン・ネットワークに一切触れない**。`episodes` は**手元のファイルが持っている話数**で、`meta["episode_count"]`（ダウンロード時点のサイト側総話数）とは別物。`底本URL：` の無い `.txt` も `url:""` の行として返す（本棚に出すかは GUI 側の判断）。`_extract_url_from_txt` / `_load_existing_txt` / `_extract_meta_from_txt` / `detect_site` を流用し、**GUI 側に青空文庫書式の解析を再実装させない**のが目的（design_gui_v2.md §8.1b） |
 | `--progress-json` | — | GUI 連携用。**stdout を JSON Lines のイベント専用にし、人間向け出力は stderr へ回す**（`_main()` 冒頭で `sys.stdout` を差し替えるので既存の `print()` は無改修）。イベントは `stage` / `progress` / `output` / `workinfo` の4種。**指定しなければ挙動は一切変わらない**。仕様は `design_progress_json.md` |
 
 ## 依存ライブラリ
@@ -153,7 +154,7 @@ python novel_downloader.py --from-file mynovel.txt
 
 4. **ローカルファイルモード** — `run_from_file`（`--from-file`）は `parse_aozora_text` で既存テキストからタイトル・著者・あらすじを抽出。`run_from_epub`（`--from-epub`）は ePub3 → 青空文庫テキスト逆変換（`parse_epub`）。
 
-5. **短縮URL展開・og:image取得** — `_SHORT_URL_HOSTS`（30種以上）で短縮サービスを判定。`expand_short_url()` が最大5ホップのリダイレクト追跡。`main()` 内で `detect_site()` の前に呼び出される。
+5. **短縮URL展開・og:image取得** — `_SHORT_URL_HOSTS`（30種以上）で短縮サービスを判定（`is_short_url()`）。`expand_short_url()` が最大5ホップのリダイレクト追跡。`main()` 内で `detect_site()` の前に呼び出される。**リダイレクト先は `_is_public_http_url()` で各ホップ検査する** — http(s) 以外を追わず、ホストの解決先がプライベート・ループバック・リンクローカル等なら追わない（名前解決できないホストは通す）。`urlopen` は既定でリダイレクトを自前で追ってしまうため、`_NoInternalRedirect`（`HTTPRedirectHandler` 継承）を `build_opener()` に噛ませて1ホップずつ止める。GUI の受信箱が共有クラウドフォルダの短縮URLを無操作で展開しうるための措置（design_gui_v2.md §8.11）。**この検査は短縮URL展開だけに効かせる** — 各サイトのスクレイパーは `detect_site()` / `_host_matches()` で既知ドメインに限定済み。
 
 6. **青空文庫外字注記の Unicode 変換** — `aozora_resolve_gaiji(text)` が ZIP デコード直後のテキストに対して `※［＃「説明」、識別子］` 形式の外字注記を解決する。対応識別子は `U+XXXX`（Unicode 直接指定）、`第3水準1-X-Y` / `第4水準2-X-Y`（JIS X 0213 プレフィックス付き）、素の `P-R-C`（プレフィックス省略形、P=1 or 2）の4形式。JIS X 0213 系は `data/aozora_gaiji_jis0213.tsv`（11,233 エントリ、x0213.org 由来、`tools/build_gaiji_table.py` で再生成可）を遅延ロード。`_extract_gaiji_identifier` は注記内部を `、` で分割して走査し、最初に解決可能な識別子にマッチする要素を採用するため、複合説明（説明部に `、` を含む山月記の `※［＃「口＋皐」の「白」に代えて「自」、第4水準2-4-33］`）や併記形（放浪記の `※［＃「さんずい＋垂」、U+6DB6、235-7］`）にも対応する。Unicode 解決不能な注記（Unicode 未収録字形・UCV・78字形・ページ-行のみ等）は `_extract_gaiji_description()` で説明部のみ抽出して `※（説明）` 形式へフォールバック（ドグラ・マグラの `※［＃感嘆符三つ、626-10］` → `※（感嘆符三つ）`）。フォールバック件数は ℹ・原文保持件数は ⚠ で stderr へ集約レポート。
 
@@ -200,7 +201,7 @@ python novel_downloader.py --from-file mynovel.txt
 
 7. **サイトディスパッチテーブル `_SITE_DISPATCH`** — `{サイトID: (表示名, デフォルト表紙色, run_関数)}` の辞書。`main()` のサイト判定・ディスパッチで参照。`_check_update_one()` でも使用。直後に `_SITE_COLOR_BY_LABEL`（表示名 → 既定色の逆引き）と `_resolve_cover_bg(cover_bg, meta, site_name)` を定義する。`build_epub()` は `site_name`（表示名）しか受け取らないため逆引きが必要で、これがあるおかげで表紙色のロジックを 1 箇所に集約でき **17個の `run_*` を触らずに済む**。
 
-8. **`_check_update_one(txt_path, delay)`** — 1ファイルの更新チェックを実行し結果辞書を返す。`--check-update-dir` / `--append-dir` の Phase 1 で使用。`_extract_url_from_txt` → `expand_short_url` → `detect_site` → `normalize_url` → `_SITE_DISPATCH` 参照でディスパッチ。`_CHECK_UPDATE_MODE = True` で `_CheckUpdateDone` 例外をキャッチして新着話数を算出。
+8. **`_check_update_one(txt_path, delay)`** — 1ファイルの更新チェックを実行し結果辞書を返す。実処理は `_check_update_one_impl()` で、`_check_update_one()` は `_emit_checkresult()` を通す**薄いラッパ**（early return が複数あるため、GUI 向け `checkresult` イベントの送出点を 1 箇所に集約する）。`--check-update-dir` / `--append-dir` の Phase 1 で使用。`_extract_url_from_txt` → `expand_short_url` → `detect_site` → `normalize_url` → `_SITE_DISPATCH` 参照でディスパッチ。`_CHECK_UPDATE_MODE = True` で `_CheckUpdateDone` 例外をキャッチして新着話数を算出。
 
 9. **`_append_one(txt_path, base_args)`** — 1ファイルの追記処理を実行し結果辞書を返す。`--append-dir` の Phase 2 で使用。`--append` と同等の args を内部で組み立て、`_SITE_DISPATCH` で `run_*` を呼び出す。追記前後の話数差分で追加話数を算出。
 
@@ -294,6 +295,7 @@ CSS は2層構造：(1) `html, body { writing-mode: vertical-rl }` — class 非
   - カクヨムは本文への画像挿入機能自体がない（近況ノートのみ）
 - **NOVEL DAYS 本文の挿絵は `<img class="imgc">`**。`days_extract_images()` が `div.episode div.inner` 内の `<img>` を青空文庫の図タグへ置き換え、画像本体を `images` dict に貯めて `build_epub(images=...)` で ePub に埋め込む。`get_text()` の前（＝ `days_html_to_aozora` の冒頭）で呼ぶこと。`/shared/` 配下はサイト共通の UI アイコン（ロゴ・SNS ボタン）なので除外する。本文の src はファイル名に `thumb_` が付いたサムネイル（実測 800×533）で、**同じパスの接頭辞なし URL が原寸版**（1536×1024）なので原寸 → サムネイルの順で試す（`_days_img_candidates`）。images のキーは `thumb_` を外した名前に寄せ、同一画像の二重取得を防ぐ。取得に失敗した画像はタグを出さずに読み飛ばす
 - **エブリスタの第1話の画像は表紙とは限らない**。実測では作品によって「表紙そのもの」（26146379: 第1話の画像と公式表紙の平均画素差 0.628 ＝ 再エンコード差のみ）と「キャラ紹介の挿絵」（26486552: 第1話・第2話が別々のキャラ絵で、公式表紙は third の別画像）に分かれるため、**第1話の画像を表紙として扱ってはいけない**。表紙は `coverImageName` を使う
+- **なろうの短編（全1話）は目次ページを持たず、作品 URL 自体が本文ページ**。目次パースは必ず 0 件になるので、`narou_get_all_episodes()` は**0 件だったときに 1 ページ目の HTML を見て短編かを判定**し（`narou_looks_like_tanpen()`）、作品 URL を 1 話として返す。話タイトルを持たないため作品名を充て、`run_narou` 側の `ep.subtitle.strip() or ep_title` がそれを拾う。**「0 件なら短編」と決めつけないこと** — サイト構造の変化で目次を読めなくなった場合も 0 件になり、連載を丸ごと取りこぼしているのに「1 話だけの本」を黙って出すことになる。本文の有無（`p-novel__text` / `js-novel-text`）で区別する。回帰確認用に `novel_health_check_urls.json` の `narou_tanpen` を用意してある
 - **ハーメルンの話一覧は `<section class="episode-list">` の `<ul>`/`<li>`**（旧レイアウトの `<table>` ＋ `<span id="話数">` は 2026 年のサイト刷新で消滅した）。`_hameln_episode_list_ul()` が現行レイアウトを読み、`hameln_get_episode_list()` は結果が空のときだけ旧 `<table>` パスへ落ちる。話番号は `<span id>` が無くなったので href の `./N.html` から取る。**話タイトルは `span.episode-list__title` に限定すること** — `<a>` 全体を `get_text()` すると投稿日時と「(改)」まで混ざる。章見出しは `li.episode-list__chapter` の `div.episode-list__chapter-title`
 - **`<br>` の改行変換は必ず `_br_to_newline(el)` を使う（`br.replace_with("\n")` を直書きしない）**。bs4 の `html.parser` は同一文書内に素の `<br>` と `<br />` が混在すると、空要素追跡フラグ（`already_closed_empty_element`）が持ち越されて後続の `<br />` を「閉じ済み」と誤判定し、**その `<br />` が以降の兄弟ノードをすべて子に抱えたコンテナタグになる**。この状態で `replace_with("\n")` すると本文が丸ごと消える（`get_text()` が空になる）。`_br_to_newline` は子を持つ `<br>` を `insert_before("\n")` + `unwrap()` で処理して中身を残す。ノベマ！でこれが実際に起きた（サイドバーの `コンテスト発！<br>書籍化作品` が本文の `<br />` を汚染し全話が空になった）。同じ罠は `<img>` / `<hr>` など他の空要素にもあるので、新しい抽出コードで `get_text()` が不自然に空になったらまず `tag.contents` を疑う
 - **ノベマ！の1エピソードは複数ページに分割されている**。目次（`div.bookChapterList`）の `<a>` は**エピソードの開始ページ番号**しか持たないので、`run_novema` は 野いちご・berry's cafe と同じくエピソード範囲 `[(page_start, page_end, title, chapter)]` を組み立てて `page_start`〜`page_end` を順に取得・連結する（1エントリ＝1ページと見なすと各エピソードの先頭ページだけしか取れない）。総ページ数は作品ページの `div.bookInfo` 内「ページ数／NNページ」から取り、無ければ先頭ページの `aside` の「N / M」で補う。エピソードに題が付いていない作品では目次の内側 `<ul>` が空で出力されるため、`novema_get_episode_list` の「単独エピソード」分岐が章そのものをエピソードとして拾う
@@ -351,6 +353,9 @@ GUI（Android アプリ・将来の組み込み利用）から本モジュール
 | `AbortRequested` | 中止要求例外。`main()` が `KeyboardInterrupt` と共に捕捉し「中止しました。」を stderr に表示して**終了コード 130** で終了する（CLI の Ctrl+C も同様） |
 | `PROGRESS_CALLBACK` | `fn(n: int, total: int, title: str)` を代入すると話数進捗の print と同じタイミングで呼ばれる（print 出力は従来どおり維持）。呼び出しは `_progress()` ヘルパー経由でフック側の例外は握りつぶす。なろうの `total` は `--end` 指定時も全話数を返す点に注意 |
 | 環境変数 `NOVEL_DL_COVER_FONT` | 表紙用フォントファイルのパスを明示指定。`_find_cjk_fonts()` が最優先で採用し、fc-list 等の探索をスキップする（Android では同梱 TTF を指定） |
+| 環境変数 `NOVEL_DL_TRACEBACK` | `1` を指定すると、想定内の失敗（`_FATAL_ERRORS`）でも従来どおり全スタックトレースを出す。既定では `_friendly_error()` の 1 行（必ず `エラー: ` で始まる）だけを stderr に出して終了コード 1 で終わる |
+
+**失敗の出し方**: 通信エラー・作品削除（404）・ディスク不足は `main()` 直前の `_friendly_error()` / `_exit_fatal()` が `エラー: …` の 1 行に整えて終了コード 1 で終わる（GUI は stderr の `エラー:` 行を失敗理由に使う）。`*_fetch()` がリトライを使い切って `RuntimeError` を投げるときは、**最後の例外を必ず文面に含めること**（`f"取得失敗: {url} — {e}"`）。含めないと 404 も接続断も同じ文面に潰れる。
 
 新しいスクレイパーを追加する際は、(1) `*_fetch()` 関数の入口に `_check_abort()` を置く、(2) リクエスト間隔の待機に `time.sleep` ではなく `_sleep` を使う、(3) 話数進捗 print の直後に `_progress(n, len(list), タイトル)` を呼ぶ、(4) **`_dry_run_exit(args, title, author, total, unit=…)` に作品情報を渡す**（`workinfo` イベントの発火点。渡し忘れると GUI の受信箱でその作品だけ題名が出ない）。`unit` は `total` の単位で、`"episode"`（既定）/ `"page"`（エブリスタ・野いちご・ノベマ！・berry's）/ `"chapter"`（ネオページ・杉田玄白・結城浩）。総数が確定しないなら `total` を省く（青空文庫がそれ）。
 

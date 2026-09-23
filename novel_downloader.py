@@ -108,8 +108,10 @@ import argparse
 import colorsys
 import math
 import unicodedata
+import socket
+import ipaddress
 from datetime import date, datetime, timezone
-from urllib.request import urlopen, Request
+from urllib.request import urlopen, Request, build_opener, HTTPRedirectHandler
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlparse, urljoin, parse_qs
 from html import escape as _esc
@@ -129,6 +131,15 @@ try:
     _KAKUYOMU_AVAILABLE = True
 except ImportError:
     _KAKUYOMU_AVAILABLE = False
+
+# requests の例外は **_KAKUYOMU_AVAILABLE とは別に**持つ。あのフラグは
+# requests と bs4 の両方が入っている条件であり、monogatary.com は requests だけで
+# 動く（CLAUDE.md の依存表）。フラグで判定すると bs4 未導入環境で通信エラーが
+# 「ファイルの読み書きに失敗しました」に化ける
+try:
+    _REQUESTS_EXC = (requests.exceptions.RequestException,)
+except Exception:
+    _REQUESTS_EXC = ()
 
 # ハーメルン用ライブラリ（任意インポート）
 try:
@@ -249,6 +260,8 @@ _MESSAGES_EN = {
         "--notify webhook requires --webhook-url",
     "--watch: ファイルが見つかりません: {path}":
         "--watch: file not found: {path}",
+    "[情報] 詳細は NOVEL_DL_TRACEBACK=1 を付けて再実行すると表示されます。":
+        "[info] Re-run with NOVEL_DL_TRACEBACK=1 to see the full traceback.",
     "[警告] Pillow がインストールされていないため、JPEG表紙画像を生成できません。\n       JPEG表紙を有効にするには以下のコマンドでインストールしてください:\n           [Ubuntu/Debian] sudo apt install python3-pillow\n           [その他]        pip install Pillow\n       Pillow がない場合は SVG フォールバックで表紙を生成しますが、\n       多くの ePub リーダーで SVG 表紙は正しく表示されない場合があります。":
         "[warn] Pillow is not installed, so JPEG cover images cannot be generated.\n       To enable JPEG covers, install it with one of the following:\n           [Ubuntu/Debian] sudo apt install python3-pillow\n           [Other]         pip install Pillow\n       Without Pillow the cover falls back to SVG, which many EPUB\n       readers do not display correctly.",
     "[警告] PillowでのJPEG表紙生成中にエラーが発生しました。SVGで代替します。\n       エラー内容: {err}\n       詳細:\n":
@@ -303,6 +316,10 @@ _MESSAGES_EN = {
         "Error: downloading from monogatary.com requires requests.",
     "エラー: {e}":
         "Error: {e}",
+    "エラー: アクセスが集中しています（HTTP 429）。--delay を大きくし時間をおいて再試行してください: {url}":
+        "Error: Too many requests (HTTP 429). Increase --delay and try again later: {url}",
+    "エラー: アクセスを拒否されました（HTTP {code}）。会員限定・年齢制限の作品かもしれません: {url}":
+        "Error: Access denied (HTTP {code}). The work may be members-only or age-restricted: {url}",
     "エラー: アルファポリスのダウンロードには requests と beautifulsoup4 が必要です。":
         "Error: downloading from Alphapolis requires requests and beautifulsoup4.",
     "エラー: エピソードが見つかりませんでした。":
@@ -317,6 +334,10 @@ _MESSAGES_EN = {
         "Error: downloading from Kakuyomu requires requests and beautifulsoup4.",
     "エラー: カードページの取得に失敗しました — {e}":
         "Error: failed to fetch the card page — {e}",
+    "エラー: サイトに接続できません（{reason}）。ネットワーク接続を確認してください。":
+        "Error: Could not reach the site ({reason}). Check your network connection.",
+    "エラー: サイト側でエラーが発生しています（HTTP {code}）。時間をおいて再試行してください: {url}":
+        "Error: The site returned a server error (HTTP {code}). Try again later: {url}",
     "エラー: ステキブンゲイのダウンロードには requests と beautifulsoup4 が必要です。":
         "Error: downloading from Suteki Bungei requires requests and beautifulsoup4.",
     "エラー: ステキブンゲイの作品URLとして認識できません: {work_url}":
@@ -353,12 +374,20 @@ _MESSAGES_EN = {
         "Error: file not found: {epub_path}",
     "エラー: ファイルが見つかりません: {txt_path}":
         "Error: file not found: {txt_path}",
+    "エラー: ファイルの読み書きに失敗しました: {e}":
+        "Error: File read/write failed: {e}",
     "エラー: ファイルを読み込めません（エンコーディング不明）: {txt_path}":
         "Error: could not read the file (unknown encoding): {txt_path}",
     "エラー: プロジェクト杉田玄白のダウンロードには requests と beautifulsoup4 が必要です。":
         "Error: downloading from Project Sugita Genpaku requires requests and beautifulsoup4.",
+    "エラー: 作品が見つかりません（HTTP 404）。URLを確認してください: {url}":
+        "Error: Work not found (HTTP 404). Check the URL: {url}",
     "エラー: 作品トップページへのリンクが見つかりません。作品URLを直接指定してください。":
         "Error: could not find a link to the work's top page. Please pass the work URL directly.",
+    "エラー: 取得に失敗しました（HTTP {code} {reason}）: {url}":
+        "Error: Fetch failed (HTTP {code} {reason}): {url}",
+    "エラー: 取得に失敗しました（HTTP {code}）: {url}":
+        "Error: Fetch failed (HTTP {code}): {url}",
     "エラー: 対応しているURLを指定してください。":
         "Error: please specify a supported URL.",
     "エラー: 本文を抽出できませんでした。":
@@ -375,6 +404,10 @@ _MESSAGES_EN = {
         "Error: could not determine the total page count.",
     "エラー: 話が見つかりません。URLを確認してください。":
         "Error: no episodes found. Please check the URL.",
+    "エラー: 通信が切断されました（{e}）。ネットワーク接続を確認してください。":
+        "Error: The connection was lost ({e}). Check your network connection.",
+    "エラー: 通信に失敗しました: {e}":
+        "Error: Network request failed: {e}",
     "エラー: 野いちごのダウンロードには requests と beautifulsoup4 が必要です。":
         "Error: downloading from No-ichigo requires requests and beautifulsoup4.",
     "エラー: 野いちごの作品URLとして認識できません: {work_url}":
@@ -539,6 +572,17 @@ def _print_normalized(before: str, after: str, what: str = "話数ページURL",
     print(f"       正規化後: {after}")
 
 
+def _emit_stage(n: int, label: str, *, total: int = 3) -> None:
+    """段階イベントだけを送る（人間向けの見出しは出さない）。
+
+    run_narou だけは独自書式の `[Step N]` で段階を print しており、これを
+    `_print_stage()` に置き換えると CLI 既定の標準出力が変わってしまう
+    （design_progress_json.md §5 の「4 が最重要」）。表示は従来のまま、
+    GUI 向けの stage イベントだけを他の 16 サイトと揃えるためのフック。
+    """
+    _emit_event("stage", n=n, total=total, label=label)
+
+
 def _print_stage(n: int, label: str, *, total: int = 3,
                  blank_before: bool = False) -> None:
     """「[n/3] …」の段階見出しを出力する。
@@ -546,7 +590,7 @@ def _print_stage(n: int, label: str, *, total: int = 3,
     Windows GUI の進捗抽出は先頭空白を必須にしてこの見出しを意図的に弾いている
     （gui_v1_design.md §9.2）。本文の進捗行と混同しないよう字下げしない。
     """
-    _emit_event("stage", n=n, total=total, label=label)
+    _emit_stage(n, label, total=total)
     print(("\n" if blank_before else "") + f"[{n}/{total}] {label}")
 
 
@@ -1184,6 +1228,11 @@ def _dry_run_exit(args, title=None, author=None, total=None, unit="episode"):
         fields = {"title": title or "", "author": author or "", "unit": unit}
         if total is not None:
             fields["total"] = int(total)
+        # 展開・正規化まで済んだ作品 URL。短縮URLを投げた呼び出し側は
+        # これでしか正体を知れない（本棚との重複判定に要る・§8.8）
+        _url = getattr(args, "url", "") or ""
+        if _url:
+            fields["url"] = _url
         _emit_event("workinfo", **fields)
     if getattr(args, "dry_run", False):
         print("\n[dry-run] ダウンロードは行いません。")
@@ -3603,6 +3652,19 @@ class NarouEpisodeListParser(HTMLParser):
                 self._in_ep_link = False
 
 
+def narou_looks_like_tanpen(html: str) -> bool:
+    """目次が 0 件だったのは「短編だから」かを判定する。
+
+    なろうの**短編**（API の `noveltype=2` / 全1話）は目次ページを持たず、
+    作品 URL 自体が本文ページになっている。そのため目次パースは必ず 0 件になる。
+
+    **「0 件なら短編」と決めつけてはいけない。** サイト構造が変わって目次を
+    読めなくなった場合も 0 件になり、その時は連載を丸ごと取りこぼしているのに
+    「1 話だけの本」を黙って出してしまう。本文があるかどうかで区別する。
+    """
+    return ("p-novel__text" in html) or ("js-novel-text" in html)
+
+
 def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -> tuple:
     """作品情報 + 目次全ページを取得して (title, author, synopsis, episodes, meta) を返す。
 
@@ -3615,14 +3677,18 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
         meta = {"site": "小説家になろう", "site_id": f"narou:{ncode}"}
     _sleep(index_wait)
 
+    _emit_stage(2, "エピソード一覧を取得中...")
     all_eps      = []
     page         = 1
     prev_chapter = ""  # ページをまたいで章情報を引き継ぐ
+    first_html   = ""  # 短編判定に使う（作品 URL 自体が本文ページかどうか）
 
     while True:
         url  = f"{base_url}?p={page}" if page > 1 else base_url
         print(f"  目次 p.{page} 取得: {url}")
         html = narou_fetch(url)
+        if page == 1:
+            first_html = html
 
         p = NarouEpisodeListParser()
         p._current_chapter = prev_chapter  # 前ページ末尾の章名を引き継ぐ
@@ -3642,6 +3708,14 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
 
         page += 1
         _sleep(index_wait)
+
+    if not all_eps and narou_looks_like_tanpen(first_html):
+        # 短編は作品 URL 自体が本文ページ。目次が無いだけで取得はできる。
+        # 話タイトルは持たないので作品名を充てる（run_narou 側の
+        # `ep.subtitle.strip() or ep_title` がこれを拾う）。
+        ep_path = urlparse(base_url).path or f"/{ncode}/"
+        all_eps = [(ep_path, title or "", "")]
+        print("  [情報] 目次がありません。短編として本文ページを取得します。")
 
     return title, author, synopsis, all_eps, meta
 
@@ -3874,6 +3948,9 @@ def run_narou(args):
     ncode    = m.group(1).lower()
     base_url = f"https://ncode.syosetu.com/{ncode}/"
 
+    # 表示は [Step N] のまま（CLI 既定の出力を変えない）。GUI 向けの stage だけ
+    # 他サイトと揃える（design_gui_v2.md §5.7）。
+    _emit_stage(1, f"作品情報を取得中: {base_url}")
     print(f"\n[Step 1] 作品情報・目次取得開始")
     title, author, synopsis, episodes, meta = narou_get_all_episodes(
         base_url, ncode, index_wait=args.delay
@@ -3953,6 +4030,7 @@ def run_narou(args):
         epub_episodes= []
         print(f"\n[Step 2] 本文ダウンロード開始")
 
+    _emit_stage(3, "各エピソードを取得中...")
     narou_images   = _inline_images_dict(args)
     narou_img_seen = {}
 
@@ -4046,6 +4124,7 @@ _KKY_HEADERS = {
 def kky_fetch(session, url: str, retries: int = 3):
     """URLを取得してBeautifulSoupオブジェクトを返す。"""
     _check_abort()
+    last_exc = None
     for attempt in range(1, retries + 1):
         try:
             resp = session.get(url, headers=_KKY_HEADERS, timeout=20)
@@ -4054,10 +4133,13 @@ def kky_fetch(session, url: str, retries: int = 3):
             resp.encoding = ct.split("charset=")[-1].split(";")[0].strip() if "charset=" in ct else "utf-8"
             return BeautifulSoup(resp.text, "html.parser")
         except Exception as e:
+            last_exc = e
             print(T("  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}").format(attempt=attempt, retries=retries, e=e))
             if attempt < retries:
                 _sleep(3)
-    raise RuntimeError(f"URLの取得に失敗しました: {url}")
+    # 最後の失敗理由を必ず添える。これが無いと 404（作品削除）も接続断も
+    # 「URLの取得に失敗しました」に潰れ、GUI の失敗理由が役に立たない。
+    raise RuntimeError(f"URLの取得に失敗しました: {url} — {last_exc}") from last_exc
 
 
 def kky_extract_next_data(soup) -> dict:
@@ -4873,6 +4955,7 @@ _ALP_HEADERS = {
 def alp_fetch(session, url: str, retries: int = 3):
     """URLを取得してBeautifulSoupオブジェクトを返す。"""
     _check_abort()
+    last_exc = None
     for attempt in range(1, retries + 1):
         try:
             resp = session.get(url, headers=_ALP_HEADERS, timeout=20)
@@ -4882,10 +4965,13 @@ def alp_fetch(session, url: str, retries: int = 3):
                              if "charset=" in ct else "utf-8")
             return BeautifulSoup(resp.text, "html.parser")
         except Exception as e:
+            last_exc = e
             print(T("  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}").format(attempt=attempt, retries=retries, e=e))
             if attempt < retries:
                 _sleep(3)
-    raise RuntimeError(f"URLの取得に失敗しました: {url}")
+    # 最後の失敗理由を必ず添える。これが無いと 404（作品削除）も接続断も
+    # 「URLの取得に失敗しました」に潰れ、GUI の失敗理由が役に立たない。
+    raise RuntimeError(f"URLの取得に失敗しました: {url} — {last_exc}") from last_exc
 
 
 def alp_get_work_info(soup) -> dict:
@@ -5307,6 +5393,7 @@ _EST_HEADERS = {
 def est_fetch(session, url: str, retries: int = 3):
     """URLを取得して (BeautifulSoup, html_text) を返す。"""
     _check_abort()
+    last_exc = None
     for attempt in range(1, retries + 1):
         try:
             resp = session.get(url, headers=_EST_HEADERS, timeout=20)
@@ -5316,10 +5403,13 @@ def est_fetch(session, url: str, retries: int = 3):
                              if "charset=" in ct else "utf-8")
             return BeautifulSoup(resp.text, "html.parser"), resp.text
         except Exception as e:
+            last_exc = e
             print(T("  [警告] 取得失敗 (試行 {attempt}/{retries}): {e}").format(attempt=attempt, retries=retries, e=e))
             if attempt < retries:
                 _sleep(3)
-    raise RuntimeError(f"URLの取得に失敗しました: {url}")
+    # 最後の失敗理由を必ず添える。これが無いと 404（作品削除）も接続断も
+    # 「URLの取得に失敗しました」に潰れ、GUI の失敗理由が役に立たない。
+    raise RuntimeError(f"URLの取得に失敗しました: {url} — {last_exc}") from last_exc
 
 
 def _est_nuxt_data(html: str) -> list:
@@ -10386,6 +10476,64 @@ def _extract_url_from_html(html: str) -> str | None:
     return None
 
 
+def _is_public_http_url(url: str) -> bool:
+    """http(s) であり、ホストがグローバルなアドレスに解決されるかを返す。
+
+    短縮URLの展開は**リダイレクト先を相手が決められる**唯一の経路。GUI の受信箱
+    （design_gui_v2.md §8.3）は共有クラウドフォルダを見に行き、置かれた短縮URLを
+    定期スキャンが**無操作で**展開しうるので、フォルダに書ける第三者が
+    社内・家庭内アドレスへのリクエストを起こさせられる。ホップごとに解決先を見る。
+
+    名前解決できないホストは「公開」とみなして通す。到達できないので実害が無い
+    一方、DNS が一時的に落ちているだけの正当な URL を弾きたくない。
+    """
+    try:
+        parts = urlparse(url)
+    except Exception:
+        return False
+    if parts.scheme.lower() not in ("http", "https"):
+        return False                      # file:// や gopher:// は追わない
+    host = parts.hostname
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return True
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if not ip.is_global:              # プライベート・ループバック・リンクローカル等
+            return False
+    return True
+
+
+class _NoInternalRedirect(HTTPRedirectHandler):
+    """内部アドレスへのリダイレクトを追わないハンドラ。
+
+    **urlopen は既定でリダイレクトを自前で追ってしまう**ため、expand_short_url の
+    5 ホップの合間で検査するだけでは素通りする。1 ホップずつここで止める。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_public_http_url(newurl):
+            raise URLError(f"内部アドレスへのリダイレクトを拒否しました: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SHORT_URL_OPENER = None
+
+
+def _short_url_opener():
+    """短縮URL展開専用の opener（リダイレクト先を検査する）。"""
+    global _SHORT_URL_OPENER
+    if _SHORT_URL_OPENER is None:
+        _SHORT_URL_OPENER = build_opener(_NoInternalRedirect())
+    return _SHORT_URL_OPENER
+
+
 def _follow_one_redirect(url: str) -> tuple[str, str | None]:
     """1回のHTTPリクエストでリダイレクト後のURLとHTML本文を返す。
 
@@ -10393,9 +10541,13 @@ def _follow_one_redirect(url: str) -> tuple[str, str | None]:
     HEAD でリダイレクトがなかった（同一URL）場合は GET でページ本文も取得する。
     失敗した場合は (url, None) を返す。
     """
+    if not _is_public_http_url(url):
+        return url, None                  # 内部アドレスは踏みに行かない
+
+    opener = _short_url_opener()
     try:
         req = Request(url, headers=_SHORT_URL_HEADERS, method="HEAD")
-        with urlopen(req, timeout=15) as resp:
+        with opener.open(req, timeout=15) as resp:
             landed = resp.geturl()
         if landed != url:
             return landed, None
@@ -10405,7 +10557,7 @@ def _follow_one_redirect(url: str) -> tuple[str, str | None]:
     # HEAD でリダイレクトなし（または失敗）→ GET でページ本文も取得
     try:
         req = Request(url, headers=_SHORT_URL_HEADERS)
-        with urlopen(req, timeout=15) as resp:
+        with opener.open(req, timeout=15) as resp:
             landed = resp.geturl()
             body = resp.read(65536).decode("utf-8", errors="replace")
         return landed, body
@@ -10598,6 +10750,21 @@ def _fetch_ogp_cover(page_url: str, site: str = "") -> str:
     return tmp_path
 
 
+def is_short_url(url: str) -> bool:
+    """短縮URLサービスのホストかを返す（**オフライン・ホスト名だけ見る**）。
+
+    `--detect-site` はネットワークに触れない契約なので短縮URLの先を判定できない。
+    GUI がそれを「未対応のサイト」と決めつけてエンジンを起動しないのを防ぐため、
+    「今は判定できないが展開すれば分かるかもしれない」ことだけを伝える
+    （design_gui_v2.md §8.8）。
+    """
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    return any(_host_matches(host, d) for d in _SHORT_URL_HOSTS)
+
+
 def expand_short_url(url: str) -> str:
     """短縮URLを展開して実際のURLを返す。短縮URLでなければそのまま返す。
 
@@ -10606,9 +10773,7 @@ def expand_short_url(url: str) -> str:
     （例: share.google/ID → google.com/share.google?q=ID → 実URL）。
     いずれも失敗した場合は元の URL を返す。
     """
-    parsed = urlparse(url)
-    host = parsed.netloc.lower()
-    if not any(_host_matches(host, d) for d in _SHORT_URL_HOSTS):
+    if not is_short_url(url):
         return url
 
     print(f"[情報] 短縮URLを展開中: {url}")
@@ -10890,7 +11055,111 @@ def _make_runner_args(**overrides) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
+def _shelf_title_author(txt_path: str) -> tuple[str, str]:
+    """.txt の 1 行目（題名）と 2 行目（著者）を返す（aozora_header の書式）。"""
+    try:
+        with open(txt_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.readline().strip(), f.readline().strip()
+    except OSError:
+        return "", ""
+
+
+def _shelf_epub_path(txt_path: str) -> str:
+    """同名の ePub があれば絶対パスを返す（--kobo の .kepub.epub も見る）。"""
+    stem = txt_path[:-4] if txt_path.lower().endswith(".txt") else txt_path
+    for ext in (".kepub.epub", ".epub"):
+        cand = stem + ext
+        if os.path.isfile(cand):
+            return os.path.abspath(cand)
+    return ""
+
+
+def _safe(fn, default):
+    """1 項目の失敗で行ごと落とさないための小さな保険。"""
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def shelf_scan(dir_path: str) -> list[dict]:
+    """本棚（出力先ディレクトリ）の .txt を走査して一覧を返す。
+
+    **読み取り専用・オフライン。ネットワークには一切触れない。**
+    GUI が青空文庫書式を再実装しなくて済むよう、既存ヘルパー
+    （`_extract_url_from_txt` / `_load_existing_txt` / `_extract_meta_from_txt`）
+    をそのまま使うのが目的（design_gui_v2.md §8.1b）。
+
+    `episodes` は**手元のファイルが持っている話数**。ヘッダーの `話数：` は
+    ダウンロード時点の**サイト側の総話数**なので別物（`meta["episode_count"]`）。
+
+    `底本URL：` の無い .txt（ユーザーが置いた無関係なテキスト）も
+    `url: ""` の行として返す。本棚に出すかどうかは GUI 側が決める。
+    """
+    out: list[dict] = []
+    try:
+        entries = sorted(Path(dir_path).glob("*.txt"), key=lambda q: q.name)
+    except OSError:
+        return out
+    for tf in entries:
+        path = _safe(lambda: str(tf.resolve()), str(tf))
+        title, author = _shelf_title_author(path)
+        url = _safe(lambda: _extract_url_from_txt(path), "")
+        site = display = None
+        if url:
+            sid = _safe(lambda: detect_site(url), "unknown")
+            if sid in _SITE_DISPATCH:
+                site, display = sid, _SITE_DISPATCH[sid][0]
+        out.append({
+            "path":     path,
+            "file":     tf.name,
+            "title":    title,
+            "author":   author,
+            "url":      url,
+            "site":     site,
+            "display_name": display,
+            "episodes": _safe(lambda: len(_load_existing_txt(path)[0]), 0),
+            "epub":     _safe(lambda: _shelf_epub_path(path), ""),
+            "mtime":    _safe(lambda: round(tf.stat().st_mtime, 3), 0.0),
+            "meta":     _safe(lambda: _extract_meta_from_txt(path), {}),
+        })
+    return out
+
+
+def _emit_checkresult(result: dict, txt_path: str = "") -> dict:
+    """更新チェック 1 件の結果を GUI 向けイベントとして送る（design_gui_v2.md §8.1a）。
+
+    `new_titles` は**載せない**。935 話の作品では 932 件が 1 行の JSON に載る一方、
+    GUI は件数しか使わない。題名が要るときは人間向けログ（stderr）にある。
+    """
+    _emit_event(
+        "checkresult",
+        file=result.get("file", ""),
+        # shelf_scan() は Path.resolve()（＝realpath）で行を作る。GUI はこの path を
+        # 鍵に本棚の行を引くので、**同じ解決の仕方に揃えないと**シンボリックリンクの
+        # .txt で鍵が一致せず、その行だけ永久に「未チェック」のままになる
+        path=os.path.realpath(txt_path) if txt_path else "",
+        title=result.get("title", ""),
+        author=result.get("author", ""),
+        existing=int(result.get("existing", 0) or 0),
+        total=int(result.get("total", 0) or 0),
+        new=int(result.get("new", 0) or 0),
+        status=result.get("status", "error"),
+        error=result.get("error", ""),
+    )
+    return result
+
+
 def _check_update_one(txt_path: str, delay: float = 1.5) -> dict:
+    """1 ファイルの更新チェックを実行し、結果辞書を返しつつイベントを送る。
+
+    実処理は `_check_update_one_impl()`。early return が複数あるため、
+    送出点を 1 箇所に集約する目的でラッパを挟んでいる。
+    """
+    return _emit_checkresult(_check_update_one_impl(txt_path, delay), txt_path)
+
+
+def _check_update_one_impl(txt_path: str, delay: float = 1.5) -> dict:
     """1 ファイルの更新チェックを実行し結果辞書を返す。
 
     Returns:
@@ -11673,6 +11942,12 @@ def _build_arg_parser(lang: str = "ja") -> argparse.ArgumentParser:
                         help=H(
                             "Print the supported-site list as JSON and exit (GUI helper; read-only)",
                             "対応サイト一覧を JSON で出力して終了（GUI用・読み取り専用）"))
+    parser.add_argument("--shelf-scan", dest="shelf_scan", default=None, metavar="DIR",
+                        help=H(
+                            "Scan a directory of .txt files and print them as JSON, then exit "
+                            "(GUI helper; read-only; offline)",
+                            "ディレクトリ内の .txt を走査して JSON で出力し終了"
+                            "（GUI用・読み取り専用・オフライン）"))
 
     return parser
 
@@ -11688,7 +11963,8 @@ def _main(argv=None):
     # stdout に JSON を書く読み取り専用モードとは併用しない。
     if (getattr(args, "progress_json", False)
             and not getattr(args, "list_sites", False)
-            and not getattr(args, "detect_site", None)):
+            and not getattr(args, "detect_site", None)
+            and not getattr(args, "shelf_scan", None)):
         global _EVENT_OUT
         _EVENT_OUT = sys.stdout
         sys.stdout = sys.stderr
@@ -11706,8 +11982,12 @@ def _main(argv=None):
     if getattr(args, "detect_site", None):
         _url = args.detect_site
         _res = {"schema": 1, "site": None, "display_name": None,
-                "needs_playwright": False, "normalized_url": None}
+                "needs_playwright": False, "normalized_url": None,
+                # 短縮URLは展開しないと判定できない（このモードはオフライン契約）。
+                # site:null でも「開けば分かるかもしれない」ことを呼び出し側に伝える
+                "short_url": False}
         try:
+            _res["short_url"] = is_short_url(_url)
             _site = detect_site(_url)
             if _site != "unknown" and _site in _SITE_DISPATCH:
                 _label = _SITE_DISPATCH[_site][0]
@@ -11721,6 +12001,13 @@ def _main(argv=None):
             pass  # 解析不能は site=None のまま返す
         sys.stdout.buffer.write(
             (json.dumps(_res, ensure_ascii=False) + "\n").encode("utf-8"))
+        sys.stdout.flush()
+        sys.exit(0)
+
+    # ── --shelf-scan: 本棚の走査（GUI用・読み取り専用・オフライン） ──
+    if getattr(args, "shelf_scan", None):
+        sys.stdout.buffer.write(
+            (json.dumps(shelf_scan(args.shelf_scan), ensure_ascii=False) + "\n").encode("utf-8"))
         sys.stdout.flush()
         sys.exit(0)
 
@@ -12067,7 +12354,12 @@ def _main(argv=None):
             if entry:
                 label, _, runner = entry
                 print(f"サイト判別: {label}")
-                runner(args)
+                try:
+                    runner(args)
+                except _FATAL_ERRORS as _fe:
+                    # 404・通信断・ディスク不足を 1 行のエラーにして SystemExit へ。
+                    # 下の except SystemExit に落として webhook のエラー通知に乗せる。
+                    _exit_fatal(_fe)
                 # 完了後 webhook 通知
                 _wh_url = getattr(args, "webhook_url", None)
                 _wh_fmt = getattr(args, "webhook_format", "discord")
@@ -12117,6 +12409,16 @@ def _main(argv=None):
             n_total    = len(_cu.ep_titles)
             n_new      = n_total - _cu_n_existing
             new_titles = _cu.ep_titles[_cu_n_existing:] if n_new > 0 else []
+            # 単発 --check-update は _check_update_one() を通らないので、
+            # ここでも同じ形の checkresult を送る（design_gui_v2.md §8.1a）
+            _emit_checkresult({
+                "file": Path(args.check_update_file).name,
+                "title": _cu.title, "author": _cu.author,
+                "existing": _cu_n_existing, "total": n_total,
+                "new": max(0, n_new),
+                "status": "updated" if n_new > 0 else "uptodate",
+                "error": "",
+            }, args.check_update_file)
             _print_field("タイトル", f"{_cu.title}", width=8, blank_before=True)
             _print_field("著者", f"{_cu.author}", width=8)
             print(f"既存     : {_cu_n_existing} 話 / サイト全話: {n_total} 話")
@@ -12186,17 +12488,87 @@ def _main(argv=None):
                 os.unlink(_use_site_cover_tmp)
 
 
+# ══════════════════════════════════════════
+#  想定内の失敗を 1 行のエラーに整える
+# ══════════════════════════════════════════
+#
+# 404（作品削除・URL 打ち間違い）・通信断・サイト構造の変化・ディスク不足は
+# バグではなく運用上あり得る失敗なので、スタックトレースではなく読める 1 行で
+# 終わらせる。従来はここが未捕捉で、末尾が Traceback になっていた。
+#
+# GUI は stderr の「エラー:」で始まる行を失敗理由として拾う
+# （design_gui_v2.md §3.3 の `_ERR_MARKS`）ので、文言は必ずこの接頭辞で始める。
+# 原因調査を潰さないよう、従来のトレースバックは NOVEL_DL_TRACEBACK=1 で出せる。
+
+_FATAL_ERRORS = (HTTPError, URLError, RuntimeError, OSError)
+# HTTPError ⊂ URLError ⊂ OSError、requests.RequestException ⊂ OSError なので
+# OSError 1 つで通信系も拾える。並べているのは isinstance の分岐順を明示するため。
+
+
+def _friendly_error(e: BaseException) -> str:
+    """想定内の失敗を「エラー: …」で始まる 1 行に整える。"""
+    if isinstance(e, HTTPError):
+        url = getattr(e, "url", "") or ""
+        code = e.code
+        if code == 404:
+            return T("エラー: 作品が見つかりません（HTTP 404）。URLを確認してください: {url}").format(url=url)
+        if code in (401, 403):
+            return T("エラー: アクセスを拒否されました（HTTP {code}）。会員限定・年齢制限の作品かもしれません: {url}").format(code=code, url=url)
+        if code == 429:
+            return T("エラー: アクセスが集中しています（HTTP 429）。--delay を大きくし時間をおいて再試行してください: {url}").format(url=url)
+        if 500 <= code < 600:
+            return T("エラー: サイト側でエラーが発生しています（HTTP {code}）。時間をおいて再試行してください: {url}").format(code=code, url=url)
+        return T("エラー: 取得に失敗しました（HTTP {code} {reason}）: {url}").format(code=code, reason=e.reason, url=url)
+    if isinstance(e, URLError):
+        return T("エラー: サイトに接続できません（{reason}）。ネットワーク接続を確認してください。").format(reason=e.reason)
+    if _REQUESTS_EXC and isinstance(e, _REQUESTS_EXC):
+        resp = getattr(e, "response", None)
+        code = getattr(resp, "status_code", None)
+        if code:
+            return T("エラー: 取得に失敗しました（HTTP {code}）: {url}").format(
+                code=code, url=getattr(resp, "url", "") or "")
+        return T("エラー: 通信に失敗しました: {e}").format(e=e)
+    if isinstance(e, RuntimeError):
+        # 各サイトの *_fetch() がリトライを使い切ったとき等。文面は既に人間向け。
+        return T("エラー: {e}").format(e=e)
+    if isinstance(e, (ConnectionError, TimeoutError)):
+        # urllib が URLError に包まないまま上がってくる生のソケットエラー
+        # （ConnectionResetError / http.client.RemoteDisconnected / socket.timeout）。
+        # 下のファイル I/O 用の文言に落とすと、通信障害をディスクの問題として
+        # 案内してしまい、利用者を見当違いの方向へ向かわせる
+        return T("エラー: 通信が切断されました（{e}）。ネットワーク接続を確認してください。").format(e=e)
+    return T("エラー: ファイルの読み書きに失敗しました: {e}").format(e=e)
+
+
+def _exit_fatal(e: BaseException, code: int = 1):
+    """想定内の失敗を 1 行で報告して終了する（SystemExit を送出）。"""
+    print(_friendly_error(e), file=sys.stderr)
+    if os.environ.get("NOVEL_DL_TRACEBACK"):
+        import traceback as _tb
+        _tb.print_exc()
+    else:
+        print(T("[情報] 詳細は NOVEL_DL_TRACEBACK=1 を付けて再実行すると表示されます。"),
+              file=sys.stderr)
+    sys.exit(code)
+
+
 def main(argv=None):
     """CLI エントリポイント。
 
     argv を渡すと sys.argv の代わりに解析する（GUI からのインプロセス呼び出し用）。
     中止（ABORT_EVENT / Ctrl+C）は「中止しました。」を表示して終了コード 130 に整える。
+    想定内の失敗（通信・サイト構造・ディスク）は 1 行のエラーにして終了コード 1。
     """
     try:
         _main(argv)
     except (AbortRequested, KeyboardInterrupt):
         print(T("\n中止しました。"), file=sys.stderr)
         sys.exit(130)
+    except _FATAL_ERRORS as e:
+        # --from-file / --from-epub / --watch など、_main 内の dispatch を
+        # 通らない経路のための受け皿。dispatch 側は webhook 通知のため
+        # _exit_fatal() で SystemExit に変換済みなのでここには来ない。
+        _exit_fatal(e)
 
 
 if __name__ == "__main__":

@@ -45,7 +45,8 @@ i18n で進捗表示を訳せないのも、Step 0 で出力完了の書式を�
 | `stage` | `n`, `total`, `label` | `_print_stage()` |
 | `progress` | `n`, `total`, `title` | `_progress()` |
 | `output` | `kind`（`txt` / `epub`）, `path` | `_print_text_done()` / `_print_epub_done()` |
-| `workinfo` | `title`, `author`, `total`（任意）, `unit` | `_dry_run_exit()` |
+| `workinfo` | `title`, `author`, `total`（任意）, `unit`, `url` | `_dry_run_exit()` |
+| `checkresult` | `file`, `path`, `title`, `author`, `existing`, `total`, `new`, `status`, `error` | `_emit_checkresult()` |
 
 ```json
 {"schema":1,"event":"stage","n":1,"total":3,"label":"作品情報を取得中: https://…"}
@@ -72,6 +73,9 @@ i18n で進捗表示を訳せないのも、Step 0 で出力完了の書式を�
   / `"chapter"` 章数（ネオページ・杉田玄白・結城浩）
 - 青空文庫は ZIP 1 本でこの時点では話数が確定しないので **`total` を送らない**
   （受け手は `total` が無い場合を必ず扱うこと）
+- `url` は**短縮URLを展開し作品トップへ正規化したあと**の URL（v2.14.0+）。
+  `share.google/…` を投げた呼び出し側は**これでしか作品の正体を知れない**。
+  GUI の受信箱はこれで本棚との重複判定をやり直す（design_gui_v2.md §8.8）
 
 **これがある理由**: 無いと GUI は `--dry-run` の人間向け表示を正規表現で読むことになり、
 §1 で戒めた「表示文言をプロセス間の契約にする」の再発になる。
@@ -80,6 +84,43 @@ i18n で進捗表示を訳せないのも、Step 0 で出力完了の書式を�
 段階見出し 48 箇所を個別に触る必要があった。
 
 **イベントは翻訳しない。** `event` / `kind` は安定識別子（`design_i18n.md` §3 Step 1 確定事項 7）。
+
+### 3.2 `checkresult`（v2.14.0+ / design_gui_v2.md §8.1a）
+
+更新チェック **1 作品分の結果**を通知する。本棚（design_gui_v2 §8.4）の
+「🆕 +N」表示と「N / 全M 件」の進捗に使う。
+
+```json
+{"schema":1,"event":"checkresult","file":"作品A.txt","path":"/…/作品A.txt",
+ "title":"水属性の魔法使い","author":"久宝　忠",
+ "existing":3,"total":935,"new":932,"status":"updated","error":""}
+```
+
+- 発火点は `_check_update_one()` のラッパ 1 箇所（`_emit_checkresult()`）。
+  この関数は**同じ内容の結果辞書を既に返していた**ので、送出点を足すだけで
+  `--check-update-dir` と `--append-dir` Phase 1 の両方が賄える。
+  early return が複数あるため `_check_update_one_impl()` に実処理を移し、
+  ラッパで送出点を 1 箇所に集約している
+- 単発 `--check-update FILE` は `_check_update_one()` を通らず `_main()` の
+  `except _CheckUpdateDone` で処理されるので、そこにも同じ形で置いた
+- `status` は `updated` / `uptodate` / `error`
+- `existing` は手元の話数、`total` はサイト側の全話数、`new` はその差（下限 0）
+- **`new_titles` は載せない。** 935 話の作品では 932 件が 1 行の JSON に載る一方、
+  GUI は件数しか使わない。題名が要るときは人間向けログ（stderr）にある
+- **`底本URL：` の無い `.txt` には発火しない。** ディレクトリモードは
+  `_check_update_one()` を呼ぶ前にそれらを弾く（`[スキップ] … 底本URL なし`）。
+  受け手が「N / 全M 件」を出すときの M は、**`--shelf-scan` の `url` が空でない
+  行数**であって `.txt` の総数ではない
+
+### 3.3 ディレクトリモードでは `stage` / `progress` が作品ごとに繰り返す
+
+`--check-update-dir` / `--append-dir` は作品ごとにランナーを呼ぶため、
+`stage` は **作品数 × 3 回**、`progress` は作品ごとに 1 からやり直す形で流れる。
+1 本のダウンロードの段階だと思って進捗バーに繋ぐと、作品が変わるたびに
+3/3 → 1/3 へ巻き戻って見える。
+
+**ディレクトリモードの受け手は `stage` / `progress` を全体進捗に使わず、
+`checkresult` の到着数で数えること。**
 
 ## 4. GUI 側
 
