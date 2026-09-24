@@ -11,6 +11,7 @@ import android.widget.ImageButton
 import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -40,8 +41,15 @@ class HistoryActivity : AppCompatActivity() {
     private var invalid: Set<String> = emptySet()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_history)
+        applyEdgeToEdgeInsets(
+            root = findViewById(R.id.history_root),
+            appBar = findViewById(R.id.app_bar),
+            toolbar = findViewById(R.id.toolbar),
+            content = findViewById(R.id.history_list),
+        )
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         title = getString(R.string.history_title)
 

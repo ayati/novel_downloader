@@ -217,7 +217,7 @@ interface DownloadListener {
 | Python 3.10 固定（Chaquopy 17 デフォルト） | 本体が将来 3.11+ 構文を使うと壊れる | 本体は 3.10+ 要件で現状一致。`version = "3.13"` への引き上げを M3 で検証 |
 | 「開く」で ePub を開けるリーダーが端末に無い | 完了後に行き止まり | `ACTION_VIEW` 失敗時は「ePubリーダーアプリをインストールしてください」トースト |
 
-## 11.5 エッジツーエッジ強制への暫定対応（2026-09-19）
+## 11.5 エッジツーエッジ強制への対応（暫定 2026-09-19 → 恒久 2026-09-24）
 
 **症状**: Android 16 実機で、URL 入力欄と［貼り付け／クリア］行が ActionBar の上にはみ出し、
 画面上端が詰まって URL 入力が困難になる。Android 13 では発生しない。
@@ -234,9 +234,29 @@ interface DownloadListener {
 <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
 ```
 
-**恒久対応（未実施・将来課題）**: この属性は過渡期向けで将来の SDK では削除される。
-本来は Toolbar をレイアウトに置き、`enableEdgeToEdge()` ＋ `ViewCompat.setOnApplyWindowInsetsListener`
-でインセットを処理する形へ移行する。移行するまで `targetSdk` を上げる際は本節を確認すること。
+**恒久対応（2026-09-24 実施）**: この属性は過渡期向けで、targetSdk 36（Android 16）では
+効かなくなる。Android 15 以降の推奨の形に作り直し、`values-v35/themes.xml` は削除した。
+
+- テーマを `Theme.Material3.DayNight.NoActionBar` にし、各画面のレイアウト先頭に
+  `AppBarLayout` ＋ `MaterialToolbar` を置いて `setSupportActionBar()` で ActionBar として使う
+  （メニュー・戻るボタン・`title` の扱いは従来のまま）
+- 各 Activity は `enableEdgeToEdge()` → `setContentView()` → `applyEdgeToEdgeInsets()`
+  （`EdgeToEdge.kt`）の順に呼ぶ。インセットの配り方:
+  - AppBarLayout: 上・左右にステータスバーと切り欠きの分。背景がステータスバーの裏まで伸びる
+  - 本文: 左右と下にナビゲーションバーの分。キーボードが出ていればその高さを優先
+    （edge-to-edge では `adjustResize` が画面を縮めないため。API 29 以前でも IME の
+    インセットを受け取れるよう MainActivity に `adjustResize` は付けておく）
+  - 履歴一覧は RecyclerView 自体に下の余白を足し、`clipToPadding=false` で一覧が
+    ナビゲーションバーの裏まで流れるようにする
+- **メイン画面は本文ごとスクロールする**（実機で発覚: 横向き＋大きな文字設定で下端が欠け、
+  完了カードの［共有］が押せなかった。ダウンロードボタンは届いていた）。本文を
+  `NestedScrollView`（`fillViewport=true`・`clipToPadding=false`）で包み、下の余白は
+  この ScrollView に付ける。ログ欄も `NestedScrollView` にして `layout_weight=1` と
+  `minHeight=200dp` を併用し、収まるときは残りを埋め、はみ出すときは 200dp を保って画面ごと
+  スクロールさせる。完了に切り替わった 1 回だけ `requestRectangleOnScreen` で完了カードを
+  見える位置へ寄せる（見えていれば動かない）
+- `androidx.activity:activity-ktx` を明示的に依存に加えた（`enableEdgeToEdge()`）
+- これで targetSdk 36 に上げても画面は崩れない前提になった（SDK の引き上げ自体は別作業）
 
 ---
 

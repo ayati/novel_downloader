@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  ActionBar はレイアウト内の MaterialToolbar（setSupportActionBar）で出すので
+  ウィンドウ側の ActionBar は持たない。画面の端まで描く前提のインセット処理は
+  EdgeToEdge.kt の applyEdgeToEdgeInsets()。
+-->
 <resources>
-    <style name="Theme.NovelDownloader" parent="Theme.Material3.DayNight" />
+    <style name="Theme.NovelDownloader" parent="Theme.Material3.DayNight.NoActionBar" />
 </resources>

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.view.Menu
@@ -12,12 +13,13 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ProgressBar
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.widget.NestedScrollView
 import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -48,7 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnOpen: Button
     private lateinit var btnShare: Button
     private lateinit var logToggle: TextView
-    private lateinit var logScroll: ScrollView
+    private lateinit var logScroll: NestedScrollView
     private lateinit var logView: TextView
 
     private val detectExecutor = Executors.newSingleThreadExecutor()
@@ -78,8 +80,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        applyEdgeToEdgeInsets(
+            root = findViewById(R.id.main_root),
+            appBar = findViewById(R.id.app_bar),
+            toolbar = findViewById(R.id.toolbar),
+            content = findViewById(R.id.main_scroll),
+        )
 
         urlInput = findViewById(R.id.url_input)
         btnPaste = findViewById(R.id.btn_paste)
@@ -341,6 +350,8 @@ class MainActivity : AppCompatActivity() {
 
     // ── 状態 → 画面反映 ──────────────────────────────────────────
 
+    private var lastPhase: DownloadState.Phase? = null
+
     private fun render(ui: DownloadState.Ui) {
         updateMainButton()
         btnMain.text = getString(
@@ -350,6 +361,14 @@ class MainActivity : AppCompatActivity() {
         val done = ui.phase == DownloadState.Phase.DONE && ui.savedFiles.isNotEmpty()
         val showRecent = !done && ui.phase == DownloadState.Phase.IDLE && recent != null
         doneCard.visibility = if (done || showRecent) View.VISIBLE else View.GONE
+        // 横向き・大きな文字では完了カードが画面外に出る。完了に切り替わった 1 回だけ
+        // 見える位置まで寄せる（見えていれば動かない。render は進捗ごとに呼ばれる）
+        if (done && lastPhase != DownloadState.Phase.DONE) {
+            doneCard.post {
+                doneCard.requestRectangleOnScreen(Rect(0, 0, doneCard.width, doneCard.height))
+            }
+        }
+        lastPhase = ui.phase
         doneHeading.visibility = if (showRecent) View.VISIBLE else View.GONE
         when {
             done -> doneFile.text = ui.savedFiles.joinToString("\n") { it.name }
