@@ -3132,18 +3132,111 @@ def _cover_font(size: int, bold: bool = True):
     return ImageFont.truetype(path, size, index=idx)
 
 
+def _has_raqm() -> bool:
+    try:
+        from PIL import features
+        return bool(features.check("raqm"))
+    except Exception:
+        return False
+
+
+# raqm が無い環境（Android の Chaquopy・PyInstaller の exe・fribidi の無い
+# Windows）では direction="ttb" が使えず、以前は表紙ごと SVG に落ちていた。
+# 表紙に出る程度の文字なら、Unicode の縦書き用互換文字への置換＋回転＋
+# 小書き仮名の寄せで raqm と見分けがつかない程度に組める。
+_VERT_FORMS = str.maketrans({
+    "、": "︑", "。": "︒", "，": "︐", "：": "︓", "；": "︔",
+    "「": "﹁", "」": "﹂", "『": "﹃", "』": "﹄",
+    "（": "︵", "）": "︶", "｛": "︷", "｝": "︸", "〔": "︹", "〕": "︺",
+    "【": "︻", "】": "︼", "《": "︽", "》": "︾", "〈": "︿", "〉": "﹀",
+    "［": "﹇", "］": "﹈", "〖": "︗", "〗": "︘",
+    "…": "︙", "‥": "︰", "—": "︱", "―": "︱", "–": "︲", "＿": "︳",
+})
+# 縦書き用の互換文字が無く、時計回りに 90 度倒して描くもの
+_VERT_ROTATE = set("ー～〜－＝≒→←⇒⇔~-=()[]{}<>")
+_VERT_SMALL_KANA = set("ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ")
+
+
+_VERT_SHIFT = set("、。，．")
+_GLYPH_CACHE: dict = {}
+
+
+def _font_has_glyph(font, ch: str) -> bool:
+    """フォントが ch の字形を持つか（.notdef の豆腐と描画結果を比べる）。"""
+    key = (getattr(font, "path", None), getattr(font, "index", 0), ch)
+    if key not in _GLYPH_CACHE:
+        try:
+            _GLYPH_CACHE[key] = (bytes(font.getmask(ch))
+                                 != bytes(font.getmask("\U0010FFFD")))
+        except Exception:
+            _GLYPH_CACHE[key] = False
+    return _GLYPH_CACHE[key]
+
+
+def _draw_vchar_rotated(d, x: int, y: int, ch: str, font, fill: tuple) -> None:
+    """ch を時計回りに 90 度倒して 1em の字枠 (x, y) の中央に描く。"""
+    sz = font.size
+    adv = max(1, int(round(font.getlength(ch))))
+    mask = Image.new("L", (adv, sz), 0)
+    ImageDraw.Draw(mask).text((0, int(sz * 0.88)), ch, font=font,
+                              fill=255, anchor="ls")
+    rot = mask.rotate(-90, expand=True)
+    d.bitmap((x + (sz - rot.width) // 2, y + (sz - rot.height) // 2), rot, fill=fill)
+
+
+def _draw_vchar_basic(d, x: int, y: int, ch: str, font, fill: tuple) -> None:
+    """raqm なしで 1 字を幅・高さ 1em の字枠 (x, y) に縦組みの字形で描く。"""
+    sz = font.size
+    base = y + int(sz * 0.88)            # CJK フォントの仮想ボディ上端から基線まで
+    if ch in _VERT_ROTATE:
+        _draw_vchar_rotated(d, x, y, ch, font, fill)
+        return
+    vch = ch.translate(_VERT_FORMS)
+    if vch != ch and not _font_has_glyph(font, vch):
+        # 互換文字を持たないフォント（AyatiShowaSerif など。vert 機能で縦の字形は
+        # 持っていても U+FE10〜FE4F に割り当てていない）。句読点は右上へ移し、
+        # 括弧・リーダー類は元の字を倒して代える（「→﹁、【→︻ と同じ形になる）
+        if ch in _VERT_SHIFT:
+            # 横組みの字形は左下寄り。インクの中心を字枠の中心について点対称に移す
+            # （getbbox は送り幅込みの箱を返すので、実際に描いてインクを測る）
+            probe = Image.new("L", (sz, sz), 0)
+            ImageDraw.Draw(probe).text((0, int(sz * 0.88)), ch, font=font,
+                                       fill=255, anchor="ls")
+            b = probe.getbbox()
+            if b:
+                cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+                d.text((x + sz - 2 * cx, base + sz - 2 * cy), ch,
+                       font=font, fill=fill, anchor="ls")
+            return
+        _draw_vchar_rotated(d, x, y, ch, font, fill)
+        return
+    ch = vch
+    dx = (sz - font.getlength(ch)) / 2
+    dy = 0
+    if ch in _VERT_SMALL_KANA:           # 横組みの字形は左下寄り → 縦組みでは右上へ
+        dx += sz * 0.10
+        dy -= sz * 0.10
+    d.text((x + dx, base + dy), ch, font=font, fill=fill, anchor="ls")
+
+
 def _draw_vtext(d, x_right: int, y_top: int, text: str, font, fill: tuple,
                 per_col: int, col_gap: float = 1.22) -> int:
     """縦組みで右から左へ描く。描いた列数を返す。
 
-    direction="ttb" は Pillow が raqm 経由で縦組み字形（「」の回転・長音符など）を
-    自動で当ててくれるので、字形テーブルを自前で持つ必要はない。
+    raqm があれば direction="ttb" に任せる（「」の回転・長音符などの縦組み字形を
+    フォントの vert 機能から当ててくれる）。無ければ _draw_vchar_basic で
+    1 字ずつ組む。字送りはどちらも 1em。
     """
     sz   = font.size
     cols = [text[i:i + per_col] for i in range(0, len(text), per_col)]
+    raqm = _has_raqm()
     for i, col in enumerate(cols):
-        d.text((x_right - sz - i * int(sz * col_gap), y_top), col,
-               font=font, fill=fill, direction="ttb")
+        x = x_right - sz - i * int(sz * col_gap)
+        if raqm:
+            d.text((x, y_top), col, font=font, fill=fill, direction="ttb")
+        else:
+            for j, ch in enumerate(col):
+                _draw_vchar_basic(d, x, y_top + j * sz, ch, font, fill)
     return len(cols)
 
 

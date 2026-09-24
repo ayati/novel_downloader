@@ -212,6 +212,69 @@ def main() -> int:
         except (OSError, NotImplementedError):
             ck.skip("symlink を作れない環境")
 
+    # ── raqm の無い環境でも題簽表紙を JPEG で作る ──
+    # Android（Chaquopy）・PyInstaller の exe は raqm を持たない。以前は
+    # direction="ttb" が例外になり表紙ごと SVG へ落ちていた。
+    if not (N._PILLOW_AVAILABLE and N._FONT_BOLD_PATH):
+        ck.skip("Pillow か CJK フォントが無い環境")
+    else:
+        from PIL import Image, ImageDraw, ImageFont
+        orig_font, orig_raqm = N._cover_font, N._has_raqm
+
+        def basic_font(size, bold=True):
+            f = orig_font(size, bold)
+            return ImageFont.truetype(f.path, size, index=f.index,
+                                      layout_engine=ImageFont.Layout.BASIC)
+        N._cover_font, N._has_raqm = basic_font, (lambda: False)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                data, fmt = N.make_cover_image(
+                    "「ちょっと待って！」……灰色のメーカー～第3章～", "著者",
+                    "#16234b", "カクヨム")
+            ck("raqm なしでも表紙は JPEG（SVG に落ちない）",
+               fmt == "jpg" and data[:2] == b"\xff\xd8", fmt)
+
+            def ink_bbox(ch):
+                im = Image.new("L", (100, 100), 0)
+                N._draw_vchar_basic(ImageDraw.Draw(im), 0, 0, ch,
+                                    basic_font(100), 255)
+                return im.getbbox()
+            b = ink_bbox("ー")
+            ck("長音符は縦棒になる", b and (b[3] - b[1]) > 2 * (b[2] - b[0]), b)
+            # 縦組みの鉤括弧は続く文字の側に寄る: 開きは字枠の下、閉じは上
+            b = ink_bbox("「")
+            ck("開き鉤括弧は字枠の下に寄る（縦組みの字形）", b and b[1] > 50, b)
+            b = ink_bbox("」")
+            ck("閉じ鉤括弧は字枠の上に寄る（縦組みの字形）", b and b[3] < 50, b)
+            b = ink_bbox("っ")
+            ck("小書き仮名は字枠の右上に寄る",
+               b and (b[0] + b[2]) / 2 > 50 and (b[1] + b[3]) / 2 < 55, b)
+            # 縦書き用互換文字（U+FE10〜）を持たないフォントでも豆腐にしない。
+            # 同梱の AyatiShowaSerif がそれ（Android の表紙で使う）で、
+            # 「エーリカのきらきら【冬の童話祭2026】」の【】が豆腐になった
+            ayati = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "font", "AyatiShowaSerif-Regular.ttf")
+            if not os.path.exists(ayati):
+                ck.skip("font/AyatiShowaSerif-Regular.ttf が無い")
+            else:
+                af = ImageFont.truetype(ayati, 100,
+                                        layout_engine=ImageFont.Layout.BASIC)
+                ck("前提: AyatiShowaSerif は ︻ を持たない",
+                   N._font_has_glyph(af, "︻") is False)
+
+                def ink_bbox_a(ch):
+                    im = Image.new("L", (100, 100), 0)
+                    N._draw_vchar_basic(ImageDraw.Draw(im), 0, 0, ch, af, 255)
+                    return im.getbbox()
+                b = ink_bbox_a("【")
+                ck("互換文字の無いフォントでも【は横長に倒れる（豆腐でない）",
+                   b and (b[2] - b[0]) > 2 * (b[3] - b[1]), b)
+                b = ink_bbox_a("、")
+                ck("互換文字の無いフォントでも読点は右上に寄る",
+                   b and b[0] > 50 and b[3] < 50, b)
+        finally:
+            N._cover_font, N._has_raqm = orig_font, orig_raqm
+
     return ck.done()
 
 
