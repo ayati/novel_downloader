@@ -50,6 +50,8 @@
   - JPG 表紙画像を自動生成（Pillow + 日本語フォントが必要）。**題簽（だいせん）意匠**で、淡色の題簽パネルにタイトルを**縦組み**で配置（v2.5.0）
   - **作者が選んだテーマカラーを表紙の地に採用**（カクヨムの作品カラー。v2.5.0）
   - 表紙背景色をオプションで指定可能（`--cover-bg` が最優先）
+  - 表紙の題名・著者名のフォントを指定可能（`--cover-font`。本文の `--font` とは別。v2.16.0）
+  - 縦組みの描画に libraqm を必要としない（無い環境でも括弧・長音符・句読点・小書き仮名を縦組みの形で描く。Android 版・Windows exe でも JPEG 表紙になる。v2.16.0）
   - Pillow・フォント未インストール時は SVG 表紙で代替
   - フォントファイルを ePub 内に埋め込み可能（`--font`）
   - 楽天 Kobo リーダー向け互換対応（縦書き・章目次・画像表紙）
@@ -214,7 +216,7 @@ python novel_downloader_gui.py
 
 URL 欄に貼り付けて大きなボタンを押すだけで完了します。細かい設定は「詳細設定」の中にまとめてあります。
 
-「詳細設定」で変えられる主なもの: 保存先／表紙（おまかせ・サイトの公式表紙・自分の画像）／
+「詳細設定」で変えられる主なもの: 保存先／表紙（おまかせ・サイトの公式表紙・自分の画像。おまかせのときは表紙の文字のフォントも選べる）／
 埋め込みフォント／取得間隔／文字コード／横書き・Kobo 形式・目次の位置／
 **挿絵を取り込まない**（サイト側の変更で挿絵の取得が失敗するようになったときの回避）／
 **Webhook 通知**（完了・新着を Discord / Slack へ送る。`--notify webhook` 相当）／
@@ -436,6 +438,9 @@ python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --start 1 --end 10
 
 # 表紙背景色を指定
 python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --cover-bg "#2d4073"
+
+# 表紙の題名・著者名を好きなフォントで描く
+python novel_downloader.py https://ncode.syosetu.com/n0022gd/ --cover-font font/AyatiShowaSerif-Regular.ttf
 
 # カクヨム（Shift_JIS で出力）
 python novel_downloader.py https://kakuyomu.jp/works/XXXXXXXXXX --encoding shift_jis
