@@ -198,6 +198,14 @@ def T(ja: str) -> str:
 # 日本語原文 → 英語。キーは T() に渡す文字列と一字一句一致させること
 # （ずれると無言で日本語にフォールバックする）。検査は tools/check_i18n.py。
 _MESSAGES_EN = {
+    "[警告] 表紙フォントが見つかりません: {path}（自動検出のフォントで続行します）":
+        "[warning] Cover font not found: {path} (continuing with the auto-detected font)",
+    "[警告] Pillow が無いため --cover-font は使えません（SVG 表紙になります）":
+        "[warning] --cover-font requires Pillow (an SVG cover will be used)",
+    "[警告] 表紙フォントを読み込めません: {path}（{err}）。自動検出のフォントで続行します":
+        "[warning] Cannot load cover font: {path} ({err}). Continuing with the auto-detected font",
+    "[警告] 表紙フォントに日本語の字形がありません: {path}（自動検出のフォントで続行します）":
+        "[warning] Cover font has no Japanese glyphs: {path} (continuing with the auto-detected font)",
     "\n[エラー]   {count} 作品:":
         "\n[error]   {count} work(s):",
     "\n[エラー] {count} 作品:":
@@ -2775,6 +2783,26 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
 # ── フォントパス（Pillow用）─ 起動時に日本語グリフを持つフォントを自動探索 ──
 _COVER_W, _COVER_H = 800, 1200
 
+def _ttc_jp_index(path: str) -> int:
+    """
+    TTCファイルに含まれるフェイスのうち "JP" を名前に含むものの
+    インデックスを返す。見つからなければ 0。
+    """
+    try:
+        from PIL import ImageFont
+        for i in range(20):
+            try:
+                f = ImageFont.truetype(path, 12, index=i)
+                name = f.getname()[0].upper()
+                if "JP" in name:
+                    return i
+            except Exception:
+                break
+    except Exception:
+        pass
+    return 0  # TTCでも index=0 が JP の場合が多い
+
+
 def _find_cjk_fonts() -> tuple:
     """
     日本語グリフを持つ TTC/OTF/TTF フォントを優先順で探して
@@ -2796,7 +2824,8 @@ def _find_cjk_fonts() -> tuple:
     # 以降の探索をスキップして bold / medium ともそのフォントを使う。
     env_font = os.environ.get("NOVEL_DL_COVER_FONT", "")
     if env_font and os.path.isfile(env_font):
-        return (env_font, 0, env_font, 0)
+        idx = _ttc_jp_index(env_font) if env_font.lower().endswith(".ttc") else 0
+        return (env_font, idx, env_font, idx)
 
     # ── 探索ディレクトリ（再帰検索） ──────────────────────────────
     search_dirs = [
@@ -2853,25 +2882,7 @@ def _find_cjk_fonts() -> tuple:
             pass
         return None
 
-    # ── TTCフェイスのJPインデックスを判定 ─────────────────────────
-    def jp_index(path: str) -> int:
-        """
-        TTCファイルに含まれるフェイスのうち "JP" を名前に含むものの
-        インデックスを返す。見つからなければ 0。
-        """
-        try:
-            from PIL import ImageFont
-            for i in range(20):
-                try:
-                    f = ImageFont.truetype(path, 12, index=i)
-                    name = f.getname()[0].upper()
-                    if "JP" in name:
-                        return i
-                except Exception:
-                    break
-        except Exception:
-            pass
-        return 0  # TTCでも index=0 が JP の場合が多い
+    jp_index = _ttc_jp_index
 
     # ── 候補リスト: (boldパターン, mediumパターン) ────────────────
     # ファイル名はワイルドカード可。None は bold と同じパスを流用。
@@ -3122,6 +3133,41 @@ def _cover_seigaiha(img, light: bool, step: int = 96, alpha: int = 20):
                 rr = r * k
                 od.arc([x - rr, y - rr, x + rr, y + rr], 180, 360, fill=c, width=2)
     return Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+
+
+def _apply_cover_font(path: str) -> bool:
+    """--cover-font: 表紙の題名・著者名を描くフォントを差し替える。
+
+    自動検出（NOVEL_DL_COVER_FONT を含む）より優先する。使えないファイルなら
+    警告を出して自動検出のフォントのまま続ける（--font / --cover-image と同じく
+    表紙が作れないことで全体を止めない）。成功したら True。
+    """
+    global _FONT_BOLD_PATH, _FONT_BOLD_IDX, _FONT_MEDIUM_PATH, _FONT_MEDIUM_IDX
+    path = os.path.expanduser(path)
+    if not os.path.isfile(path):
+        print(T("[警告] 表紙フォントが見つかりません: {path}（自動検出のフォントで続行します）")
+              .format(path=path), file=sys.stderr)
+        return False
+    if not _PILLOW_AVAILABLE:
+        print(T("[警告] Pillow が無いため --cover-font は使えません（SVG 表紙になります）"),
+              file=sys.stderr)
+        return False
+    idx = _ttc_jp_index(path) if path.lower().endswith(".ttc") else 0
+    try:
+        font = ImageFont.truetype(path, 64, index=idx)
+    except Exception as e:
+        print(T("[警告] 表紙フォントを読み込めません: {path}（{err}）。自動検出のフォントで続行します")
+              .format(path=path, err=e), file=sys.stderr)
+        return False
+    # 欧文フォントを渡されると題名が豆腐だらけになるので、かなと漢字で確かめる
+    if not (_font_has_glyph(font, "あ") and _font_has_glyph(font, "永")):
+        print(T("[警告] 表紙フォントに日本語の字形がありません: {path}（自動検出のフォントで続行します）")
+              .format(path=path), file=sys.stderr)
+        return False
+    _FONT_BOLD_PATH = _FONT_MEDIUM_PATH = path
+    _FONT_BOLD_IDX = _FONT_MEDIUM_IDX = idx
+    print(f"[情報] 表紙フォント: {os.path.basename(path)}[{idx}]", file=sys.stderr)
+    return True
 
 
 def _cover_font(size: int, bold: bool = True):
@@ -12045,6 +12091,10 @@ def _build_arg_parser(lang: str = "ja") -> argparse.ArgumentParser:
                         help=H(
                             "Font file to embed in the EPUB body (.otf/.ttf/.woff/.woff2). Set as the CSS default for body.",
                             "ePub本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。指定したフォントを body のデフォルトフォントとして CSS に設定する"))
+    parser.add_argument("--cover-font", dest="cover_font", default=None, metavar="FILE",
+                        help=H(
+                            "Font file for drawing the title and author on the generated cover image (.ttf/.otf/.ttc). Overrides auto-detection. Does not affect the EPUB body (use --font for that).",
+                            "自動生成する表紙画像の題名・著者名を描くフォントファイル（.ttf/.otf/.ttc）。自動検出より優先する。本文には影響しない（本文は --font）"))
     parser.add_argument("--toc-at-end", dest="toc_at_end", action="store_true",
                         help=H(
                             "Place the table of contents after the colophon. Default is immediately after the cover.",
@@ -12158,6 +12208,10 @@ def _main(argv=None):
         global _EVENT_OUT
         _EVENT_OUT = sys.stdout
         sys.stdout = sys.stderr
+
+    # ── --cover-font: 表紙フォントの差し替え（全モード共通・ここで 1 度だけ） ──
+    if getattr(args, "cover_font", None):
+        _apply_cover_font(args.cover_font)
 
     # ── --list-sites: 対応サイト一覧（GUI用・読み取り専用・オフライン） ──
     if getattr(args, "list_sites", False):

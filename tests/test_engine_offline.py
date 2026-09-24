@@ -275,6 +275,39 @@ def main() -> int:
         finally:
             N._cover_font, N._has_raqm = orig_font, orig_raqm
 
+        # ── --cover-font（表紙の題名・著者名のフォントを利用者が選ぶ）──
+        saved = (N._FONT_BOLD_PATH, N._FONT_BOLD_IDX,
+                 N._FONT_MEDIUM_PATH, N._FONT_MEDIUM_IDX)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ayati = os.path.join(root, "font", "AyatiShowaSerif-Regular.ttf")
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                ng_missing = N._apply_cover_font("/no/such/font.ttf")
+                ng_notfont = N._apply_cover_font(os.path.abspath(__file__))
+            ck("存在しないファイルは受け付けず自動検出のまま",
+               ng_missing is False and N._FONT_BOLD_PATH == saved[0])
+            ck("フォントでないファイルも受け付けず自動検出のまま",
+               ng_notfont is False and N._FONT_BOLD_PATH == saved[0])
+            if os.path.exists(ayati):
+                with tempfile.TemporaryDirectory() as d:
+                    src = make_work_txt(d, "A.txt", "作品A", "n0001aa", episodes=1)
+                    with contextlib.redirect_stdout(io.StringIO()), \
+                         contextlib.redirect_stderr(io.StringIO()):
+                        try:
+                            N.main(["--from-file", src, "--cover-font", ayati,
+                                    "--output-dir", d])
+                        except SystemExit:
+                            pass
+                    ck("--cover-font を指定すると表紙はそのフォントで描く",
+                       N._FONT_BOLD_PATH == ayati, str(N._FONT_BOLD_PATH))
+                    ck("--cover-font 付きでも ePub ができる",
+                       any(f.endswith(".epub") for f in os.listdir(d)))
+            else:
+                ck.skip("font/AyatiShowaSerif-Regular.ttf が無い")
+        finally:
+            (N._FONT_BOLD_PATH, N._FONT_BOLD_IDX,
+             N._FONT_MEDIUM_PATH, N._FONT_MEDIUM_IDX) = saved
+
     return ck.done()
 
 

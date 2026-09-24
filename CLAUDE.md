@@ -118,6 +118,7 @@ python novel_downloader.py --from-file mynovel.txt
 | `--cover-image FILE` | — | 表紙に使用するローカル画像ファイル（JPEG/PNG）。指定するとPillowによる自動生成表紙の代わりに使用される。ファイルが存在しない・非対応形式の場合は自動生成にフォールバック |
 | `--use-site-cover` | — | 作品ページの公式サムネイル画像（`og:image`）を表紙として使用する。一時ファイルに保存して `build_epub` に渡し、終了後に自動削除。`--cover-image` が指定されている場合は `--cover-image` が優先。**品質ゲートあり**：横長・正方形（`w >= h`）／幅 200px 未満／プレースホルダ URL（`no_image`・`/common/`・`top_logo`）は表紙にならないので却下し自動生成表紙へフォールバックする（17サイト中8サイトの og:image は表紙ではなく SNS シェア用カードやサイト共通画像）。berry's cafe・ノベマ！は URL の `-thumb` を外した 2 倍解像度版を優先取得する |
 | `--font FILE` | — | ePub 本文に埋め込むフォントファイル（.otf/.ttf/.woff/.woff2）。`body` のデフォルトフォントとして CSS に設定される。ファイルが存在しない場合は警告を出して埋め込みなしで続行 |
+| `--cover-font FILE` | 自動検出 | 自動生成する表紙画像の題名・著者名を描くフォント（.ttf/.otf/.ttc）。**本文用の `--font` とは別物**（あちらは ePub に埋め込む CSS 用）。優先順は `--cover-font` > 環境変数 `NOVEL_DL_COVER_FONT` > 自動検出。`_main()` 冒頭の `_apply_cover_font()` が `_FONT_BOLD_PATH` 等のモジュール変数を差し替えるので、全モード（`--from-file` / `--append` / `--watch` 含む）に効き、17 個の `run_*` は無修正。存在しない・読めない・かなと漢字の字形を持たない（欧文フォント）ファイルは警告を出して自動検出のフォントで続行する。`.ttc` は `_ttc_jp_index()` で名前に JP を含む書体を選ぶ |
 | `--toc-at-end` | — | 目次ページを奥付の後（末尾）に配置する。デフォルトは表紙の直後・本文の前 |
 | `--output-dir DIR` | カレントディレクトリ | 出力先ディレクトリを指定する。存在しない場合は自動作成。ファイル名は従来通りタイトルから自動生成（`-o` と併用可） |
 | `--kobo` | — | 楽天 Kobo 専用端末（Kobo Clara / Kobo Sage 等）向けに ePub の拡張子を `.kepub.epub` にする。内部的には `_epub_ext(args)` ヘルパーが拡張子を切り替える |
@@ -367,7 +368,7 @@ GUI（Android アプリ・将来の組み込み利用）から本モジュール
 | `ABORT_EVENT` | `threading.Event`。GUI から `set()` すると実行中のダウンロードが中止される。内部ヘルパー `_sleep()`（全 `time.sleep` を置換済み）と各サイト `*_fetch()` 関数入口の `_check_abort()` がこのフラグを監視し、`AbortRequested` 例外を送出する |
 | `AbortRequested` | 中止要求例外。`main()` が `KeyboardInterrupt` と共に捕捉し「中止しました。」を stderr に表示して**終了コード 130** で終了する（CLI の Ctrl+C も同様） |
 | `PROGRESS_CALLBACK` | `fn(n: int, total: int, title: str)` を代入すると話数進捗の print と同じタイミングで呼ばれる（print 出力は従来どおり維持）。呼び出しは `_progress()` ヘルパー経由でフック側の例外は握りつぶす。なろうの `total` は `--end` 指定時も全話数を返す点に注意 |
-| 環境変数 `NOVEL_DL_COVER_FONT` | 表紙用フォントファイルのパスを明示指定。`_find_cjk_fonts()` が最優先で採用し、fc-list 等の探索をスキップする（Android では同梱 TTF を指定） |
+| 環境変数 `NOVEL_DL_COVER_FONT` | 表紙用フォントファイルのパスを明示指定。CLI の `--cover-font` があればそちらが優先。`_find_cjk_fonts()` が自動検出より先に採用し、fc-list 等の探索をスキップする（Android では同梱 TTF を指定） |
 | 環境変数 `NOVEL_DOWNLOADER_LANG` | エンジンの表示言語（`--lang` と同じ・`--lang` の方が優先）。**GUI はこれでエンジンに言語を伝える**（`_engine_env()` が設定する）。GUI の失敗理由はエンジンの stderr から拾って表示するため、これが無いと英語 UI に日本語のエラーが混ざる（design_gui_v2.md §8.13） |
 | 環境変数 `NOVEL_DL_TRACEBACK` | `1` を指定すると、想定内の失敗（`_FATAL_ERRORS`）でも従来どおり全スタックトレースを出す。既定では `_friendly_error()` の 1 行（必ず `エラー: ` で始まる）だけを stderr に出して終了コード 1 で終わる |
 
