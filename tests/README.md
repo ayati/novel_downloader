@@ -19,6 +19,7 @@ python3 tests/test_gui_shelf.py              # 1 スイートだけ直接
 | `test_gui_pure.py` | URL の畳み込み・Webhook 設定の整形・受信箱のファイル読み・パネル高さ配分 | 不要 | 不要 |
 | `test_gui_webhook.py` | Webhook 設定の画面操作 | **要** | 不要 |
 | `test_gui_shelf.py` | 本棚の一覧・表示更新・二重起動の防止 | **要** | 不要 |
+| `test_gui_cover_font.py` | おまかせ表紙のフォント選択（`--cover-font`）の画面操作 | **要** | 不要 |
 | `test_gui_inbox.py` | 受信箱の走査・重複判定・`done` への移動 | **要** | 不要 |
 | `test_network.py` | 実サイトでの取得（既定でスキップ） | 不要 | **要** |
 

@@ -167,6 +167,8 @@ UI = {
     "cover_site": ("サイトの公式表紙を使う", "Use the site cover"),
     "cover_file": ("自分の画像を選ぶ…", "Choose my own image…"),
     "cover_none": ("画像が未選択です", "No image selected"),
+    "cover_font": ("表紙の文字", "Cover lettering"),
+    "cover_font_default": ("標準（自動で選ぶ）", "Default (auto)"),
     "pick_image": ("画像を選ぶ", "Choose image"),
     "rarely": ("ここから下は普段は変更不要", "Rarely needed below"),
     "horizontal": ("横書きにする", "Horizontal layout"),
@@ -200,6 +202,7 @@ UI = {
     "sites_fail": ("一覧を取得できませんでした。", "Could not load the site list."),
     "ft_image": ("画像ファイル", "Image files"),
     "ft_font": ("フォントファイル", "Font files"),
+    "ft_cover_font": ("表紙用フォント", "Cover fonts"),
     "ft_all": ("すべて", "All files"),
     # ── v1.1: 入力まわり（design_gui_v2 §5.8） ──
     "ctx_cut": ("切り取り", "Cut"),
@@ -503,6 +506,7 @@ def default_settings() -> dict:
         "output_dir": default_output_dir(),
         "cover_mode": "auto",          # "auto" | "site" | "file"
         "cover_image_path": "",
+        "cover_font_path": "",         # おまかせ表紙の題名・著者名のフォント（--cover-font）
         "horizontal": False,
         "kobo": False,
         "toc_at_end": False,
@@ -572,6 +576,8 @@ def load_settings() -> dict:
         s.get("cover_image_path") and os.path.isfile(s["cover_image_path"])
     ):
         s["cover_mode"] = "auto"       # 画像が無ければ auto へフォールバック（§13.3）
+    if s.get("cover_font_path") and not os.path.isfile(s["cover_font_path"]):
+        s["cover_font_path"] = ""      # 無くなっていれば自動で選ぶ表紙フォントへ
     if s.get("font_path") and not os.path.isfile(s["font_path"]):
         s["font_path"] = ""            # フォントファイルが無ければ埋め込みなしへ
     try:
@@ -1252,11 +1258,31 @@ class NovelDownloaderApp(ctk.CTk):
             self.frm_detail, text="自分の画像を選ぶ…", value="file",
             variable=self.var_cover, command=self._on_cover_change)
         self.rad_cover_auto.grid(row=3, column=0, sticky="w", padx=24, pady=1)
-        self.rad_cover_site.grid(row=4, column=0, sticky="w", padx=24, pady=1)
-        self.rad_cover_file.grid(row=5, column=0, sticky="w", padx=24, pady=1)
+        self.rad_cover_site.grid(row=5, column=0, sticky="w", padx=24, pady=1)
+        self.rad_cover_file.grid(row=6, column=0, sticky="w", padx=24, pady=1)
+
+        # おまかせ表紙の題名・著者名のフォント（--cover-font）。表紙を自動で
+        # 作るときにしか意味が無いので「おまかせ」の直下に置き、他では押せなくする
+        self.frm_cover_font = ctk.CTkFrame(self.frm_detail, fg_color="transparent")
+        self.frm_cover_font.grid(row=4, column=0, sticky="w", padx=(52, 24))
+        self._cover_font_path = ""
+        self.lbl_cover_font = ctk.CTkLabel(self.frm_cover_font, text="表紙の文字")
+        self.lbl_cover_font.pack(side="left")
+        self.var_cover_font_name = ctk.StringVar(value="標準（自動で選ぶ）")
+        self.lbl_cover_font_name = ctk.CTkLabel(self.frm_cover_font,
+                                                textvariable=self.var_cover_font_name,
+                                                text_color="gray")
+        self.lbl_cover_font_name.pack(side="left", padx=(8, 0))
+        self.btn_cover_font_pick = ctk.CTkButton(self.frm_cover_font, text="選ぶ", width=56,
+                                                 command=self._pick_cover_font)
+        self.btn_cover_font_pick.pack(side="left", padx=(8, 0))
+        self.btn_cover_font_clear = ctk.CTkButton(self.frm_cover_font, text="標準に戻す",
+                                                  width=84, fg_color="gray40",
+                                                  command=self._clear_cover_font)
+        self.btn_cover_font_clear.pack(side="left", padx=(6, 0))
 
         self.frm_cover_file = ctk.CTkFrame(self.frm_detail, fg_color="transparent")
-        self.frm_cover_file.grid(row=6, column=0, sticky="ew", padx=24)
+        self.frm_cover_file.grid(row=7, column=0, sticky="ew", padx=24)
         self.frm_cover_file.grid_columnconfigure(0, weight=1)
         self.var_cover_file = ctk.StringVar(value="画像が未選択です")
         self.lbl_cover_file = ctk.CTkLabel(self.frm_cover_file,
@@ -1270,9 +1296,9 @@ class NovelDownloaderApp(ctk.CTk):
 
         # 動作（§5.9 / §6）。よく触る設定なので「普段は変更不要」の区切りより上に置く
         self.lbl_behavior = ctk.CTkLabel(self.frm_detail, text="動作", anchor="w")
-        self.lbl_behavior.grid(row=7, column=0, sticky="ew", padx=12, pady=(12, 0))
+        self.lbl_behavior.grid(row=8, column=0, sticky="ew", padx=12, pady=(12, 0))
         beh = ctk.CTkFrame(self.frm_detail, fg_color="transparent")
-        beh.grid(row=8, column=0, sticky="ew", padx=24)
+        beh.grid(row=9, column=0, sticky="ew", padx=24)
         self.var_auto_paste = ctk.BooleanVar(value=True)
         self.var_open_on_done = ctk.BooleanVar(value=True)
         self.chk_auto_paste = ctk.CTkCheckBox(beh, text="URLを自動で貼り付ける",
@@ -1335,13 +1361,13 @@ class NovelDownloaderApp(ctk.CTk):
         self.lbl_webhook_hint.grid_remove()
 
         sep = ctk.CTkFrame(self.frm_detail, height=1, fg_color="gray70")
-        sep.grid(row=9, column=0, sticky="ew", padx=12, pady=10)
+        sep.grid(row=10, column=0, sticky="ew", padx=12, pady=10)
         self.lbl_rarely = ctk.CTkLabel(self.frm_detail, text="ここから下は普段は変更不要",
                                        text_color="gray", font=ctk.CTkFont(size=11))
-        self.lbl_rarely.grid(row=10, column=0, sticky="w", padx=12)
+        self.lbl_rarely.grid(row=11, column=0, sticky="w", padx=12)
 
         opt = ctk.CTkFrame(self.frm_detail, fg_color="transparent")
-        opt.grid(row=11, column=0, sticky="ew", padx=12, pady=(2, 12))
+        opt.grid(row=12, column=0, sticky="ew", padx=12, pady=(2, 12))
         self.var_horizontal = ctk.BooleanVar(value=False)
         self.var_kobo = ctk.BooleanVar(value=False)
         self.var_toc_at_end = ctk.BooleanVar(value=False)
@@ -2530,6 +2556,10 @@ class NovelDownloaderApp(ctk.CTk):
         self._cover_image_path = s.get("cover_image_path", "")
         if self._cover_image_path:
             self.var_cover_file.set(os.path.basename(self._cover_image_path))
+        self._cover_font_path = s.get("cover_font_path", "")
+        self.var_cover_font_name.set(os.path.basename(self._cover_font_path)
+                                     if self._cover_font_path
+                                     else self._t("cover_font_default"))
         self.var_horizontal.set(bool(s["horizontal"]))
         self.var_kobo.set(bool(s["kobo"]))
         self.var_toc_at_end.set(bool(s.get("toc_at_end", False)))
@@ -2564,6 +2594,7 @@ class NovelDownloaderApp(ctk.CTk):
             "output_dir": self.var_outdir.get().strip() or default_output_dir(),
             "cover_mode": self.var_cover.get(),
             "cover_image_path": self._cover_image_path,
+            "cover_font_path": self._cover_font_path,
             "horizontal": bool(self.var_horizontal.get()),
             "kobo": bool(self.var_kobo.get()),
             "toc_at_end": bool(self.var_toc_at_end.get()),
@@ -3250,6 +3281,10 @@ class NovelDownloaderApp(ctk.CTk):
         elif s["cover_mode"] == "file" and s.get("cover_image_path") and \
                 os.path.isfile(s["cover_image_path"]):
             args += ["--cover-image", s["cover_image_path"]]
+        elif s["cover_mode"] == "auto" and s.get("cover_font_path") and \
+                os.path.isfile(s["cover_font_path"]):
+            # 設定したときだけ渡す（未設定の人の起動コマンドは従来と同じ）
+            args += ["--cover-font", s["cover_font_path"]]
         if s["horizontal"]:
             args.append("--horizontal")
         if s["kobo"]:
@@ -3933,6 +3968,11 @@ class NovelDownloaderApp(ctk.CTk):
         state = "normal" if is_file else "disabled"
         self.btn_cover_pick.configure(state=state)
         self.lbl_cover_file.configure(text_color=("gray10", "gray90") if is_file else "gray")
+        is_auto = (self.var_cover.get() == "auto")
+        font_state = "normal" if is_auto else "disabled"
+        self.btn_cover_font_pick.configure(state=font_state)
+        self.btn_cover_font_clear.configure(state=font_state)
+        self.lbl_cover_font.configure(text_color=("gray10", "gray90") if is_auto else "gray")
         self._persist()
 
     def _reload_shelf_if_open(self):
@@ -3960,6 +4000,20 @@ class NovelDownloaderApp(ctk.CTk):
             self._cover_image_path = f
             self.var_cover_file.set(os.path.basename(f))
             self._persist()
+
+    def _pick_cover_font(self):
+        f = filedialog.askopenfilename(
+            filetypes=[(self._t("ft_cover_font"), "*.ttf *.otf *.ttc"),
+                        (self._t("ft_all"), "*.*")])
+        if f:
+            self._cover_font_path = f
+            self.var_cover_font_name.set(os.path.basename(f))
+            self._persist()
+
+    def _clear_cover_font(self):
+        self._cover_font_path = ""
+        self.var_cover_font_name.set(self._t("cover_font_default"))
+        self._persist()
 
     def _pick_font(self):
         f = filedialog.askopenfilename(
@@ -4253,6 +4307,11 @@ class NovelDownloaderApp(ctk.CTk):
         if not self._cover_image_path:
             self.var_cover_file.set(self._t("cover_none"))
         self.btn_cover_pick.configure(text=self._t("pick_image"))
+        self.lbl_cover_font.configure(text=self._t("cover_font"))
+        if not self._cover_font_path:
+            self.var_cover_font_name.set(self._t("cover_font_default"))
+        self.btn_cover_font_pick.configure(text=self._t("pick"))
+        self.btn_cover_font_clear.configure(text=self._t("font_reset"))
         self.lbl_rarely.configure(text=self._t("rarely"))
         self.chk_horizontal.configure(text=self._t("horizontal"))
         self.chk_kobo.configure(text=self._t("kobo"))
