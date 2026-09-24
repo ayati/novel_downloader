@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("com.chaquo.python")
 }
 
@@ -41,12 +40,12 @@ val hasReleaseSigning =
 
 android {
     namespace = "com.ayati.noveldownloader"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.ayati.noveldownloader"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
         versionCode = appVerParts[0] * 10000 + appVerParts[1] * 100 + appVerParts[2]
         versionName = appVersion
 
@@ -83,9 +82,12 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+}
 
-    kotlinOptions {
-        jvmTarget = "17"
+// AGP 9 で android { kotlinOptions } は廃止。内蔵 Kotlin の設定はこちらに書く
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 

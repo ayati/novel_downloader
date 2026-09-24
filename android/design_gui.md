@@ -256,7 +256,20 @@ interface DownloadListener {
   スクロールさせる。完了に切り替わった 1 回だけ `requestRectangleOnScreen` で完了カードを
   見える位置へ寄せる（見えていれば動かない）
 - `androidx.activity:activity-ktx` を明示的に依存に加えた（`enableEdgeToEdge()`）
-- これで targetSdk 36 に上げても画面は崩れない前提になった（SDK の引き上げ自体は別作業）
+- これで targetSdk 36 に上げても画面は崩れない前提になった
+
+**ビルド環境の引き上げ（2026-09-24）**: 上記を受けて compileSdk / targetSdk を 36 に、
+AGP を 8.7.3 → **9.2.1**、Gradle を 8.14.5 → **9.4.1** に上げた。
+
+- **AGP の上限は Chaquopy が決める。** Chaquopy 17.0 の対応は AGP 7.3〜9.2（AGP の最新は 9.4 だが未対応）。
+  AGP を上げるときは先に https://chaquo.com/chaquopy/doc/current/versions.html を見ること
+- AGP 9 は Kotlin を内蔵するので `org.jetbrains.kotlin.android` プラグインを外した。
+  `android { kotlinOptions }` は廃止されたので、トップレベルの `kotlin { compilerOptions { jvmTarget } }` へ移した
+- 残る非推奨警告（`--warning-mode all`）は **すべて Chaquopy プラグイン内部**の依存宣言
+  （multi-string notation）由来で、こちらのスクリプトからは出ていない。Gradle 10 では
+  エラーになるので、Gradle 10 に上げる前に Chaquopy の更新が要る
+- assembleRelease（lintVital 込み）も通り、`aapt2 dump badging` で targetSdk 36・
+  `apksigner` でリリース鍵署名を確認した
 
 ---
 
