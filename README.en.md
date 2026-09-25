@@ -27,7 +27,7 @@ The engine still targets Japanese posting sites (Syosetu / Narou, Kakuyomu, Alph
 
 ## Desktop GUI
 
-`novel_downloader_gui.py` (requires `pip install customtkinter`) wraps the engine so it can be driven without a terminal. The **Japanese / English** control in the top-right switches the GUI *and* the engine messages it shows, including the failure reason printed under a failed download.
+`novel_downloader_gui.py` (requires `pip install customtkinter`; also runs on macOS — see `MACOS_SETUP.md`, in Japanese, for setup and for building a `.app`) wraps the engine so it can be driven without a terminal. The **Japanese / English** control in the top-right switches the GUI *and* the engine messages it shows, including the failure reason printed under a failed download.
 
 Advanced settings cover the output folder, cover art (with *Auto-generate*, you can also pick the font used for the cover lettering), embedded font, request delay, encoding, horizontal / Kobo / table-of-contents placement, skipping inline illustrations, and webhook notifications (Discord / Slack).
 
@@ -41,7 +41,7 @@ Two panels were added in v2.14.0:
 - Python 3.10+
 - `pip install requests beautifulsoup4`
 - Hameln additionally needs Playwright: `pip install playwright && python -m playwright install chromium`
-- Optional JPEG covers: Pillow and a CJK font. libraqm is **not** required: since v2.16.0 the vertical title is laid out without it, so the Android app and the Windows exe produce JPEG covers too. `--cover-font FILE` picks the font for the cover lettering (separate from `--font`, which embeds a body font in the EPUB)
+- Optional JPEG covers: Pillow and a CJK font. libraqm is **not** required: since v2.16.0 the vertical title is laid out without it, so the Android app and the Windows exe produce JPEG covers too. `--cover-font FILE` picks the font for the cover lettering (separate from `--font`, which embeds a body font in the EPUB). On macOS the built-in Hiragino Mincho ProN is detected automatically
 
 ## Basic usage
 

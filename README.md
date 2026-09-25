@@ -139,6 +139,10 @@ sudo apt install fonts-ipafont
 | 游明朝 | Microsoft Office 付属 |
 | HGS明朝E | Microsoft Office 付属 |
 
+**macOS:**
+標準搭載の**ヒラギノ明朝 ProN** を自動検出します（無ければ游明朝・ヒラギノ角ゴシック）。追加のインストールは不要です。
+macOS での GUI の動かし方・`.app` にして配布する手順は [`MACOS_SETUP.md`](MACOS_SETUP.md) を参照してください。
+
 ## 使い方
 
 ### URL を指定してダウンロード
@@ -207,6 +211,7 @@ ePub3 ファイルから本文テキストを抽出し、青空文庫書式テ�
 ## Windows GUI
 
 コマンドラインを使わずに操作できる GUI（`novel_downloader_gui.py`）を同梱しています。
+macOS でも動きます（Tcl/Tk 入りの Python が必要・手順は [`MACOS_SETUP.md`](MACOS_SETUP.md)）。
 エンジン（`novel_downloader.py`）を別プロセスで呼び出す作りなので、CLI の機能はそのまま使えます。
 
 ```bash

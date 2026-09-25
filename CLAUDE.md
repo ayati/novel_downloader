@@ -156,6 +156,7 @@ python novel_downloader.py --from-file mynovel.txt
    - `_char_class` — 文字の種別（0=漢字・1=ひらがな等）を返す。`々仝〆〇ヶ` は青空文庫規定で漢字（0）扱い
    - `_apply_ruby_auto` — 直前の漢字からルビ親文字を自動検出
    - `_body_lines_to_xhtml` — 青空文庫本文を XHTML に変換。見出しタグ・字下げタグ・図タグを処理。冒頭で `_apply_tcy_pre` を呼び青空文庫縦中横タグをセンチネルに変換、末尾で `_auto_tcy_xhtml(_apply_tcy_post(r))` で数字・英字の自動縦中横ラップ
+   - `_find_cjk_fonts` — 表紙用の日本語フォントを起動時に探す。**macOS は `_mac_find_cjk_fonts()` で先に探す**（fc-list が無く、Linux/Windows 向けの候補名はひとつも当たらないため、無いと必ず SVG 表紙に落ちていた）。ヒラギノ明朝 ProN.ttc（題名 W6・著者 W3）→ 游明朝（`/System/Library/AssetsV2/…/YuMincho.ttc` のダウンロード型アセット）→ ヒラギノ角ゴシックの順。ファイル名は **NFC に正規化して比べる**（NFD で置かれていると glob の文字列一致が外れる）。太さは `_ttc_style_index()` がスタイル名（`W6` / `Demibold` 等）で選ぶ（`_ttc_jp_index` は名前の "JP" しか見ないので選べない）
    - `make_cover_image` — 表紙を生成。Pillow があれば `_make_cover_daisen`（JPEG、quality=90）、なければ `_make_cover_svg` にフォールバック
    - `_make_cover_daisen` — **題簽（だいせん）意匠**の表紙 JPEG を描く（800×1200）。地＝グラデーション＋青海波の地紋＋紙ノイズ＋ビネット、その上に淡色の題簽パネル（幅 60%）を置き、題名を**縦組み**で載せる。題名は常に紙 `(247,243,231)` ＋濃墨 `(26,20,12)` の固定 2 色なので**地の色に関係なくコントラスト比 16.47 で一定**。縁取り（`stroke_width`）は目が疲れるため使わない。補助関数は `_cover_gradient` / `_cover_paper_noise` / `_cover_vignette` / `_cover_seigaiha` / `_cover_font` / `_draw_vtext` / `_draw_vtext_auto`
    - `_fit_panel_title` — 題簽の内寸に収まる最大の（字サイズ, 1列字数, 列数）を返す。列あたり字数は**均等に配り直す**（最終列だけ短いと題簽の下半分が空いて間延びする）。長題 82px／短題 132px
@@ -429,7 +430,7 @@ python novel_downloader.py --from-epub <出力済み.epub>
 python -c "import zipfile; zipfile.ZipFile('<出力.epub>').extractall('/tmp/epub_check')"
 ```
 
-> **注意**: `.gitignore` に `*.txt` と `*.epub` が含まれるため、ダウンロード結果の出力ファイルは git 管理対象外。Windows 向けセットアップ手順は `WINDOWS_SETUP.md` を参照。
+> **注意**: `.gitignore` に `*.txt` と `*.epub` が含まれるため、ダウンロード結果の出力ファイルは git 管理対象外。Windows 向けセットアップ手順は `WINDOWS_SETUP.md`、macOS 向け（GUI・PyInstaller 配布を含む）は `MACOS_SETUP.md` を参照。
 
 ## リリース手順（Python 本体 ＋ Android APK を一括）
 
@@ -461,6 +462,13 @@ scripts/release.sh 2.3.0 --no-release
   **この keystore を失うと `com.ayati.noveldownloader` を二度と更新できない**（要バックアップ）。
 - **陳腐化ガード（B）**: `scripts/release.sh` はビルド後に `android/.apk_built_from`（`novel_downloader.py` の sha256・`.gitignore` 済み）を記録する。`scripts/install-hooks.sh` を一度実行して `pre-push` フックを入れておくと、`vX.Y.Z` タグ push 時に **(1) `__version__` とタグの不一致**、**(2) APK が古い（本体を変えたのに作り直していない）** を検知して警告する（いずれもブロックはしない）。
 - 配布 APK（`android/noveldownloader_vX.Y.Z.apk`）は `.gitignore` 済み。GitHub Release のアセットとして配る。
+
+### macOS .app も手動（release.sh の対象外）
+
+Windows exe と同じ理由（PyInstaller はクロスコンパイル不可）で、Mac 上で人がビルドする。手順は `MACOS_SETUP.md` §7。
+- **配布形は `.app` ＋受け取り側での `xattr -dr com.apple.quarantine <app>`**（実機確認済み・2026-09-25）。未公証の `.app` は、実機ではシステム設定の「このまま開く」一覧に出ず、`xattr` が必須だった
+- GUI は凍結時に**拡張子なしの `novel_downloader`** を呼ぶ（`engine_cmd()`）。`.app` では `Contents/MacOS/` にエンジンをコピーし、**中身を変えたので `codesign --force --deep --sign -` で ad-hoc 再署名**する
+- Apple Silicon で作れば Apple Silicon 専用。ビルドは python.org 版 Python 推奨（Tcl/Tk 同梱・古い macOS でも動きやすい）
 
 ### Windows exe は手動（release.sh の対象外）
 

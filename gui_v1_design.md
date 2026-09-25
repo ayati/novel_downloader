@@ -406,7 +406,9 @@ novel_downloader.exe <url>
 - → v1 は **P1 推奨**。単一ファイル配布を重視するなら将来 P2 を検討。
 
 ### 12.2 エンジンの場所解決
-- 凍結時（PyInstaller）: `os.path.dirname(sys.executable)` 隣の `novel_downloader.exe`。
+- 凍結時（PyInstaller）: `os.path.dirname(sys.executable)` 隣の `novel_downloader.exe`（Windows）／`novel_downloader`（macOS・Linux。PyInstaller は拡張子を付けない）。
+  - `.exe` 決め打ちだった頃、macOS ではエンジンを起動できず `--detect-site` が None になり、全 URL が「このサイトには対応していません」と表示された。
+  - macOS の `.app` では `sys.executable` が `.app/Contents/MacOS/` 内なので、エンジンもそこへ入れる（`MACOS_SETUP.md` §7-2）。
 - 開発時（.py 実行）: `python novel_downloader.py`。
 - → `getattr(sys, "frozen", False)` で分岐し、起動方法を1関数に隠蔽する。
 
