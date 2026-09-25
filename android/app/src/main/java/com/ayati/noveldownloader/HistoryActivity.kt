@@ -178,6 +178,11 @@ class HistoryActivity : AppCompatActivity() {
     // ── 作品ページ・新着チェック・新着を取得（§13） ─────────────
 
     private fun openWeb(e: DownloadHistory.Entry) {
+        // 取り込んだ .txt 由来の URL もあるので、http/https 以外は開かない（セキュリティレビュー #2）
+        if (!DownloadHistory.isWebUrl(e.sourceUrl)) {
+            Toast.makeText(this, getString(R.string.history_toast_no_url), Toast.LENGTH_SHORT).show()
+            return
+        }
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(e.sourceUrl)))
         } catch (ex: ActivityNotFoundException) {
@@ -300,7 +305,6 @@ class HistoryActivity : AppCompatActivity() {
         startActivity(Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             .putExtra(MainActivity.EXTRA_UPDATE_ENTRY_ID, e.id)
-            .putExtra(MainActivity.EXTRA_UPDATE_URL, e.sourceUrl)
             .putExtra(MainActivity.EXTRA_UPDATE_FORCE_FULL, forceFull))
         finish()
     }

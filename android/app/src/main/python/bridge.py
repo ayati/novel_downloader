@@ -158,7 +158,9 @@ def _run_main(argv: list, listener, meta_url: str = "") -> int:
 def run(url: str, options_json: str, listener) -> int:
     """ダウンロードを実行して終了コードを返す（0=成功 / 130=中止 / 他=エラー）。"""
     opts = json.loads(options_json or "{}")
-    argv = [url, "--output-dir", opts["output_dir"], *_cli_opts(opts)]
+    # URL は必ず "--" の後ろに置く。"--from-file=…" のような値が来ても
+    # オプションとして解釈させない（2026-09-26 セキュリティレビュー #1）
+    argv = ["--output-dir", opts["output_dir"], *_cli_opts(opts), "--", url]
     return _run_main(argv, listener, meta_url=url)
 
 

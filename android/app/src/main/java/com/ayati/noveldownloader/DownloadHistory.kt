@@ -280,6 +280,12 @@ object DownloadHistory {
         return added.size + patched
     }
 
+    /** http / https の URL か（ブラウザや本体へ渡してよい形か）。 */
+    fun isWebUrl(url: String): Boolean {
+        val u = try { Uri.parse(url) } catch (e: Exception) { return false }
+        return (u.scheme == "http" || u.scheme == "https") && !u.host.isNullOrEmpty()
+    }
+
     /**
      * .txt の先頭から「底本URL：」行を読む（本体の _extract_url_from_txt と同じ規則）。
      * ヘッダーは【あらすじ】より前に置かれるので先頭 8KB で足りる（§13.6）。
@@ -292,7 +298,7 @@ object DownloadHistory {
                 .map { it.trim().removePrefix("\uFEFF") }
                 .firstOrNull { it.startsWith("底本URL：") }
                 ?.removePrefix("底本URL：")?.trim()
-                ?.takeIf { it.startsWith("http") }
+                ?.takeIf { isWebUrl(it) }
         }
     } catch (e: Exception) {
         null

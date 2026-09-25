@@ -34,9 +34,14 @@ class MainActivity : AppCompatActivity() {
     companion object {
         /** 外部から URL を受け取って入力欄に入れる（旧「もう一度ダウンロード」の経路）。 */
         const val EXTRA_PREFILL_URL = "prefill_url"
-        /** 履歴の「新着を取得」「もう一度ダウンロード」: 更新する履歴の id（design_history.md §13.4）。 */
+        /**
+         * 履歴の「新着を取得」「もう一度ダウンロード」: 更新する履歴の id（design_history.md §13.4）。
+         *
+         * このアクティビティは共有シートを受けるため exported。**他のアプリからも送れる**ので、
+         * URL は Intent から受け取らず、履歴に実在する行の sourceUrl を使う
+         * （2026-09-26 セキュリティレビュー #1）。
+         */
         const val EXTRA_UPDATE_ENTRY_ID = "update_entry_id"
-        const val EXTRA_UPDATE_URL = "update_url"
         const val EXTRA_UPDATE_FORCE_FULL = "update_force_full"
     }
 
@@ -179,7 +184,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        handleIncomingIntent(intent)
+        // 復元（回転・プロセス終了後の再生成）では元の Intent がもう一度届くので処理しない。
+        // 入力欄の文字は EditText 自身が復元する（セキュリティレビュー #3）
+        if (savedInstanceState == null) handleIncomingIntent(intent)
     }
 
     override fun onResume() {
@@ -207,17 +214,22 @@ class MainActivity : AppCompatActivity() {
         if (intent == null) return
         val entryId = intent.getStringExtra(EXTRA_UPDATE_ENTRY_ID)
         if (!entryId.isNullOrEmpty()) {
-            val url = intent.getStringExtra(EXTRA_UPDATE_URL).orEmpty()
             val force = intent.getBooleanExtra(EXTRA_UPDATE_FORCE_FULL, false)
-            // 画面回転で再実行されないよう消す
             intent.removeExtra(EXTRA_UPDATE_ENTRY_ID)
             if (DownloadState.ui.value.isRunning) {
                 Toast.makeText(this, getString(R.string.main_toast_busy), Toast.LENGTH_SHORT).show()
                 return
             }
-            pendingUpdate = PendingUpdate(entryId, url, force)
-            pendingStart = true
-            maybeRequestWriteThenStart()
+            lifecycleScope.launch {
+                // 履歴に無い id・URL の無い行は黙って捨てる（外部からの呼び出しを想定）
+                val entry = withContext(Dispatchers.IO) {
+                    DownloadHistory.get(this@MainActivity, entryId)
+                } ?: return@launch
+                if (!DownloadHistory.isWebUrl(entry.sourceUrl)) return@launch
+                pendingUpdate = PendingUpdate(entry.id, entry.sourceUrl, force)
+                pendingStart = true
+                maybeRequestWriteThenStart()
+            }
             return
         }
         val prefill = intent.getStringExtra(EXTRA_PREFILL_URL)

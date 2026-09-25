@@ -41,7 +41,9 @@ object PyBridge {
      * bridge は sys.stdout・PROGRESS_CALLBACK・本体の _CHECK_UPDATE_MODE といった
      * プロセス全体のグローバルを触る。特に新着チェック中に走ったダウンロードは
      * 話の一覧を取った時点で _CheckUpdateDone に化けて壊れる。
-     * detect() はグローバルを触らないのでロック不要。
+     * detect() はロックしない（入力のたびにダウンロードの終了を待たせない）。ただし
+     * redirect_stdout で sys.stdout を一瞬差し替えるので、ダウンロード中に打ち換えると
+     * ログ行が数行欠けることがある（design_history.md §13.2・受け入れ済み）。
      */
     val engine = ReentrantLock()
 
