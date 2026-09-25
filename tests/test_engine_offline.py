@@ -212,6 +212,30 @@ def main() -> int:
         except (OSError, NotImplementedError):
             ck.skip("symlink を作れない環境")
 
+    # ── macOS 標準フォントの探索（fc-list が無く Linux/Windows の候補名も当たらない）──
+    # Finder 経由のファイル名は NFD のことがあるので、NFD で置いても見つかること
+    if N._FONT_BOLD_PATH:
+        import unicodedata
+        with tempfile.TemporaryDirectory() as td:
+            fonts = os.path.join(td, "Fonts")
+            asset = os.path.join(td, "Assets", "x.asset", "AssetData")
+            os.makedirs(fonts)
+            os.makedirs(asset)
+            try:
+                os.symlink(N._FONT_BOLD_PATH, os.path.join(
+                    fonts, unicodedata.normalize("NFD", "ヒラギノ明朝 ProN.ttc")))
+                os.symlink(N._FONT_BOLD_PATH, os.path.join(asset, "YuMincho.ttc"))
+                got = N._mac_find_cjk_fonts([fonts])[0]
+                ck("NFD 名のヒラギノ明朝を見つける",
+                   got and got.startswith(fonts), got)
+                got = N._mac_find_cjk_fonts([os.path.join(td, "Assets")])[0]
+                ck("アセット置き場の游明朝を見つける",
+                   got and got.endswith("YuMincho.ttc"), got)
+                ck("何も無ければ None",
+                   N._mac_find_cjk_fonts([os.path.join(td, "none")])[0] is None)
+            except (OSError, NotImplementedError):
+                ck.skip("symlink を作れない環境")
+
     # ── raqm の無い環境でも題簽表紙を JPEG で作る ──
     # Android（Chaquopy）・PyInstaller の exe は raqm を持たない。以前は
     # direction="ttb" が例外になり表紙ごと SVG へ落ちていた。

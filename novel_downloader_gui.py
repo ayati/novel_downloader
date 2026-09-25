@@ -389,11 +389,15 @@ def _resource_path(name: str) -> str:
 def engine_cmd(*cli_args) -> list:
     """エンジン（CLI）を起動するコマンド配列を返す。
 
-    凍結時: 隣の novel_downloader.exe を呼ぶ。
+    凍結時: 隣の novel_downloader.exe（macOS / Linux は拡張子なしの novel_downloader）を呼ぶ。
     開発時: python で novel_downloader.py を呼ぶ。
+
+    macOS の PyInstaller は拡張子を付けないので、".exe" 決め打ちだと起動に失敗し、
+    --detect-site が None → 全 URL が「このサイトには対応していません」になる。
     """
     if getattr(sys, "frozen", False):
-        exe = os.path.join(_app_base_dir(), "novel_downloader.exe")
+        name = "novel_downloader.exe" if IS_WINDOWS else "novel_downloader"
+        exe = os.path.join(_app_base_dir(), name)
         return [exe, *cli_args]
     script = os.path.join(_app_base_dir(), "novel_downloader.py")
     return [sys.executable, script, *cli_args]

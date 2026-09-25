@@ -294,8 +294,8 @@ _MESSAGES_EN = {
         "[warn] Site cover image: no cover image was found.",
     "[警告] フォントファイルが見つかりません: {font_path}":
         "[warn] Font file not found: {font_path}",
-    "[警告] 日本語フォントが見つかりませんでした。JPEG表紙はSVGで代替されます。\n       フォントをインストールすると JPEG 表紙が生成されます:\n       [Linux]   sudo apt install fonts-noto-cjk\n                 または: sudo apt install fonts-ipafont\n       [Windows] BIZ UDP明朝 / MS明朝 / 游明朝 など日本語フォントが\n                 C:\\Windows\\Fonts に存在するか確認してください。\n                 Microsoft Office をインストールすると游明朝が追加されます。":
-        "[warn] No Japanese font was found; the JPEG cover falls back to SVG.\n       Installing a font enables JPEG covers:\n       [Linux]   sudo apt install fonts-noto-cjk\n                 or: sudo apt install fonts-ipafont\n       [Windows] Check that a Japanese font such as BIZ UDPMincho,\n                 MS Mincho or Yu Mincho exists in C:\\Windows\\Fonts.\n                 Installing Microsoft Office adds Yu Mincho.",
+    "[警告] 日本語フォントが見つかりませんでした。JPEG表紙はSVGで代替されます。\n       フォントをインストールすると JPEG 表紙が生成されます:\n       [Linux]   sudo apt install fonts-noto-cjk\n                 または: sudo apt install fonts-ipafont\n       [Windows] BIZ UDP明朝 / MS明朝 / 游明朝 など日本語フォントが\n                 C:\\Windows\\Fonts に存在するか確認してください。\n                 Microsoft Office をインストールすると游明朝が追加されます。\n       [macOS]   通常はヒラギノ明朝を自動で使います。見つからない場合は\n                 --cover-font でフォントファイルを指定してください。":
+        "[warn] No Japanese font was found; the JPEG cover falls back to SVG.\n       Installing a font enables JPEG covers:\n       [Linux]   sudo apt install fonts-noto-cjk\n                 or: sudo apt install fonts-ipafont\n       [Windows] Check that a Japanese font such as BIZ UDPMincho,\n                 MS Mincho or Yu Mincho exists in C:\\Windows\\Fonts.\n                 Installing Microsoft Office adds Yu Mincho.\n       [macOS]   Hiragino Mincho is normally used automatically; if it is\n                 not found, pass a font file with --cover-font.",
     "[警告] 表紙画像ファイルが見つかりません: {cover_image_path}":
         "[warn] Cover image file not found: {cover_image_path}",
     "[警告] 非対応の画像形式です: {_ext}（対応: .jpg / .jpeg / .png）":
@@ -2803,6 +2803,77 @@ def _ttc_jp_index(path: str) -> int:
     return 0  # TTCでも index=0 が JP の場合が多い
 
 
+def _ttc_style_index(path: str, styles: tuple) -> int:
+    """TTC のフェイスのうちスタイル名が styles に最初に一致するもののインデックス。
+
+    ヒラギノ明朝 ProN.ttc（W3 / W6）や YuMincho.ttc（Regular / Medium / Demibold）は
+    名前に "JP" を含まないので _ttc_jp_index では太さを選べない。
+    "+36p Kana" 等の仮名差し替え版は避ける。見つからなければ 0。
+    """
+    try:
+        from PIL import ImageFont
+        faces = []
+        for i in range(20):
+            try:
+                faces.append((i, *ImageFont.truetype(path, 12, index=i).getname()))
+            except Exception:
+                break
+        for want in styles:
+            for i, family, style in faces:
+                if style == want and "+" not in family:
+                    return i
+    except Exception:
+        pass
+    return 0
+
+
+# macOS 標準の日本語フォント（design_cover_source.md）。macOS には fc-list が無く、
+# Linux / Windows 向けの候補名はひとつも当たらないので別に探す。
+# (ファイル名, bold のスタイル候補, medium のスタイル候補)。ファイル名は NFC で比べる
+# （Finder 経由で置かれたファイルは NFD のことがあり、glob の文字列一致では外れる）。
+_MAC_FONT_CANDIDATES = [
+    # ヒラギノ明朝 ProN — macOS 10.11 以降は /System/Library/Fonts に常備
+    ("ヒラギノ明朝 ProN.ttc",     ("W6",), ("W3",)),
+    ("ヒラギノ明朝 ProN W6.otf",  (),      ()),
+    ("HiraMinProN-W6.otf",       (),      ()),
+    # 游明朝 — macOS 10.15 以降はダウンロード型アセット（AssetsV2 配下）
+    ("YuMincho.ttc",             ("Demibold", "Medium"), ("Medium", "Regular")),
+    # ヒラギノ角ゴシック（明朝が無いときの代替）
+    ("ヒラギノ角ゴシック W6.ttc",  (),      ()),
+    ("ヒラギノ角ゴシック W5.ttc",  (),      ()),
+]
+
+
+def _mac_find_cjk_fonts(dirs: list | None = None) -> tuple:
+    """macOS の既知の日本語フォントを探して (bold, bi, medium, mi) を返す。"""
+    import glob
+    import unicodedata
+    if dirs is None:
+        dirs = ["/System/Library/Fonts", "/Library/Fonts",
+                os.path.expanduser("~/Library/Fonts")]
+        # 游明朝などダウンロード型フォントの置き場（OS の版で Font5〜Font8 と変わる）
+        dirs += sorted(glob.glob(
+            "/System/Library/Assets*/com_apple_MobileAsset_Font*/*.asset/AssetData"))
+    found: dict[str, str] = {}
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        for root, _subdirs, files in os.walk(d):
+            for f in files:
+                found.setdefault(unicodedata.normalize("NFC", f), os.path.join(root, f))
+    for name, bold_styles, med_styles in _MAC_FONT_CANDIDATES:
+        path = found.get(unicodedata.normalize("NFC", name))
+        if not path:
+            continue
+        if path.lower().endswith(".ttc"):
+            bi = _ttc_style_index(path, bold_styles) if bold_styles else _ttc_jp_index(path)
+            mi = _ttc_style_index(path, med_styles) if med_styles else bi
+        else:
+            bi = mi = 0
+        return (path, bi, path, mi)
+    return (None, 0, None, 0)
+
+
 def _find_cjk_fonts() -> tuple:
     """
     日本語グリフを持つ TTC/OTF/TTF フォントを優先順で探して
@@ -2826,6 +2897,14 @@ def _find_cjk_fonts() -> tuple:
     if env_font and os.path.isfile(env_font):
         idx = _ttc_jp_index(env_font) if env_font.lower().endswith(".ttc") else 0
         return (env_font, idx, env_font, idx)
+
+    # ── macOS 標準フォント ─────────────────────────────────────────
+    # 常備のヒラギノ明朝を題簽の明朝として先に採る（fc-list も無く、下の候補名は
+    # どれも macOS に無いので、ここで見つけないと必ず SVG 表紙に落ちる）
+    if sys.platform == "darwin":
+        mac = _mac_find_cjk_fonts()
+        if mac[0]:
+            return mac
 
     # ── 探索ディレクトリ（再帰検索） ──────────────────────────────
     search_dirs = [
@@ -3005,7 +3084,9 @@ else:
         "                 または: sudo apt install fonts-ipafont\n"
         "       [Windows] BIZ UDP明朝 / MS明朝 / 游明朝 など日本語フォントが\n"
         "                 C:\\Windows\\Fonts に存在するか確認してください。\n"
-        "                 Microsoft Office をインストールすると游明朝が追加されます。"),
+        "                 Microsoft Office をインストールすると游明朝が追加されます。\n"
+        "       [macOS]   通常はヒラギノ明朝を自動で使います。見つからない場合は\n"
+        "                 --cover-font でフォントファイルを指定してください。"),
         file=sys.stderr
     )
 
