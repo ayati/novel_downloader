@@ -21,7 +21,7 @@ object DownloadState {
      * **状態行だけ旧언語のまま残る**（実機で再現: 日本語UIに英語の「Done: …」）。
      * 表示時に Activity / Service がその時点のロケールで組み立てる。
      */
-    enum class Status { NONE, PREPARING, DONE, CANCELLED, FAILED, RAW }
+    enum class Status { NONE, PREPARING, DONE, UPDATED, NO_NEW, CANCELLED, FAILED, RAW }
 
     /** 保存済みファイル。uri は ACTION_VIEW / ACTION_SEND にそのまま渡せる content:// 形式。 */
     data class SavedFile(val name: String, val uri: String, val mime: String)
@@ -31,7 +31,7 @@ object DownloadState {
         val n: Int = 0,
         val total: Int = 0,
         val status: Status = Status.NONE,
-        /** DONE のファイル名連結 / RAW の生ログ行。ロケールに依存しない値だけを入れる。 */
+        /** DONE のファイル名連結 / UPDATED の追加話数 / RAW の生ログ行。ロケールに依存しない値だけを入れる。 */
         val statusArg: String = "",
         val savedFiles: List<SavedFile> = emptyList(),
     ) {
@@ -64,6 +64,10 @@ fun Context.statusText(status: DownloadState.Status, arg: String): String = when
     DownloadState.Status.NONE -> ""
     DownloadState.Status.PREPARING -> getString(R.string.status_preparing)
     DownloadState.Status.DONE -> getString(R.string.status_done, arg)
+    DownloadState.Status.UPDATED -> (arg.toIntOrNull() ?: 0).let {
+        resources.getQuantityString(R.plurals.status_updated, it, it)
+    }
+    DownloadState.Status.NO_NEW -> getString(R.string.status_no_new)
     DownloadState.Status.CANCELLED -> getString(R.string.status_cancelled)
     DownloadState.Status.FAILED -> getString(R.string.status_failed)
     DownloadState.Status.RAW -> arg

@@ -1,14 +1,18 @@
 package com.ayati.noveldownloader
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.ImageButton
 import android.widget.PopupMenu
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
@@ -20,6 +24,8 @@ import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -30,6 +36,10 @@ import java.util.Locale
  *
  * 行タップ = 開く / 📤 = 共有 / ⋮ = 共有・もう一度ダウンロード・履歴から削除。
  * 「履歴から削除」はファイル実体を消さない（§7 決定事項3）。
+ *
+ * 第2部（§13.1）: 🌐 作品ページ / 🔄 新着チェック / ⬇ 新着を取得。
+ * 新着チェックはこの画面の IO スレッドで行い（前景サービスは使わない・§12 決定7）、
+ * 取得はメイン画面へ渡して DownloadService の更新モードで行う（§12 決定6）。
  */
 class HistoryActivity : AppCompatActivity() {
 
@@ -39,6 +49,8 @@ class HistoryActivity : AppCompatActivity() {
 
     private var entries: List<DownloadHistory.Entry> = emptyList()
     private var invalid: Set<String> = emptySet()
+    /** 新着チェック中の行 id。 */
+    private val checking = mutableSetOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -163,32 +175,184 @@ class HistoryActivity : AppCompatActivity() {
         }
     }
 
-    /** URL をメイン画面の入力欄へ渡して戻る。 */
-    private fun redownload(e: DownloadHistory.Entry) {
+    // ── 作品ページ・新着チェック・新着を取得（§13） ─────────────
+
+    private fun openWeb(e: DownloadHistory.Entry) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(e.sourceUrl)))
+        } catch (ex: ActivityNotFoundException) {
+            Toast.makeText(this, getString(R.string.history_toast_no_browser),
+                Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun toastBusy() {
+        Toast.makeText(this, getString(R.string.history_toast_busy), Toast.LENGTH_SHORT).show()
+    }
+
+    private fun runCheck(e: DownloadHistory.Entry) {
+        if (DownloadState.ui.value.isRunning) { toastBusy(); return }
+        if (!checking.add(e.id)) return
+        adapter.notifyDataSetChanged()
+        lifecycleScope.launch {
+            // 保存まで IO 側で済ませる。画面を閉じるとこのコルーチンは取り消されるが、
+            // エンジンの呼び出しは止まらないので、結果だけは history.json に残す（§12 決定7）
+            val appCtx = applicationContext
+            val result = withContext(Dispatchers.IO) {
+                doCheck(e)?.let { (check, site) ->
+                    DownloadHistory.setCheck(appCtx, e.id, check, site) ?: e
+                }
+            }
+            checking.remove(e.id)
+            if (result == null) {
+                toastBusy()        // 直前にダウンロードが始まってロックが取れなかった
+            } else {
+                entries = entries.map { if (it.id == e.id) result else it }
+            }
+            adapter.notifyDataSetChanged()
+        }
+    }
+
+    /**
+     * エンジンで新着を調べる。ロックが取れなければ null（§13.2）。
+     * 手元の .txt があれば _check_update_one（PC の本棚と同じ判定・§11.2）、
+     * 無ければ（または読めなければ）サイトの総数だけを調べる。
+     */
+    private fun doCheck(e: DownloadHistory.Entry): Pair<DownloadHistory.Check, String>? {
+        PyBridge.ensureStarted(applicationContext)
+        return PyBridge.tryWithEngine {
+            val dir = File(cacheDir, "check").apply { deleteRecursively(); mkdirs() }
+            val local = e.txt?.let { t ->
+                try {
+                    contentResolver.openInputStream(Uri.parse(t.uri))?.use { input ->
+                        File(dir, "check.txt").also { f -> f.outputStream().use { input.copyTo(it) } }
+                    }
+                } catch (ex: Exception) {
+                    null
+                }
+            }
+            val json = try {
+                JSONObject(
+                    if (local != null) PyBridge.module.callAttr("check", local.path).toString()
+                    else PyBridge.module.callAttr("check_url", e.sourceUrl).toString())
+            } catch (ex: Exception) {
+                JSONObject().put("status", "error").put("error", ex.toString())
+            } finally {
+                dir.deleteRecursively()
+            }
+            val raw = json.optString("status")
+            val titles = json.optJSONArray("new_titles")
+            val check = DownloadHistory.Check(
+                at = System.currentTimeMillis(),
+                status = when (raw) {
+                    "updated", "uptodate" -> raw
+                    "init" -> "nolocal"
+                    else -> "error"
+                },
+                existing = json.optInt("existing"),
+                total = json.optInt("total"),
+                newTitles = if (titles == null) emptyList()
+                            else (0 until titles.length()).map { titles.optString(it) },
+                error = json.optString("error"),
+            )
+            // 取り込んだ行はサイト名が空。オフラインの detect() で埋める（§13.6）
+            val site = if (e.siteName.isNotEmpty()) "" else try {
+                JSONObject(PyBridge.module.callAttr("detect", e.sourceUrl).toString())
+                    .optString("display_name")
+            } catch (ex: Exception) {
+                ""
+            }
+            check to site
+        }
+    }
+
+    /**
+     * 新着を取得する（forceFull=false）／まるごと取り直す（true）。
+     * .txt が無い・開けないときは追記できないので、確認してから取り直す（§13.4.1）。
+     */
+    private fun startUpdate(e: DownloadHistory.Entry, forceFull: Boolean) {
         if (e.sourceUrl.isEmpty()) {
             Toast.makeText(this, getString(R.string.history_toast_no_url),
                 Toast.LENGTH_SHORT).show()
             return
         }
+        if (DownloadState.ui.value.isRunning) { toastBusy(); return }
+        lifecycleScope.launch {
+            val canAppend = !forceFull && withContext(Dispatchers.IO) {
+                e.txt?.let { DownloadHistory.exists(this@HistoryActivity, it.uri) } ?: false
+            }
+            if (canAppend) {
+                launchUpdate(e, forceFull = false)
+                return@launch
+            }
+            AlertDialog.Builder(this@HistoryActivity)
+                .setTitle(R.string.history_full_title)
+                .setMessage(if (forceFull) R.string.history_full_message_redo
+                            else R.string.history_full_message_notxt)
+                .setPositiveButton(R.string.history_full_ok) { _, _ -> launchUpdate(e, true) }
+                .setNegativeButton(R.string.common_cancel, null)
+                .show()
+        }
+    }
+
+    /** メイン画面へ渡して、権限の確認とサービスの起動・進捗表示を任せる。 */
+    private fun launchUpdate(e: DownloadHistory.Entry, forceFull: Boolean) {
         startActivity(Intent(this, MainActivity::class.java)
-            .putExtra(MainActivity.EXTRA_PREFILL_URL, e.sourceUrl))
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(MainActivity.EXTRA_UPDATE_ENTRY_ID, e.id)
+            .putExtra(MainActivity.EXTRA_UPDATE_URL, e.sourceUrl)
+            .putExtra(MainActivity.EXTRA_UPDATE_FORCE_FULL, forceFull))
         finish()
+    }
+
+    private fun showCheckDetail(e: DownloadHistory.Entry) {
+        val c = e.lastCheck ?: return
+        val msg = when (c.status) {
+            "updated" -> c.newTitles.joinToString("\n").ifEmpty { checkLine(c) }
+            "error" -> c.error.ifEmpty { checkLine(c) }
+            else -> checkLine(c)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.history_check_detail_title)
+            .setMessage(msg)
+            .setPositiveButton(R.string.common_close, null)
+            .show()
     }
 
     private fun showRowMenu(anchor: View, e: DownloadHistory.Entry) {
         PopupMenu(this, anchor).apply {
             menu.add(0, 1, 0, getString(R.string.common_share))
-            menu.add(0, 2, 1, getString(R.string.history_row_redownload))
-            menu.add(0, 3, 2, getString(R.string.history_row_remove))
+            if (e.lastCheck != null)
+                menu.add(0, 4, 1, getString(R.string.history_check_detail_title))
+            menu.add(0, 2, 2, getString(R.string.history_row_redownload))
+            menu.add(0, 3, 3, getString(R.string.history_row_remove))
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
                     1 -> FileActions.share(this@HistoryActivity, e.files, e.title)
-                    2 -> redownload(e)
+                    2 -> startUpdate(e, forceFull = true)
                     3 -> confirmRemove(e)
+                    4 -> showCheckDetail(e)
                 }
                 true
             }
             show()
+        }
+    }
+
+    /** テーマ属性の色（新着ありは強調色、それ以外は補助の文字色）。 */
+    private fun themeColor(attr: Int): Int {
+        val ta = obtainStyledAttributes(intArrayOf(attr))
+        return try { ta.getColor(0, 0) } finally { ta.recycle() }
+    }
+
+    /** 「🆕 新着 3話（9月25日 確認）」など。 */
+    private fun checkLine(c: DownloadHistory.Check): String {
+        val at = formatDate(c.at)
+        return when (c.status) {
+            "updated" -> resources.getQuantityString(R.plurals.history_check_new, c.newCount, c.newCount, at)
+            "uptodate" -> getString(R.string.history_check_uptodate, at)
+            "nolocal" -> resources.getQuantityString(R.plurals.history_check_nolocal, c.total, c.total, at)
+            else -> getString(R.string.history_check_error, at)
         }
     }
 
@@ -200,6 +364,12 @@ class HistoryActivity : AppCompatActivity() {
         val file: TextView = v.findViewById(R.id.item_file)
         val share: ImageButton = v.findViewById(R.id.item_share)
         val more: ImageButton = v.findViewById(R.id.item_more)
+        val check: TextView = v.findViewById(R.id.item_check)
+        val actions: View = v.findViewById(R.id.item_actions)
+        val web: Button = v.findViewById(R.id.item_web)
+        val checkBtn: Button = v.findViewById(R.id.item_check_btn)
+        val checkingBar: ProgressBar = v.findViewById(R.id.item_checking)
+        val update: Button = v.findViewById(R.id.item_update)
     }
 
     private inner class Adapter : RecyclerView.Adapter<Holder>() {
@@ -225,6 +395,30 @@ class HistoryActivity : AppCompatActivity() {
             h.share.isEnabled = !missing
             h.share.alpha = alpha
 
+            // 🌐 / 🔄 / ⬇ は元 URL が分かっている行だけ（取り込み分で .txt も無い行は出さない）
+            val hasUrl = e.sourceUrl.isNotEmpty()
+            h.actions.visibility = if (hasUrl) View.VISIBLE else View.GONE
+            val isChecking = e.id in checking
+            h.checkBtn.isEnabled = !isChecking && checking.isEmpty()
+            h.checkingBar.visibility = if (isChecking) View.VISIBLE else View.GONE
+            val c = e.lastCheck
+            h.check.visibility = if (c != null && !isChecking) View.VISIBLE else View.GONE
+            if (c != null) {
+                h.check.text = checkLine(c)
+                h.check.setTextColor(themeColor(
+                    if (c.status == "updated") androidx.appcompat.R.attr.colorPrimary
+                    else android.R.attr.textColorSecondary))
+            }
+            // 新着あり → 追記。手元に .txt が無い → 取り直し（§13.1）
+            val offer = c != null && (c.status == "updated" || c.status == "nolocal") && !isChecking
+            h.update.visibility = if (offer) View.VISIBLE else View.GONE
+            h.update.text = getString(
+                if (c?.status == "nolocal") R.string.history_btn_redo else R.string.history_btn_update)
+
+            h.web.setOnClickListener { openWeb(e) }
+            h.checkBtn.setOnClickListener { runCheck(e) }
+            h.update.setOnClickListener { startUpdate(e, forceFull = c?.status == "nolocal") }
+            h.check.setOnClickListener { showCheckDetail(e) }
             h.itemView.setOnClickListener { onRowClick(e) }
             h.share.setOnClickListener { FileActions.share(this@HistoryActivity, e.files, e.title) }
             h.more.setOnClickListener { showRowMenu(it, e) }

@@ -8,6 +8,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
@@ -21,13 +22,21 @@ import kotlin.concurrent.thread
 /**
  * ダウンロード実行用 Foreground Service。
  * 同時実行は 1 件のみ（実行中の開始要求は無視）。
- * 完了後、staging の .epub を Download/小説ダウンローダー/ へコピーする。
+ * 完了後、staging の .epub と .txt を Download/小説ダウンローダー/ へコピーする。
+ *
+ * EXTRA_ENTRY_ID があれば**更新モード**（design_history.md §13.4）: 履歴の .txt を
+ * staging へコピーして --append で新着だけを追記し、結果を**その行の URI へ上書き**する。
+ * .txt が使えなければ（または EXTRA_FORCE_FULL）まるごと取り直して同じく上書きする。
  */
 class DownloadService : Service() {
 
     companion object {
         const val EXTRA_URL = "url"
         const val EXTRA_SITE_NAME = "site_name"
+        /** 更新モード: 対象の履歴 id。 */
+        const val EXTRA_ENTRY_ID = "entry_id"
+        /** 更新モードで追記せず、まるごと取り直す（行メニューの「もう一度ダウンロード」）。 */
+        const val EXTRA_FORCE_FULL = "force_full"
         const val ACTION_CANCEL = "com.ayati.noveldownloader.action.CANCEL"
         private const val CHANNEL_ID = "download"
         private const val NOTIF_ID_PROGRESS = 1
@@ -68,7 +77,9 @@ class DownloadService : Service() {
                 }
                 val url = intent.getStringExtra(EXTRA_URL)!!
                 val siteName = intent.getStringExtra(EXTRA_SITE_NAME).orEmpty()
-                thread { work(url, siteName) }
+                val entryId = intent.getStringExtra(EXTRA_ENTRY_ID)
+                val forceFull = intent.getBooleanExtra(EXTRA_FORCE_FULL, false)
+                thread { work(url, siteName, entryId, forceFull) }
             }
         }
         return START_NOT_STICKY
@@ -76,28 +87,60 @@ class DownloadService : Service() {
 
     // ── ダウンロード本体（ワーカースレッド） ──────────────────────
 
-    private fun work(url: String, siteName: String) {
+    private fun work(url: String, siteName: String, entryId: String?, forceFull: Boolean) {
         DownloadState.reset()
         resolvedSiteName = ""
         DownloadState.ui.value = DownloadState.Ui(
             phase = DownloadState.Phase.PREPARING, status = DownloadState.Status.PREPARING)
 
         val staging = File(filesDir, "staging")
-        staging.deleteRecursively()
-        staging.mkdirs()
+        // 新着チェックが終わるのを待つ（§13.2）。チェックは長くても十数秒
+        PyBridge.engine.lock()
+        try {
+            staging.deleteRecursively()
+            staging.mkdirs()
+            val entry = entryId?.let { DownloadHistory.get(this, it) }
+            doWork(url, siteName, entry, forceFull, staging)
+        } finally {
+            PyBridge.engine.unlock()
+            staging.deleteRecursively()
+            running = false
+            stopSelf()
+        }
+    }
 
+    private fun doWork(
+        url: String, siteName: String, entry: DownloadHistory.Entry?,
+        forceFull: Boolean, staging: File,
+    ) {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val saveTxt = prefs.getBoolean("save_txt", false)
+        val opts = JSONObject()
+            .put("output_dir", staging.path)
+            .put("horizontal", prefs.getBoolean("horizontal", false))
+            .put("kobo", prefs.getBoolean("kobo", false))
+            .put("use_site_cover", prefs.getBoolean("use_site_cover", false))
+            .put("no_inline_images", prefs.getBoolean("no_inline_images", false))
+
+        // 更新モード: 手元の .txt を staging へ。読めなければまるごと取り直しへ落とす（§13.4）
+        val appendTxt: File? = if (entry != null && !forceFull) {
+            entry.txt?.let { copyIn(Uri.parse(it.uri), File(staging, it.name.replace('/', '_'))) }
+        } else null
+        if (entry != null && !forceFull && appendTxt == null) {
+            DownloadState.appendLog(getString(R.string.log_append_fallback))
+        }
 
         val listener = Listener()
+        var added = -1
         val code = try {
             PyBridge.ensureStarted(applicationContext)
-            val opts = JSONObject()
-                .put("output_dir", staging.path)
-                .put("horizontal", prefs.getBoolean("horizontal", false))
-                .put("kobo", prefs.getBoolean("kobo", false))
-                .put("use_site_cover", prefs.getBoolean("use_site_cover", false))
-            PyBridge.module.callAttr("run", url, opts.toString(), listener).toInt()
+            if (appendTxt != null) {
+                val r = JSONObject(PyBridge.module.callAttr(
+                    "append", appendTxt.path, opts.toString(), listener).toString())
+                added = r.optInt("added")
+                r.optInt("code", 1)
+            } else {
+                PyBridge.module.callAttr("run", url, opts.toString(), listener).toInt()
+            }
         } catch (e: Exception) {
             DownloadState.appendLog("[アプリ内エラー] $e")
             1
@@ -105,25 +148,58 @@ class DownloadService : Service() {
 
         when (code) {
             0 -> {
-                val saved = staging.listFiles { f ->
-                    f.name.endsWith(".epub") || (saveTxt && f.name.endsWith(".txt"))
-                }.orEmpty()
-                    .sortedBy { !it.name.endsWith(".epub") }  // 完了カードの先頭は epub
-                    .mapNotNull { saveToDownloads(it) }
-                if (saved.isEmpty()) {
+                // 追記したが新着が無かった: 本体はファイルを書き換えていないので何もしない
+                if (entry != null && appendTxt != null && added == 0) {
+                    DownloadState.ui.value = DownloadState.ui.value.copy(savedFiles = entry.files)
+                    finish(DownloadState.Phase.DONE, DownloadState.Status.NO_NEW)
+                    return
+                }
+                val outputs = staging.listFiles { f ->
+                    f.name.endsWith(".epub") || f.name.endsWith(".txt")
+                }.orEmpty().sortedBy { !it.name.endsWith(".epub") }  // 完了カードの先頭は epub
+                if (outputs.none { it.name.endsWith(".epub") }) {
                     DownloadState.appendLog("[アプリ内エラー] 保存対象の .epub がありません")
                     finish(DownloadState.Phase.ERROR, DownloadState.Status.FAILED)
+                    return
+                }
+                // 話数は .txt の節数から取る。進捗の total はサイトによって章・ページ・0（§11.2）
+                val episodes = outputs.firstOrNull { it.name.endsWith(".txt") }?.let {
+                    try { PyBridge.module.callAttr("count", it.path).toInt() } catch (e: Exception) { 0 }
+                } ?: 0
+                val saved = outputs.mapNotNull { f ->
+                    val target = entry?.let { if (f.name.endsWith(".txt")) it.txt else it.epub }
+                    if (target != null && overwrite(f, Uri.parse(target.uri))) target
+                    else saveToDownloads(f)
+                }
+                if (saved.none { it.name.endsWith(".epub") }) {
+                    finish(DownloadState.Phase.ERROR, DownloadState.Status.FAILED)
+                    return
+                }
+                DownloadState.ui.value = DownloadState.ui.value.copy(savedFiles = saved)
+                val site = siteName.ifEmpty { resolvedSiteName }
+                if (entry != null) {
+                    DownloadHistory.update(this, entry.copy(
+                        savedAt = System.currentTimeMillis(),
+                        sourceUrl = entry.sourceUrl.ifEmpty { url },
+                        siteName = entry.siteName.ifEmpty { site },
+                        episodeCount = episodes,
+                        files = saved,
+                        lastCheck = null,
+                    ))
                 } else {
-                    DownloadState.ui.value = DownloadState.ui.value.copy(savedFiles = saved)
                     DownloadHistory.add(this, DownloadHistory.Entry(
                         id = DownloadHistory.newId(),
                         savedAt = System.currentTimeMillis(),
                         title = DownloadHistory.titleOf(saved.first().name),
                         sourceUrl = url,
-                        siteName = siteName.ifEmpty { resolvedSiteName },
-                        episodeCount = DownloadState.ui.value.total,
+                        siteName = site,
+                        episodeCount = episodes,
                         files = saved,
                     ))
+                }
+                if (appendTxt != null) {
+                    finish(DownloadState.Phase.DONE, DownloadState.Status.UPDATED, added.toString())
+                } else {
                     finish(DownloadState.Phase.DONE, DownloadState.Status.DONE,
                         saved.joinToString { it.name })
                 }
@@ -131,10 +207,30 @@ class DownloadService : Service() {
             130 -> finish(DownloadState.Phase.CANCELLED, DownloadState.Status.CANCELLED)
             else -> finish(DownloadState.Phase.ERROR, DownloadState.Status.FAILED)
         }
+    }
 
-        staging.deleteRecursively()
-        running = false
-        stopSelf()
+    /** 公開フォルダのファイルを staging へコピーする。読めなければ null。 */
+    private fun copyIn(uri: Uri, dst: File): File? = try {
+        contentResolver.openInputStream(uri)?.use { input ->
+            dst.outputStream().use { input.copyTo(it) }
+            dst
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * staging のファイルを既存の URI へ上書きする。開けなければ false（呼び出し側が新規作成へ回す）。
+     * **モードは必ず "wt"**。"w" は実装によって切り詰めず、新しい ePub の方が短いと
+     * 末尾に古いバイトが残って ZIP が壊れる（§11.5）。
+     */
+    private fun overwrite(file: File, uri: Uri): Boolean = try {
+        contentResolver.openOutputStream(uri, "wt")?.use { out ->
+            file.inputStream().use { it.copyTo(out) }
+            true
+        } ?: false
+    } catch (e: Exception) {
+        false
     }
 
     private fun finish(phase: DownloadState.Phase, status: DownloadState.Status, arg: String = "") {

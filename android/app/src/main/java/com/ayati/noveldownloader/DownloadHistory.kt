@@ -38,7 +38,32 @@ object DownloadHistory {
         val siteName: String,
         val episodeCount: Int,
         val files: List<DownloadState.SavedFile>,
-    )
+        /** 直近の新着チェックの結果（design_history.md §13.7）。未確認なら null。 */
+        val lastCheck: Check? = null,
+    ) {
+        /** 追記の材料になる .txt（無ければ null）。 */
+        val txt: DownloadState.SavedFile? get() = files.firstOrNull { it.name.endsWith(".txt") }
+        /** 開く対象の .epub（無ければ null）。 */
+        val epub: DownloadState.SavedFile? get() = files.firstOrNull { it.name.endsWith(".epub") }
+    }
+
+    /**
+     * 新着チェックの結果。status は updated / uptodate / nolocal / error。
+     * nolocal = 手元に .txt が無く、サイト側の総数（total）だけ分かった。
+     */
+    data class Check(
+        val at: Long,
+        val status: String,
+        val existing: Int = 0,
+        val total: Int = 0,
+        val newTitles: List<String> = emptyList(),
+        val error: String = "",
+    ) {
+        val newCount: Int get() = if (status == "updated") (total - existing).coerceAtLeast(0) else 0
+    }
+
+    /** 保存する新着の題名の上限（§13.7。935 話の作品で履歴が肥大しないように）。 */
+    private const val MAX_NEW_TITLES = 20
 
     fun newId(): String =
         "${System.currentTimeMillis()}-${(0..0xFFFF).random().toString(16)}"
@@ -72,6 +97,30 @@ object DownloadHistory {
     @Synchronized
     fun add(ctx: Context, entry: Entry) {
         save(ctx, (listOf(entry) + load(ctx)).take(MAX))
+    }
+
+    @Synchronized
+    fun get(ctx: Context, id: String): Entry? = load(ctx).firstOrNull { it.id == id }
+
+    /**
+     * 同じ id の行を差し替えて先頭へ移す（追記・取り直しの後。§12 決定5）。
+     * 行が消えていたら（履歴画面で削除された等）先頭へ追加する。
+     */
+    @Synchronized
+    fun update(ctx: Context, entry: Entry) {
+        save(ctx, (listOf(entry) + load(ctx).filterNot { it.id == entry.id }).take(MAX))
+    }
+
+    /** 新着チェックの結果（と、分かればサイト名）を書き込む。並び順は変えない。 */
+    @Synchronized
+    fun setCheck(ctx: Context, id: String, check: Check, siteName: String = ""): Entry? {
+        val c = check.copy(newTitles = check.newTitles.take(MAX_NEW_TITLES))
+        var hit: Entry? = null
+        save(ctx, load(ctx).map {
+            if (it.id != id) it
+            else it.copy(lastCheck = c, siteName = it.siteName.ifEmpty { siteName }).also { e -> hit = e }
+        })
+        return hit
     }
 
     @Synchronized
@@ -119,6 +168,30 @@ object DownloadHistory {
                     .put("mime", it.mime))
             }
         })
+        .apply { lastCheck?.let { put("lastCheck", it.toJson()) } }
+
+    private fun Check.toJson(): JSONObject = JSONObject()
+        .put("at", at)
+        .put("status", status)
+        .put("existing", existing)
+        .put("total", total)
+        .put("newTitles", JSONArray(newTitles))
+        .put("error", error)
+
+    private fun JSONObject.toCheck(): Check? {
+        val status = optString("status")
+        if (status.isEmpty()) return null
+        val titles = optJSONArray("newTitles")
+        return Check(
+            at = optLong("at"),
+            status = status,
+            existing = optInt("existing"),
+            total = optInt("total"),
+            newTitles = if (titles == null) emptyList()
+                        else (0 until titles.length()).map { titles.optString(it) },
+            error = optString("error"),
+        )
+    }
 
     private fun JSONObject.toEntry(): Entry? {
         val arr = optJSONArray("files") ?: return null
@@ -138,6 +211,7 @@ object DownloadHistory {
             siteName = optString("siteName"),
             episodeCount = optInt("episodeCount"),
             files = files,
+            lastCheck = optJSONObject("lastCheck")?.toCheck(),
         )
     }
 
@@ -153,7 +227,7 @@ object DownloadHistory {
             .map { it.id }
             .toSet()
 
-    private fun exists(ctx: Context, uri: String): Boolean = try {
+    fun exists(ctx: Context, uri: String): Boolean = try {
         ctx.contentResolver.openInputStream(Uri.parse(uri))?.use { true } ?: false
     } catch (e: Exception) {
         false
@@ -180,19 +254,48 @@ object DownloadHistory {
             .groupBy { titleOf(it.first.name) }
             .map { (base, items) ->
                 val sorted = items.sortedBy { !it.first.name.endsWith(".epub") }
+                val txt = sorted.firstOrNull { it.first.name.endsWith(".txt") }?.first
                 Entry(
                     id = newId(),
                     savedAt = sorted.maxOf { it.second },
                     title = base,
-                    sourceUrl = "",          // 取り込みでは不明
+                    // .txt があれば「底本URL：」から拾う（§13.6）。無ければ不明のまま
+                    sourceUrl = txt?.let { readSourceUrl(ctx, it.uri) }.orEmpty(),
                     siteName = "",
                     episodeCount = 0,
                     files = sorted.map { it.first },
                 )
             }
-        if (added.isEmpty()) return 0
-        save(ctx, (current + added).sortedByDescending { it.savedAt }.take(MAX))
-        return added.size
+        // 以前の取り込みで sourceUrl が空のまま残っている行も補う
+        var patched = 0
+        val fixed = current.map { e ->
+            val t = e.txt
+            if (e.sourceUrl.isNotEmpty() || t == null) return@map e
+            val url = readSourceUrl(ctx, t.uri) ?: return@map e
+            patched++
+            e.copy(sourceUrl = url)
+        }
+        if (added.isEmpty() && patched == 0) return 0
+        save(ctx, (fixed + added).sortedByDescending { it.savedAt }.take(MAX))
+        return added.size + patched
+    }
+
+    /**
+     * .txt の先頭から「底本URL：」行を読む（本体の _extract_url_from_txt と同じ規則）。
+     * ヘッダーは【あらすじ】より前に置かれるので先頭 8KB で足りる（§13.6）。
+     */
+    fun readSourceUrl(ctx: Context, uri: String): String? = try {
+        ctx.contentResolver.openInputStream(Uri.parse(uri))?.use { input ->
+            val buf = ByteArray(8192)
+            val n = input.read(buf).coerceAtLeast(0)
+            String(buf, 0, n, Charsets.UTF_8).lineSequence()
+                .map { it.trim().removePrefix("\uFEFF") }
+                .firstOrNull { it.startsWith("底本URL：") }
+                ?.removePrefix("底本URL：")?.trim()
+                ?.takeIf { it.startsWith("http") }
+        }
+    } catch (e: Exception) {
+        null
     }
 
     /** (SavedFile, 更新日時ミリ秒) の一覧。 */

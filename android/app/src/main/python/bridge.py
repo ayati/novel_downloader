@@ -1,6 +1,9 @@
 """Android アプリと novel_downloader.py の橋渡し層。
 
-Kotlin 側からは Chaquopy 経由で detect() / run() / cancel() を呼ぶ。
+Kotlin 側からは Chaquopy 経由で detect() / run() / append() / check() /
+check_url() / count() / cancel() を呼ぶ。detect() 以外は本体のグローバル
+（stdout・PROGRESS_CALLBACK・_CHECK_UPDATE_MODE 等）を触るので、Kotlin 側の
+PyBridge.engine ロックの内側で1つずつ呼ぶこと（design_history.md §11.6）。
 本体（novel_downloader.py）の GUI 連携 API（ABORT_EVENT / PROGRESS_CALLBACK /
 main(argv) / NOVEL_DL_COVER_FONT）にのみ依存し、それ以外へ干渉しない。
 
@@ -90,21 +93,24 @@ def _emit_meta(url: str, listener) -> None:
         pass
 
 
-def run(url: str, options_json: str, listener) -> int:
-    """ダウンロードを実行して終了コードを返す（0=成功 / 130=中止 / 他=エラー）。
+def _cli_opts(opts: dict) -> list:
+    """アプリの設定 → CLI 引数。run() と append() で共通（design_history.md §15.2）。"""
+    argv = []
+    for key, flag in (("horizontal", "--horizontal"),
+                      ("kobo", "--kobo"),
+                      ("use_site_cover", "--use-site-cover"),
+                      ("no_inline_images", "--no-inline-images")):
+        if opts.get(key):
+            argv.append(flag)
+    return argv
+
+
+def _run_main(argv: list, listener, meta_url: str = "") -> int:
+    """nd.main(argv) を listener つきで実行し終了コードを返す（0=成功 / 130=中止 / 他=エラー）。
 
     listener は Kotlin 側の DownloadListener:
-      onLine(text)・onProgress(n, total)・onPhase(phase)
+      onLine(text)・onProgress(n, total)・onPhase(phase)・onMeta(json)
     """
-    opts = json.loads(options_json or "{}")
-    argv = [url, "--output-dir", opts["output_dir"]]
-    if opts.get("horizontal"):
-        argv.append("--horizontal")
-    if opts.get("kobo"):
-        argv.append("--kobo")
-    if opts.get("use_site_cover"):
-        argv.append("--use-site-cover")
-
     state = {"phase": "PREPARING"}
     listener.onPhase("PREPARING")
 
@@ -130,7 +136,8 @@ def run(url: str, options_json: str, listener) -> int:
     nd.PROGRESS_CALLBACK = on_progress
     sys.stdout = sys.stderr = out
     try:
-        _emit_meta(url, listener)
+        if meta_url:
+            _emit_meta(meta_url, listener)
         nd.main(argv)
         return 0
     except SystemExit as e:
@@ -146,6 +153,64 @@ def run(url: str, options_json: str, listener) -> int:
         sys.stdout, sys.stderr = old_stdout, old_stderr
         nd.PROGRESS_CALLBACK = None
         nd.ABORT_EVENT.clear()
+
+
+def run(url: str, options_json: str, listener) -> int:
+    """ダウンロードを実行して終了コードを返す（0=成功 / 130=中止 / 他=エラー）。"""
+    opts = json.loads(options_json or "{}")
+    argv = [url, "--output-dir", opts["output_dir"], *_cli_opts(opts)]
+    return _run_main(argv, listener, meta_url=url)
+
+
+def append(txt_path: str, options_json: str, listener) -> str:
+    """--append で新着だけを追記し {"code": int, "added": int} を JSON で返す。
+
+    CLI の --append と同じ経路（main()）を通す。_append_one() は
+    --no-inline-images を引き継がないため使わない（design_history.md §11.3）。
+    出力は txt と同じディレクトリに txt の stem で作られる。新着が無ければ
+    本体はファイルを書き換えず、.epub も作らない。
+    """
+    opts = json.loads(options_json or "{}")
+    before = count(txt_path)
+    code = _run_main(["--append", txt_path, *_cli_opts(opts)], listener)
+    after = count(txt_path) if code == 0 else before
+    return json.dumps({"code": code, "added": max(0, after - before)})
+
+
+def count(txt_path: str) -> int:
+    """.txt の節の数（＝取得済みの話数。サイトによっては章・ページ）。読めなければ 0。"""
+    try:
+        return len(nd._load_existing_txt(txt_path)[0])
+    except Exception:
+        return 0
+
+
+def check(txt_path: str) -> str:
+    """手元の .txt とサイトを比べて新着を調べる（ファイルは書き換えない）。
+
+    _check_update_one の結果（status / existing / total / new / new_titles /
+    title / error）をそのまま JSON で返す。本体が一覧を print するので捨てる。
+    """
+    nd.ABORT_EVENT.clear()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            r = nd._check_update_one(txt_path, 1.5)
+    except BaseException as e:   # SystemExit も含めて結果に畳む
+        r = {"status": "error", "error": str(e) or type(e).__name__}
+    return json.dumps(r, ensure_ascii=False)
+
+
+def check_url(url: str) -> str:
+    """.txt が無いとき用。サイト側の総数だけを調べる（status は "init"）。"""
+    nd.ABORT_EVENT.clear()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            r = nd._check_update_url(url, 0, 1.5)
+    except BaseException as e:
+        r = {"status": "error", "error": str(e) or type(e).__name__}
+    return json.dumps(r, ensure_ascii=False)
 
 
 def cancel() -> None:

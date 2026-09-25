@@ -32,8 +32,12 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        /** 履歴の「もう一度ダウンロード」から URL を受け取る。 */
+        /** 外部から URL を受け取って入力欄に入れる（旧「もう一度ダウンロード」の経路）。 */
         const val EXTRA_PREFILL_URL = "prefill_url"
+        /** 履歴の「新着を取得」「もう一度ダウンロード」: 更新する履歴の id（design_history.md §13.4）。 */
+        const val EXTRA_UPDATE_ENTRY_ID = "update_entry_id"
+        const val EXTRA_UPDATE_URL = "update_url"
+        const val EXTRA_UPDATE_FORCE_FULL = "update_force_full"
     }
 
     private lateinit var urlInput: EditText
@@ -62,6 +66,10 @@ class MainActivity : AppCompatActivity() {
     private var pendingStart = false          // 権限ダイアログ応答後に開始するか
     private var recent: DownloadHistory.Entry? = null  // IDLE 時に出す「最近のダウンロード」
 
+    /** 履歴から頼まれた更新。権限フローを通したあと startDownload() が使う。 */
+    private data class PendingUpdate(val entryId: String, val url: String, val forceFull: Boolean)
+    private var pendingUpdate: PendingUpdate? = null
+
     private val notifPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()) {
         // 通知権限は拒否されてもダウンロードは続行する（設計 §6）
@@ -74,6 +82,7 @@ class MainActivity : AppCompatActivity() {
             if (pendingStart) { pendingStart = false; maybeRequestNotifThenStart() }
         } else {
             pendingStart = false
+            pendingUpdate = null
             Toast.makeText(this, getString(R.string.main_err_no_write_permission),
                 Toast.LENGTH_LONG).show()
         }
@@ -196,6 +205,21 @@ class MainActivity : AppCompatActivity() {
      */
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
+        val entryId = intent.getStringExtra(EXTRA_UPDATE_ENTRY_ID)
+        if (!entryId.isNullOrEmpty()) {
+            val url = intent.getStringExtra(EXTRA_UPDATE_URL).orEmpty()
+            val force = intent.getBooleanExtra(EXTRA_UPDATE_FORCE_FULL, false)
+            // 画面回転で再実行されないよう消す
+            intent.removeExtra(EXTRA_UPDATE_ENTRY_ID)
+            if (DownloadState.ui.value.isRunning) {
+                Toast.makeText(this, getString(R.string.main_toast_busy), Toast.LENGTH_SHORT).show()
+                return
+            }
+            pendingUpdate = PendingUpdate(entryId, url, force)
+            pendingStart = true
+            maybeRequestWriteThenStart()
+            return
+        }
         val prefill = intent.getStringExtra(EXTRA_PREFILL_URL)
         if (!prefill.isNullOrEmpty()) {
             intent.removeExtra(EXTRA_PREFILL_URL)   // 画面回転で再適用されないよう消す
@@ -228,12 +252,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSettingsDialog() {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val keys = arrayOf("horizontal", "kobo", "use_site_cover", "save_txt")
+        // .txt は常に保存する（追記の材料。design_history.md §12 決定1）ので設定から外した
+        val keys = arrayOf("horizontal", "kobo", "use_site_cover", "no_inline_images")
         val labels = arrayOf(
             getString(R.string.settings_horizontal),
             getString(R.string.settings_kobo),
             getString(R.string.settings_site_cover),
-            getString(R.string.settings_save_txt),
+            getString(R.string.settings_no_inline_images),
         )
         val checked = BooleanArray(keys.size) { prefs.getBoolean(keys[it], false) }
         androidx.appcompat.app.AlertDialog.Builder(this)
@@ -341,6 +366,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startDownload() {
+        pendingUpdate?.let { u ->
+            pendingUpdate = null
+            ContextCompat.startForegroundService(this,
+                Intent(this, DownloadService::class.java)
+                    .putExtra(DownloadService.EXTRA_URL, u.url)
+                    .putExtra(DownloadService.EXTRA_ENTRY_ID, u.entryId)
+                    .putExtra(DownloadService.EXTRA_FORCE_FULL, u.forceFull))
+            return
+        }
         val url = detectedUrl ?: return
         val intent = Intent(this, DownloadService::class.java)
             .putExtra(DownloadService.EXTRA_URL, url)

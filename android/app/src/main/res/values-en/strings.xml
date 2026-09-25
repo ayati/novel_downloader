@@ -40,7 +40,7 @@
     <string name="settings_horizontal">Horizontal writing</string>
     <string name="settings_kobo">Kobo extension (.kepub.epub)</string>
     <string name="settings_site_cover">Use the site cover image</string>
-    <string name="settings_save_txt">Also save text (.txt)</string>
+    <string name="settings_no_inline_images">Skip inline illustrations (use if illustrations keep failing after a site change; the cover is unaffected)</string>
 
     <!-- History screen -->
     <string name="history_title">Download history</string>
@@ -82,5 +82,35 @@
     <plurals name="imported_count">
         <item quantity="one">Imported %d item</item>
         <item quantity="other">Imported %d items</item>
+    </plurals>
+
+    <!-- Check / append from history (design_history.md part 2) -->
+    <string name="main_toast_busy">A download is in progress. Try again when it finishes</string>
+    <string name="history_btn_web">🌐 Work page</string>
+    <string name="history_btn_check">🔄 Check</string>
+    <string name="history_btn_update">⬇ Get new</string>
+    <string name="history_btn_redo">⬇ Re-download</string>
+    <string name="history_toast_no_browser">No browser found</string>
+    <string name="history_toast_busy">Can\'t check or download while a download is running</string>
+    <string name="history_full_title">Download everything again</string>
+    <string name="history_full_message_notxt">The local text file (.txt) is missing, so new episodes can\'t be appended. The whole work will be downloaded again and replace the current files. Long works take a while.</string>
+    <string name="history_full_message_redo">The whole work will be downloaded again and replace the current files. Long works take a while.</string>
+    <string name="history_full_ok">Re-download</string>
+    <string name="history_check_detail_title">Check result</string>
+    <string name="history_check_uptodate">No new episodes (checked %1$s)</string>
+    <string name="history_check_error">⚠ Could not check (%1$s)</string>
+    <string name="status_no_new">No new episodes</string>
+    <string name="log_append_fallback">[info] The local text file can\'t be read; downloading the whole work again</string>
+    <plurals name="history_check_new">
+        <item quantity="one">🆕 %1$d new episode (checked %2$s)</item>
+        <item quantity="other">🆕 %1$d new episodes (checked %2$s)</item>
+    </plurals>
+    <plurals name="history_check_nolocal">
+        <item quantity="one">%1$d episode on the site; no local text, so it will be re-downloaded (checked %2$s)</item>
+        <item quantity="other">%1$d episodes on the site; no local text, so it will be re-downloaded (checked %2$s)</item>
+    </plurals>
+    <plurals name="status_updated">
+        <item quantity="one">✅ Added %d episode</item>
+        <item quantity="other">✅ Added %d episodes</item>
     </plurals>
 </resources>

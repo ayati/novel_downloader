@@ -6,6 +6,7 @@ import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * Chaquopy の起動と bridge モジュールへのアクセスを集約する。
@@ -33,4 +34,20 @@ object PyBridge {
 
     val module: PyObject
         get() = Python.getInstance().getModule("bridge")
+
+    /**
+     * エンジンは同時に1つしか動かせない（design_history.md §11.6 / §13.2）。
+     *
+     * bridge は sys.stdout・PROGRESS_CALLBACK・本体の _CHECK_UPDATE_MODE といった
+     * プロセス全体のグローバルを触る。特に新着チェック中に走ったダウンロードは
+     * 話の一覧を取った時点で _CheckUpdateDone に化けて壊れる。
+     * detect() はグローバルを触らないのでロック不要。
+     */
+    val engine = ReentrantLock()
+
+    /** ロックが取れなければ実行せず null を返す（新着チェック用。ダウンロード中は諦める）。 */
+    fun <T> tryWithEngine(block: () -> T): T? {
+        if (!engine.tryLock()) return null
+        return try { block() } finally { engine.unlock() }
+    }
 }

@@ -43,7 +43,7 @@
     <string name="settings_horizontal">横書きにする</string>
     <string name="settings_kobo">Kobo用拡張子 (.kepub.epub)</string>
     <string name="settings_site_cover">サイトの表紙画像を使う</string>
-    <string name="settings_save_txt">テキスト (.txt) も保存する</string>
+    <string name="settings_no_inline_images">挿絵を取り込まない（サイトの変更で挿絵の取得に失敗し続けるとき。表紙には影響しません）</string>
 
     <!-- 履歴画面 -->
     <string name="history_title">ダウンロード履歴</string>
@@ -83,5 +83,32 @@
     </plurals>
     <plurals name="imported_count">
         <item quantity="other">%d 件を取り込みました</item>
+    </plurals>
+
+    <!-- 履歴からの新着チェック・追記（design_history.md 第2部） -->
+    <string name="main_toast_busy">ダウンロード中です。終わってからもう一度お試しください</string>
+    <string name="history_btn_web">🌐 作品ページ</string>
+    <string name="history_btn_check">🔄 新着チェック</string>
+    <string name="history_btn_update">⬇ 新着を取得</string>
+    <string name="history_btn_redo">⬇ 取り直す</string>
+    <string name="history_toast_no_browser">ブラウザが見つかりません</string>
+    <string name="history_toast_busy">ダウンロード中はチェック・取得できません</string>
+    <string name="history_full_title">まるごと取り直します</string>
+    <string name="history_full_message_notxt">手元のテキスト (.txt) が見つからないため、新着だけを追記することができません。最初からダウンロードし直して、今のファイルを置き換えます。話数が多いと時間がかかります。</string>
+    <string name="history_full_message_redo">最初からダウンロードし直して、今のファイルを置き換えます。話数が多いと時間がかかります。</string>
+    <string name="history_full_ok">取り直す</string>
+    <string name="history_check_detail_title">新着チェックの結果</string>
+    <string name="history_check_uptodate">新着なし（%1$s 確認）</string>
+    <string name="history_check_error">⚠ 確認できませんでした（%1$s）</string>
+    <string name="status_no_new">新着はありませんでした</string>
+    <string name="log_append_fallback">[情報] 手元のテキストが読めないため、まるごと取り直します</string>
+    <plurals name="history_check_new">
+        <item quantity="other">🆕 新着 %1$d話（%2$s 確認）</item>
+    </plurals>
+    <plurals name="history_check_nolocal">
+        <item quantity="other">サイトは %1$d話・手元にテキストが無いため取り直しになります（%2$s 確認）</item>
+    </plurals>
+    <plurals name="status_updated">
+        <item quantity="other">✅ %d話追加しました</item>
     </plurals>
 </resources>
