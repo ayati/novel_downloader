@@ -212,6 +212,7 @@ python novel_downloader.py --from-epub 作品名.epub
 ePub3 ファイルから本文テキストを抽出し、青空文庫書式テキスト（.txt）に変換します。自ツール生成 ePub3 のほか、カクヨム等からダウンロードした汎用 ePub3 にも対応します。
 
 ## Windows GUI
+![スクリーンショットWindows](Screenshot_WindowsGUI_noveldownloader.png)
 
 コマンドラインを使わずに操作できる GUI（`novel_downloader_gui.py`）を同梱しています。
 macOS でも動きます（Tcl/Tk 入りの Python が必要・手順は [`MACOS_SETUP.md`](MACOS_SETUP.md)）。
@@ -284,6 +285,27 @@ URL 欄に貼り付けて大きなボタンを押すだけで完了します。�
 - **ほかの窓を見ているときだけ**タスクバーのボタンが光ります（前面には出ません）
 - 受信箱が自動で取得を始めたときも知らせます
 - 音を鳴らす設定（既定 OFF）、Discord / Slack への Webhook 通知も選べます
+
+### macOS
+
+- **表紙の自動生成で、macOS 標準のヒラギノ明朝を使う**ようになりました
+- 動かし方と、`.app` にして配る手順を [`MACOS_SETUP.md`](https://github.com/ayati/novel_downloader/blob/main/MACOS_SETUP.md) にまとめました
+  受け取った人は、初回にターミナルで `xattr -dr com.apple.quarantine 小説ePubダウンローダー.app` を 1 回実行する必要があります
+
+![スクリーンショットmac OS](Screenshot_macOS_noveldownloader.png)
+
+### Android
+
+- **想定ユーザー**: PC の CLI を使わない層。スマホのブラウザで見つけた Web 小説を、その場で ePub / テキストにして読みたい人
+- **提供価値**: 「URL を渡す → 数分待つ → ダウンロードフォルダに ePub ができている」だけの体験。オプションの海は見せない
+- **対象サイト**: CLI 版の対応 17 サイトのうち**ハーメルンを除く 16 サイト**（playwright 非搭載のため）
+
+![スクリーンショットAndroid apk](Screenshot_Android_noveldownloader.jpg)
+
+- **履歴画面**: 履歴からの「作品ページを開く」「新着チェック」「新着をダウンロード」
+
+![スクリーンショットAndroid history](Screenshot_Android_history_noveldownloader.jpg)
+
 
 ## オプション一覧
 
