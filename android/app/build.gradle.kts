@@ -104,9 +104,13 @@ dependencies {
 
 chaquopy {
     defaultConfig {
-        // buildPython と同じマイナーバージョンであること（WSL の python3 は 3.12）
-        version = "3.12"
-        buildPython("/usr/bin/python3")
+        // buildPython と同じマイナーバージョンであること（Chaquopy 17 で必須）。
+        // 3.14 にしないのは Pillow の Android 用 wheel が 3.13 までしか無いため
+        // （chaquo.com/pypi-13.1 は cp312/cp313 のみ・PyPI 公式は Android 版なし）。
+        // WSL の /usr/bin/python3 は 3.14 なので、3.13 は uv で入れて PATH 上の
+        // python3.13 を使う（`uv python install 3.13`）
+        version = "3.13"
+        buildPython("python3.13")
         pip {
             install("requests")
             install("beautifulsoup4")

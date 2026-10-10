@@ -142,6 +142,7 @@ Python CLI では `LANG` / `LC_ALL` によるロケール自動判定を**採ら
 |---|---|---|
 | `settings_title` | 設定（次のダウンロードから適用） | Settings (applied from the next download) |
 | `settings_horizontal` | 横書きにする | Horizontal writing |
+| `settings_toc_at_end` | 目次を巻末に置く（既定は表紙の直後） | Put the table of contents at the end (default: right after the cover) |
 | `settings_kobo` | Kobo用拡張子 (.kepub.epub) | Kobo extension (.kepub.epub) |
 | `settings_site_cover` | サイトの表紙画像を使う | Use the site cover image |
 | `settings_save_txt` | テキスト (.txt) も保存する | Also save text (.txt) |

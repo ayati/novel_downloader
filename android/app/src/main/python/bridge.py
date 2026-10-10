@@ -101,6 +101,7 @@ def _cli_opts(opts: dict) -> list:
     """アプリの設定 → CLI 引数。run() と append() で共通（design_history.md §15.2）。"""
     argv = []
     for key, flag in (("horizontal", "--horizontal"),
+                      ("toc_at_end", "--toc-at-end"),
                       ("kobo", "--kobo"),
                       ("use_site_cover", "--use-site-cover"),
                       ("no_inline_images", "--no-inline-images")):

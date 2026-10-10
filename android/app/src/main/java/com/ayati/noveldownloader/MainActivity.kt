@@ -265,9 +265,10 @@ class MainActivity : AppCompatActivity() {
     private fun showSettingsDialog() {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         // .txt は常に保存する（追記の材料。design_history.md §12 決定1）ので設定から外した
-        val keys = arrayOf("horizontal", "kobo", "use_site_cover", "no_inline_images")
+        val keys = arrayOf("horizontal", "toc_at_end", "kobo", "use_site_cover", "no_inline_images")
         val labels = arrayOf(
             getString(R.string.settings_horizontal),
+            getString(R.string.settings_toc_at_end),
             getString(R.string.settings_kobo),
             getString(R.string.settings_site_cover),
             getString(R.string.settings_no_inline_images),

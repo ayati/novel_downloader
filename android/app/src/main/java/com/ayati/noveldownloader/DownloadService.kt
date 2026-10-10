@@ -117,6 +117,7 @@ class DownloadService : Service() {
         val opts = JSONObject()
             .put("output_dir", staging.path)
             .put("horizontal", prefs.getBoolean("horizontal", false))
+            .put("toc_at_end", prefs.getBoolean("toc_at_end", false))
             .put("kobo", prefs.getBoolean("kobo", false))
             .put("use_site_cover", prefs.getBoolean("use_site_cover", false))
             .put("no_inline_images", prefs.getBoolean("no_inline_images", false))

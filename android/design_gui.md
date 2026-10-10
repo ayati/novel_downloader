@@ -175,6 +175,7 @@ interface DownloadListener {
 | （固定）リクエスト間隔 | 1.5秒 | `--delay 1.5`（UI非公開） | — |
 | 横書きにする | OFF | `--horizontal` | MVP |
 | Kobo用拡張子 (.kepub.epub) | OFF | `--kobo` | MVP |
+| 目次を巻末に置く | OFF | `--toc-at-end` | v2.19.0 |
 | サイトの表紙画像を使う | OFF | `--use-site-cover` | MVP |
 | テキスト(.txt)も保存する | OFF | （コピー選別で実現） | MVP |
 | 話数範囲（開始/終了） | 全話 | `--start N` / `--end N` | M3 |
@@ -272,6 +273,24 @@ AGP を 8.7.3 → **9.2.1**、Gradle を 8.14.5 → **9.4.1** に上げた。
   `apksigner` でリリース鍵署名を確認した
 
 ---
+
+## 11.6 同梱 Python を 3.13 へ（2026-10-10・v2.19.0）
+
+WSL の `/usr/bin/python3` が 3.12 → 3.14 に上がり、APK がビルドできなくなった
+（Chaquopy 17.0 は `buildPython` と同梱 Python のマイナー版の一致を要求する）。
+
+- **3.14 は Chaquopy 17.0 の対応範囲内だが、Pillow の Android 用 wheel が無い。**
+  Chaquopy の配布元（`chaquo.com/pypi-13.1`）は Pillow 11.0.0 の cp312 / cp313 のみ、
+  PyPI 公式の Pillow（12.3.0 時点）は Android 版を出していない。17.0 から pip は
+  `--only-binary` なのでソースからも入らない。実際に 3.14 で組むと
+  `No matching distribution found for Pillow` で止まり、Pillow を外すと通るが表紙が SVG に後退する
+- **3.13 を採った。** Pillow 11.0.0 の cp313 がある。Chaquopy は 16KB ページ端末で読めない
+  旧 wheel が多いとして 3.13 以上を推奨している
+- ビルド用の 3.13 は uv で入れる（`uv python install 3.13` → `~/.local/bin/python3.13`）。
+  `buildPython("python3.13")` と名前で指定し、ホームのパスは書き込まない
+- 同時期に既定の `java` が JRE 25 のみ（javac 無し）になり AGP が止まったため、
+  `openjdk-25-jdk-headless` を入れた
+- **3.14 用の Pillow wheel が出たら 3.14 へ上げてよい**
 
 ## 12. 決定事項サマリー
 

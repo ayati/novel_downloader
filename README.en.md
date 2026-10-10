@@ -72,7 +72,7 @@ Title.kepub.epub    # with --kobo
 
 Please keep at least a 1-second gap between requests. Generated EPUBs include a link back to the source site.
 
-The Android app's download history can open the work page, check for new episodes, and append only the new ones in place (v2.17.0).
+The Android app's download history can open the work page, check for new episodes, and append only the new ones in place (v2.17.0). Since v2.19.0 its settings can put the table of contents at the end of the book (same as `--toc-at-end`).
 
 See the [Japanese README](README.md) for the full option table, watch mode, cover rules, and Windows / Android packages.
 

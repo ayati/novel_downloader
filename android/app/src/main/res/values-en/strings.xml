@@ -39,6 +39,7 @@
     <!-- Settings dialog -->
     <string name="settings_title">Settings (applied from the next download)</string>
     <string name="settings_horizontal">Horizontal writing</string>
+    <string name="settings_toc_at_end">Put the table of contents at the end (default: right after the cover)</string>
     <string name="settings_kobo">Kobo extension (.kepub.epub)</string>
     <string name="settings_site_cover">Use the site cover image</string>
     <string name="settings_no_inline_images">Skip inline illustrations (use if illustrations keep failing after a site change; the cover is unaffected)</string>

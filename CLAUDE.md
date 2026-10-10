@@ -447,6 +447,7 @@ scripts/release.sh 2.3.0 --no-release
 ```
 
 - **Android のビルド環境は AGP 9.2.1 / Gradle 9.4.1 / compileSdk・targetSdk 36**（v2.16.0〜）。**AGP の上限は Chaquopy が決める**（Chaquopy 17.0 は AGP 7.3〜9.2）ので、上げる前に Chaquopy の対応表を見ること。経緯は `android/design_gui.md` §11.5
+- **アプリに同梱する Python は 3.13**（v2.19.0〜・`chaquopy { version = "3.13" }`）。Chaquopy 17 は `buildPython` のマイナー版の一致を要求し、WSL の `/usr/bin/python3` は 3.14 なので、**ビルド用の 3.13 は uv で入れた `python3.13`（PATH 上）を使う**（`uv python install 3.13`）。**3.14 に上げないのは Pillow の Android 用 wheel が 3.13 までしか無いため**（Chaquopy の配布元は cp312/cp313 のみ・PyPI 公式は Android 版なし）。Pillow 抜きだと表紙が SVG に後退する。3.14 用 wheel が出たら上げてよい。経緯は `android/design_gui.md` §11.6
 - **版数の単一ソースは `novel_downloader.py` の `__version__`**。実行時は `--version` で名乗れる（Android/Windows/コピー配布など git の無い環境でも有効）。`scripts/release.sh <X.Y.Z>` が `__version__` を書き換えて `release: vX.Y.Z` としてコミットし、その上にタグを打つ。**手で `__version__` を編集する必要はない**（それが唯一の書き手）。
 - **版数は一元管理**: Android の `versionName` は `__version__` と常に一致する。`app/build.gradle.kts` は `-PappVersion=X.Y.Z`（release スクリプトが渡す）→ 無ければ直下 `novel_downloader.py` の `__version__` を読む、の順で解決し、`versionCode = major*10000 + minor*100 + patch`（例 `2.3.0`→`20300`）。**build.gradle.kts の版数を手で書き換える必要はない**（minor/patch は各 <100 が前提）。
 - **APK 同梱スクリプト**: `app/build.gradle.kts` の `syncNovelDownloader` タスクがビルド時に直下の `novel_downloader.py` を `app/src/main/python/` へコピーするため、**本体の変更はリビルドだけで APK に反映**される（同梱コピーは `.gitignore` 済み）。

@@ -42,6 +42,7 @@
     <!-- 設定ダイアログ -->
     <string name="settings_title">設定（次のダウンロードから適用）</string>
     <string name="settings_horizontal">横書きにする</string>
+    <string name="settings_toc_at_end">目次を巻末に置く（既定は表紙の直後）</string>
     <string name="settings_kobo">Kobo用拡張子 (.kepub.epub)</string>
     <string name="settings_site_cover">サイトの表紙画像を使う</string>
     <string name="settings_no_inline_images">挿絵を取り込まない（サイトの変更で挿絵の取得に失敗し続けるとき。表紙には影響しません）</string>
