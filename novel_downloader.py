@@ -371,6 +371,8 @@ _MESSAGES_EN = {
         "Error: downloading from Hameln requires beautifulsoup4.",
     "エラー: ハーメルンのダウンロードには playwright が必要です。":
         "Error: downloading from Hameln requires playwright.",
+    "エラー: ハーメルンの作品ページが Cloudflare の確認画面から進みませんでした。":
+        "Error: the Hameln work page did not get past the Cloudflare check screen.",
     "エラー: ハーメルンの作品URLとして認識できません: {work_url}":
         "Error: not recognized as a Hameln work URL: {work_url}",
     "エラー: ファイルが見つかりません: {epub_path}":
@@ -6091,6 +6093,64 @@ def hameln_html_to_aozora(honbun_div, maegaki_div=None, atogaki_div=None) -> str
     return "\n\n".join(p for p in parts if p)
 
 
+def _pw_err_line(e: BaseException) -> str:
+    """Playwright の例外文の 1 行目だけを返す（後ろに「Call log:」が複数行続く）。"""
+    return (str(e).strip().splitlines() or [type(e).__name__])[0]
+
+
+def _hameln_fetch_top(top_url: str) -> str:
+    """作品トップページの HTML を Playwright で取得する。
+
+    2026-10 からトップページもエピソードページと同じく Cloudflare の確認の
+    後ろに入り、requests では 403（`Cf-Mitigated: challenge`）しか返らない。
+    エピソード取得と同じ起動設定（UA・locale）で開く。確認画面のまま
+    抜けられなかったときは、話一覧が空という紛らわしい失敗にせず理由を出す。
+
+    確認画面かどうかは題名ではなく応答（403 / `cf-mitigated`）で見る。
+    確認画面でなければページはサーバー側で組み上がっているので待たない
+    — 存在しない作品も 200 の汎用ページで返るため、`div#maind` を待つと
+    毎回待ち切ってから失敗することになる。
+    Playwright の例外は OSError の仲間ではなく `_FATAL_ERRORS` に拾われない
+    ので、RuntimeError に包んで `エラー: …` の 1 行で終わらせる。
+    """
+    _check_abort()
+    challenged = False
+    with _hameln_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        try:
+            ctx = browser.new_context(user_agent=_HAM_UA, locale="ja-JP")
+            pg  = ctx.new_page()
+            try:
+                resp = pg.goto(top_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as e:
+                raise RuntimeError(f"取得失敗: {top_url} — {_pw_err_line(e)}") from e
+            challenged = bool(resp and (resp.status == 403
+                                        or resp.headers.get("cf-mitigated")))
+            if challenged:
+                # 確認が自動で抜けるならページが差し替わるので、それを待つ
+                for _ in range(_HAM_CF_WAIT * 3 * 2):
+                    _sleep(0.5)
+                    try:
+                        if pg.query_selector("div#maind"):
+                            challenged = False
+                            break
+                    except Exception:
+                        pass   # 差し替えの途中は実行文脈が壊れて例外になる
+            try:
+                html = pg.content()
+            except Exception as e:
+                raise RuntimeError(f"取得失敗: {top_url} — {_pw_err_line(e)}") from e
+        finally:
+            browser.close()
+    if challenged:
+        print(T("エラー: ハーメルンの作品ページが Cloudflare の確認画面から進みませんでした。"))
+        sys.exit(1)
+    return html
+
+
 def run_hameln(args):
     """ハーメルン小説のダウンロード処理。"""
     if not _HAMELN_AVAILABLE:
@@ -6112,12 +6172,7 @@ def run_hameln(args):
     top_url = f"{_HAM_BASE}/novel/{work_id}/"
 
     _print_stage(1, f"作品情報を取得中: {top_url}", blank_before=True)
-    # トップページはCloudflare保護なし → requestsで取得
-    rq_sess = requests.Session()
-    rq_sess.headers.update({"User-Agent": _HAM_UA, "Accept-Language": "ja,en;q=0.9"})
-    rq_resp = rq_sess.get(top_url, timeout=30)
-    rq_resp.encoding = rq_resp.apparent_encoding or "utf-8"
-    top_soup = BeautifulSoup(rq_resp.text, "html.parser")
+    top_soup = BeautifulSoup(_hameln_fetch_top(top_url), "html.parser")
 
     info = hameln_get_work_info(top_soup)
     if info["title"]:
