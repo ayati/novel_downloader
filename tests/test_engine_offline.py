@@ -447,6 +447,30 @@ def main() -> int:
         ck("ePub 奥付: 最初のリンクは底本 URL のまま", N._epub_colophon_to_source(x)[0] == url)
         ck("ePub 奥付に作者ページのリンク", f'href="{aurl}"' in x)
 
+    # ── シリーズでないものを series に入れない（design_author_url.md §5-8）──
+    ck("カクヨムのレーベルは label",
+       N._kky_meta_from_work({"publicationLabelName": "カドカワBOOKS"}).get("label") == "カドカワBOOKS"
+       and "series" not in N._kky_meta_from_work({"publicationLabelName": "カドカワBOOKS"}))
+    mm = N._mono_meta_from_story({"theme": "雨の日の約束"}, 1)
+    ck("monogatary のお題は prompt", mm.get("prompt") == "雨の日の約束" and "series" not in mm)
+    am = N.aozora_get_work_info(
+        '<tr><td class="header">作品名：</td><td>走れメロス</td></tr>'
+        '<tr><td class="header">底本：</td><td>太宰治全集3</td></tr>')
+    ck("青空文庫の底本は base_book", am.get("base_book") == "太宰治全集3" and "series" not in am)
+    with tempfile.TemporaryDirectory() as d:
+        url = "https://www.aozora.gr.jp/cards/000035/card1567.html"
+        meta = {"site": "青空文庫", "label": "L", "prompt": "P", "base_book": "太宰治全集3"}
+        path = os.path.join(d, "B.txt")
+        N.write_file(path, N.aozora_header("作", "者", "", url, meta),
+                     [f"{N.aozora_chapter_title('第1話')}\n\n本文\n"],
+                     N.aozora_colophon("作", url, "青空文庫"))
+        back = N._extract_meta_from_txt(path)
+        ck(".txt から label / prompt / base_book を読み戻せる",
+           (back.get("label"), back.get("prompt"), back.get("base_book")) == ("L", "P", "太宰治全集3"))
+        ck("「底本書名」行が底本 URL の抽出を乱さない", N._extract_url_from_txt(path) == url)
+        ck("OPF では baseBook",
+           ("baseBook", "太宰治全集3") in N._nd_meta_pairs(meta))
+
     # ── 本の識別子（design_author_url.md §3-7）──
     ck("同じ底本 URL なら同じ識別子",
        N._book_uuid("https://ncode.syosetu.com/n0001aa/") == N._book_uuid("https://ncode.syosetu.com/n0001aa/"))

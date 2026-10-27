@@ -1013,7 +1013,16 @@ _META_FIELDS = [
     ("episode_count", "話数",           "int"),
     ("char_count",    "文字数",         "int"),
     ("age_rating",    "年齢制限",       "str"),
+    # series は本当の作品シリーズ（同じ作品群の何巻目か）のためにとっておく。
+    # いずれ EPUB 標準の belongs-to-collection に出すと、Calibre・KOReader や
+    # yomikake の「次の巻」がそれをシリーズとして扱う（design_author_url.md §5-8）。
+    # シリーズでないものはそれぞれの欄へ分ける
     ("series",        "シリーズ",       "str"),
+    ("label",         "レーベル",       "str"),   # カクヨムの書籍レーベル
+    ("prompt",        "お題",           "str"),   # monogatary のお題
+    # 青空文庫の底本の書名。ラベルを「底本」にしないこと —— 奥付の「底本：」を
+    # 探す処理（"\n\n底本：" の検索）と紛らわしい
+    ("base_book",     "底本書名",       "str"),
     ("theme_color",   "テーマカラー",   "str"),
     # --start で途中から落としたファイルの印（design_gui_v2.md §8.19）。
     # このファイルは先頭が欠けているので、--append / --resume の
@@ -4518,10 +4527,10 @@ def _mono_meta_from_story(story: dict, episode_count: int = 0) -> dict:
     if story.get("overFifteen"):
         meta["age_rating"] = "R15"
 
-    # theme は「お題」。作品が属する企画名なのでシリーズ扱いにする
+    # theme は「お題」（この題に応えて書いた作品）。シリーズではない
     theme = (story.get("theme") or "").strip()
     if theme:
-        meta["series"] = theme
+        meta["prompt"] = theme
 
     return meta
 
@@ -4843,7 +4852,7 @@ def _kky_meta_from_work(work: dict) -> dict:
 
     label = (work.get("publicationLabelName") or "").strip()
     if label:
-        meta["series"] = label
+        meta["label"] = label
 
     color = (work.get("baseColor") or "").strip()
     if re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
@@ -9287,11 +9296,12 @@ def aozora_get_work_info(html: str) -> dict:
         # NDC の百の位 9 が文学。それ以外は文学作品ではないので評論等に寄せる
         meta["genre"] = "literature" if code.startswith("9") else "nonfiction"
 
-    # 底本の書名は全集名（「太宰治全集3」等）ならシリーズとして意味があるが、
+    # 底本の書名（全集名「太宰治全集3」等）。シリーズとして扱うと全集の巻ごとに
+    # 別のシリーズができ、「次の巻」も誤動作するので別の欄にする。
     # 単行本で作品名と同じ場合は情報量がないので出さない
     base_book = _cell("底本")
     if base_book and base_book != title:
-        meta["series"] = base_book
+        meta["base_book"] = base_book
     for key, label in (("published", "初版発行日"), ("updated", "最終更新日")):
         v = _iso_date(_cell(label))
         if v:
