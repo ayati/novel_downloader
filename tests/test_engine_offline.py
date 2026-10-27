@@ -471,6 +471,36 @@ def main() -> int:
         ck("OPF では baseBook",
            ("baseBook", "太宰治全集3") in N._nd_meta_pairs(meta))
 
+    # ── なろうのシリーズ（design_author_url.md §9）──
+    page = ('<p class="p-novel__series">\n<a href="/s1111i/" class="p-novel__series-link">ラス為&amp;シリーズ</a>\n</p>'
+            '<h1 class="p-novel__title">第三部</h1>')
+    ck("シリーズ名と URL を取る",
+       N._narou_series_from_html(page, "https://ncode.syosetu.com/n5702ja/")
+       == ("ラス為&シリーズ", "https://ncode.syosetu.com/s1111i/"))
+    ck("シリーズに属さない作品は空",
+       N._narou_series_from_html('<h1 class="p-novel__title">t</h1>', "https://ncode.syosetu.com/n1/") == ("", ""))
+    ck("シリーズ一覧の形でない URL は捨てる（名前は残す）",
+       N._narou_series_from_html('<p class="p-novel__series"><a href="/n0001aa/">x</a></p>',
+                                 "https://ncode.syosetu.com/n1/") == ("x", ""))
+
+    def _opf(meta):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.epub")
+            with contextlib.redirect_stdout(io.StringIO()):
+                N.build_epub(path, "作", "者", "", "https://ncode.syosetu.com/n5702ja/", "小説家になろう",
+                             [{"title": "第1話", "body": "本文"}], meta=meta)
+            import zipfile
+            with zipfile.ZipFile(path) as z:
+                return z.read("OEBPS/package.opf").decode("utf-8")
+    opf = _opf({"site": "小説家になろう", "series": "ラス為シリーズ",
+                "series_url": "https://ncode.syosetu.com/s1111i/"})
+    ck("belongs-to-collection を出す（collection-type=series）",
+       '<meta property="belongs-to-collection" id="series">ラス為シリーズ</meta>' in opf
+       and 'refines="#series" property="collection-type">series<' in opf)
+    ck("巻数（group-position）は出さない", "group-position" not in opf)
+    ck("series_url の無い本（旧版の .txt の「シリーズ：」）からは出さない",
+       "belongs-to-collection" not in _opf({"site": "カクヨム", "series": "カドカワBOOKS"}))
+
     # ── 本の識別子（design_author_url.md §3-7）──
     ck("同じ底本 URL なら同じ識別子",
        N._book_uuid("https://ncode.syosetu.com/n0001aa/") == N._book_uuid("https://ncode.syosetu.com/n0001aa/"))

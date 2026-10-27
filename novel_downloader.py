@@ -1018,6 +1018,7 @@ _META_FIELDS = [
     # yomikake の「次の巻」がそれをシリーズとして扱う（design_author_url.md §5-8）。
     # シリーズでないものはそれぞれの欄へ分ける
     ("series",        "シリーズ",       "str"),
+    ("series_url",    "シリーズページ", "str"),   # なろうのシリーズ一覧（/sNNNNx/）
     ("label",         "レーベル",       "str"),   # カクヨムの書籍レーベル
     ("prompt",        "お題",           "str"),   # monogatary のお題
     # 青空文庫の底本の書名。ラベルを「底本」にしないこと —— 奥付の「底本：」を
@@ -2788,6 +2789,20 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     audience_meta = (f'\n    <meta property="dcterms:audience">{_esc(audience)}</meta>'
                      if audience else "")
 
+    # ── シリーズ（EPUB 3 標準の belongs-to-collection）────────────
+    # Calibre・KOReader・yomikake の「次の巻」がシリーズとして扱う。巻数
+    # （group-position）は出さない —— なろうのシリーズページの並びは読む順と
+    # 限らない（実測で第三部→第二部→第一部のシリーズがある）。巻数は読む側が
+    # 書名から割り出す。
+    # ⚠ series_url があるとき（＝なろうのシリーズを取得した本）だけ出す。旧版の
+    # .txt は「シリーズ：」にカクヨムのレーベル・青空文庫の底本書名などを入れて
+    # いたので、--from-file で作り直した本からシリーズを作らない（§8）
+    series = str(_m.get("series") or "").strip()
+    collection_meta = (
+        f'\n    <meta property="belongs-to-collection" id="series">{_esc(series)}</meta>'
+        f'\n    <meta refines="#series" property="collection-type">series</meta>'
+        if series and _m.get("series_url") else "")
+
     # ── 刊行日 ────────────────────────────────────────────
     # 作品の初回公開日が分かればそれを dc:date にする。ePub の生成日は
     # dcterms:modified が持っているので入れない（生成日を dc:date に入れると
@@ -2825,7 +2840,7 @@ def _make_opf(title: str, author: str, book_id: str, ep_titles: list,
     <dc:creator id="creator">{_esc(author)}</dc:creator>
     <meta refines="#creator" property="role" scheme="marc:relators">aut</meta>{contrib_meta}{publisher_meta}
     <dc:language>ja</dc:language>
-    <dc:date>{pub_date}</dc:date>{desc_meta}{source_meta}{subject_meta}{audience_meta}
+    <dc:date>{pub_date}</dc:date>{desc_meta}{source_meta}{subject_meta}{audience_meta}{collection_meta}
     <meta property="dcterms:modified">{now_iso}</meta>{cover_meta}
     <meta property="rendition:layout">reflowable</meta>
     <meta property="rendition:orientation">auto</meta>
@@ -3998,6 +4013,26 @@ def narou_looks_like_tanpen(html: str) -> bool:
     return ("p-novel__text" in html) or ("js-novel-text" in html)
 
 
+def _narou_series_from_html(html: str, base_url: str) -> tuple:
+    """作品ページの <p class="p-novel__series"> から (シリーズ名, シリーズ URL) を返す。
+
+    シリーズに属さない作品では ("", "")。URL は /sNNNNx/ の形で作品と同じホスト
+    （ncode / novel18）のときだけ返す。
+    """
+    m = re.search(r'<p class="p-novel__series">(.*?)</p>', html or "", re.S)
+    if not m:
+        return "", ""
+    a = re.search(r'<a\b[^>]*\bhref="([^"]+)"[^>]*>(.*?)</a>', m.group(1), re.S)
+    if not a:
+        return "", ""
+    import html as _html
+    name = _html.unescape(re.sub(r"<[^>]+>", "", a.group(2))).strip()
+    url = _author_url(_html.unescape(a.group(1)), base_url)
+    if not re.fullmatch(r"https://[^/]+/s\d{4}[a-z]+/?", url):
+        url = ""
+    return name, url
+
+
 def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -> tuple:
     """作品情報 + 目次全ページを取得して (title, author, synopsis, episodes, meta) を返す。
 
@@ -4043,6 +4078,14 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
 
         page += 1
         _sleep(index_wait)
+
+    # シリーズ（目次ページ／短編の本文ページの見出しの上）。追加の通信は要らない
+    if not meta.get("series"):
+        name, surl = _narou_series_from_html(first_html, base_url)
+        if name:
+            meta["series"] = name
+            if surl:
+                meta["series_url"] = surl
 
     if not all_eps and narou_looks_like_tanpen(first_html):
         # 短編は作品 URL 自体が本文ページ。目次が無いだけで取得はできる。
