@@ -6815,9 +6815,12 @@ def solispia_get_work_info(soup) -> dict:
     # 著者: 最初の main-user-underline リンク
     author_el = soup.find("a", class_="main-user-underline")
     author    = author_el.get_text(strip=True) if author_el else ""
+    # 作者ページ（/user/{id}/profile）。著者名と同じ要素から取る
+    author_url = _author_url(author_el.get("href"), _SOLISPIA_BASE + "/") if author_el else ""
     syn_el    = soup.find("div", class_="summary")
     synopsis  = syn_el.get_text().strip() if syn_el else ""
-    info = {"title": title, "author": author, "description": synopsis}
+    info = {"title": title, "author": author, "description": synopsis,
+            "author_url": author_url}
     info.update(_solispia_meta_from_page(soup))
     return info
 
