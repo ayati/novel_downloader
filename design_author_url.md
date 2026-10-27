@@ -1,0 +1,153 @@
+# 設計書：作者ページの URL（`nd:authorUrl`）
+
+- 対象: `novel_downloader.py`（第1段）→ `yomikake.html` / `yomikake_ios.html`（第2段）
+- 関連: yomikake `design_finished_next.md` §7-2（E）・本リポジトリ `design_metadata_expansion.md`（`nd:*` の仕組み）
+- ステータス: **設計確定（2026-10-27）**・§3-7 のみ承認待ち
+- 調査日: 2026-10-27。各サイトの作品ページを実取得して確認した（ハーメルンは Playwright 経由）
+
+---
+
+## 1. 目的
+
+yomikake の読了パネル「この著者の本」の **🔍 Web で探す**は Google 検索（`"名前" 作品`）しか無い。
+Web 小説のペンネームは一般語と衝突しやすく（「n」「れもん」「firework」…）、検索では作者に辿り着けないことが多い。
+投稿サイトの**作者ページ**（作品一覧）へ直接飛べれば、「同じ作者の別作品を探す」が 1 タップで済む。
+
+作者ページの URL は**ダウンロード時にしか分からない**（ePub から逆算できない）ので、novel_downloader が書き、yomikake が読む。
+**novel_downloader を先に出す**（yomikake 側は値が来ないと何も出ないだけなので、順序が逆でも壊れはしないが、確かめようがない）。
+
+## 2. 各サイトの実測
+
+| サイト | 作者ページ | 取り出し元（既存の著者取得と同じ要素） | 備考 |
+|---|---|---|---|
+| なろう | `https://mypage.syosetu.com/{userid}/` | **API の `userid`**（`of=` に `u` を足す） | 実測 `userid=1866242` |
+| なろう R18 | `https://xmypage.syosetu.com/{xid}/` | 作品情報ページ「作者名」の `<a href>` | **API は `userid` を返さない**（実測）。HTML 経路のときだけ取れる |
+| カクヨム | `https://kakuyomu.jp/users/{name}` | `__NEXT_DATA__` の `UserAccount.name` | ⚠ ページ上の最初の `/users/` リンクは**レビュー投稿者**（実測）。必ず Apollo の作者参照から組む |
+| アルファポリス | `https://www.alphapolis.co.jp/author/detail/{id}` | `a.p-content-info__author` の href | 下方に他作者のリンクが多数ある |
+| エブリスタ | `https://estar.jp/users/{id}` | `a.nickname` の href（相対） | Nuxt の `user` に id もあるはず（未確認） |
+| 野いちご / berry's cafe / ノベマ！ | `https://{host}/member/n{id}` | `div.subDetails-02 div.name a` の href | 3 サイト同じ組み（starts 系）。おすすめ欄に他作者の `/member/` が並ぶ |
+| ハーメルン | `https://syosetu.org/user/{id}/` | `[itemprop=author] a[itemprop=url]` | 既存の `itemprop=author` 要素の中 |
+| ネオページ | `https://my.neopage.com/uid/{uid}` | `book.author.uid` | タイトル「firework の作品一覧」を確認。`www.neopage.com/author/{uid}` は 307（使わない） |
+| ステキブンゲイ | `https://sutekibungei.com/users/{name}` | 既存の `a[href^="/users/"]`（相対） | |
+| NOVEL DAYS | `https://novel.daysneo.com/author/{name}/` | `div.author a` の href（相対） | 下方に他作者の `/author/` が並ぶ |
+| monogatary | `https://monogatary.com/user_page/story/{userId}` | API `/api/story/{id}` の `userId` | SPA のルート表から特定（`USER_PAGE_STORY`）。「○○さんの投稿した物語一覧」を確認 |
+| 青空文庫 | `https://www.aozora.gr.jp/index_pages/person{n}.html` | 図書カード「著者名：」セル内の `<a href>`（相対 `../../`） | 作家別作品リスト。翻訳作品は「翻訳者名」もあるが**著者名の行だけ**使う |
+| ソリスピア | 未確認 | `a.main-user-underline` の href | **調査時サイト全体が 500**。再開後に実測してから入れる |
+| 杉田玄白 / 結城浩 | — | — | 翻訳者の個人サイト。作者ページの概念が無いので出さない |
+
+### 2-1. 実測で分かった落とし穴
+
+- **「ページ内で最初に見つかった作者らしいリンク」を採ってはいけない。** カクヨム（レビュー欄）・アルファポリス・野いちご系・DAYS（おすすめ欄）は、作品ページに**他人の作者ページへのリンクが多数**ある。どれも**既存コードが著者名を取っている要素そのもの**から href を取る（名前とリンクの持ち主が必ず一致する）。
+- 相対 URL が多い（エブリスタ・ステキブンゲイ・DAYS・青空文庫）。`urljoin(作品URL, href)` で絶対化する。
+
+## 3. novel_downloader 側
+
+### 3-1. 出力経路は `_META_FIELDS` 1 行で済む
+
+```python
+("author_url",    "作者ページ",     "str"),   # "site" の直後
+```
+
+これだけで次がすべて揃う（既存の仕組み・`design_metadata_expansion.md`）:
+
+- OPF: `<meta property="nd:authorUrl">https://…</meta>`（`_nd_meta_pairs` がキャメルケース化）
+- .txt ヘッダー: `作者ページ：https://…`
+- `--from-file` / `--append`（ヘッダーの読み戻し・`_META_FIELDS` のラベル照合）
+- `--from-epub`（OPF の `nd:*` 読み戻し）
+
+ラベルに「タイトル」を含めない（`novel_health_check.py` の正規表現が誤マッチする・§1.5）。
+
+### 3-2. 値の検証 `_author_url(href, work_url, hosts)`
+
+各サイトの取得関数は生の href を渡し、共通関数で次を満たすときだけ `meta["author_url"]` に入れる:
+
+1. `urljoin(work_url, href)` で絶対化
+2. スキームが `https`（なろう・青空文庫も https で配信されていることを確認済み。`http` は `https` に上げない＝そのまま捨てる）
+3. ホストがそのサイトの**許可ホスト**に入っている（なろう＝`mypage.syosetu.com` / `xmypage.syosetu.com`、ネオページ＝`my.neopage.com`、他は作品と同じホスト）
+
+取れなければ**出さない**（空欄のまま。推測で組み立てない）。許可ホストは `_SITE_META` 側に置き、`_SITE_DISPATCH` のタプルは触らない（§1.6c）。
+
+### 3-3. サイトごとの変更点
+
+| サイト | 変更 |
+|---|---|
+| なろう | API の `fields` に `u` を追加 → `userid` があれば mypage を組む。HTML 経路（R18・API 失敗時）は `NarouInfoParser` が「作者名」の `<dd>` 内の最初の `<a href>` を覚える |
+| カクヨム | `kky_get_work_info` の Apollo 分岐で `apollo[akey].get("name")` |
+| アルファポリス / 野いちご系 / ハーメルン / ステキブンゲイ / DAYS / エブリスタ | 著者名を取っている要素（またはその親の `<a>`）の href。野いちご・ノベマ！は著者名を og:title から取っているので、href だけ `div.subDetails-02 div.name a` から取る |
+| ネオページ | `_neopage_meta_from_book` で `author.uid` |
+| monogatary | ストーリー API の `userId` |
+| 青空文庫 | `_cell("著者名")` と同じ行の生 HTML から href |
+
+### 3-4. 表示
+
+- `--dry-run` の出力に `作者ページ：…` が出る（`_format_meta_lines` 経由で自動）。ヘルスチェックで劣化を拾えるよう、`novel_health_check.py` に「`作者ページ：https://` が出ること」の確認を足す（取れないサイト＝杉田玄白・結城浩・ソリスピアは対象外）。
+- **奥付（colophon）にも載せる**（ePub・.txt とも）。`nd:authorUrl` を読むのは yomikake だけだが、奥付ならどのリーダー（Kobo・KOReader・Apple Books）でも .txt でも見える（当初「載せない」としたのを撤回）。
+  - ⚠ **底本 URL の後ろに置く。** `--from-epub` の `_epub_colophon_to_source()` は奥付の**最初の `<a href>`** を底本 URL とみなす。
+  - 形は底本行に揃える:
+    ```
+    底本：「タイトル」カクヨム
+    　　　https://kakuyomu.jp/works/…
+    作者：○○
+    　　　https://kakuyomu.jp/users/…
+    ```
+  - 作者ページが取れなかった本では作者行ごと出さない（奥付の見た目は従来どおり）。
+
+### 3-5. 既存のファイル
+
+古い ePub / .txt には入っていない。`--append` / `--resume` はヘッダーを毎回作り直す（`design_metadata_expansion.md` §1.3）ので、**次に続きを取ったときに自動で埋まる**。一括で埋め直す機能は作らない。
+
+### 3-6. テスト
+
+`tests/test_engine_offline.py` に:
+- `_author_url`: 相対→絶対・許可外ホスト・`http:`・`javascript:`・空
+- `_nd_meta_pairs` が `authorUrl` を出す / `_format_meta_lines` → 読み戻しの往復
+- 奥付に作者行が出る・底本 URL より後ろ・`_epub_colophon_to_source()` が底本 URL を返し続ける・取れない本では作者行が出ない
+- 保存済み HTML 断片（カクヨムの Apollo・野いちごの `subDetails-02`・青空文庫のカード）から**作者本人の** URL が取れ、おすすめ欄の他作者を拾わない
+
+実ネットワークの確認は `test_network.py` / ヘルスチェック側。
+
+### 3-7. 本の識別子を毎回同じ値にする（提案・承認待ち）
+
+`dc:identifier` は `uuid.uuid4()`（`build_epub`）で**作り直すたびに変わる**。`--append` のたびに Calibre・Kobo・Apple Books が別の本として扱い、本棚で重複する。`uuid.uuid5(uuid.NAMESPACE_URL, 底本URL)` にすれば同じ作品は同じ値になる（底本 URL が無いときは従来どおり uuid4）。yomikake のしおりキーは書名＋著者なので影響しない。
+
+## 4. yomikake 側（両ファイル）
+
+### 4-1. 読み取り
+
+`loadEpub` の `nd:*` 読み取りの隣で
+`state.bookAuthorUrl = _safeHttpUrl(_ndMeta(opfDoc, 'authorUrl'))`。
+`_safeHttpUrl` は `new URL()` で解釈でき、`protocol` が `https:` / `http:` のときだけ値を返す（`javascript:` 等を落とす）。`closeBook` の state リセットにも足す。
+**しおりには保存しない**（D と同じく、しおりの仕様変更を伴うため。読みかけリストの著者バーには出せない）。
+
+### 4-2. 出す場所
+
+| 場所 | 表示 |
+|---|---|
+| 読了パネル「この著者の本」 | `👤 作者ページ（{サイト名}） ↗` を**先頭**に置き、`🔍 Web で探す ↗` は残す |
+| ヘルプの書誌ブロック | 底本リンク（`_helpSourceHtml`）の行に `👤 作者ページ ↗` を並べる |
+
+- **Web 検索は消さない**（作者ページはそのサイトの作品しか無い。書籍化作品や他サイトの作品は検索のほうが見つかる）。
+- 共著（著者行が複数）でも出す。作者ページは「この作品を投稿したアカウント」のページで、著者名の割り当てとは独立。
+- サイト名は既存の `state.bookSourceSite` を使う。無ければ括弧ごと省く。
+- リンクは既存と同じ `target="_blank" rel="noopener"`。パネルは閉じない（§3-4 の既存規則）。
+- i18n: `finished.authorPage` / `help.authorPage`（4 言語）。
+
+### 4-3. テスト
+
+`tests/cases/finished-panel.js` の fixture `webnovel.epub`（`make-fixtures.py`）に `nd:authorUrl` を足し:
+- パネルとヘルプに作者ページのリンクが出る・href が一致する・Web 検索も残る
+- `nd:authorUrl` の無い本（`reflow.epub`）では出ない
+- `javascript:` を入れた本では出ない（`_safeHttpUrl`）
+
+## 5. 決定事項（2026-10-27）
+
+1. **読了パネルは Web 検索と並べる**（作者ページが先）。作者ページはそのサイトの作品しか無く、書籍化作品・他サイトの作品は検索のほうが見つかる。
+2. **ヘルプの書誌ブロックにも出す**。読了パネルは読み終えたときにしか出ない。
+3. **ソリスピアは見送り**。サイト側の PHP のセキュリティ対策で 2〜3 日止まる見込みのため、再開後に実測して追加する。
+4. **奥付にも載せる**（§3-4）。
+5. シリーズ欄の整理（カクヨムのレーベル・monogatary のお題・青空文庫の底本書名が `series` に入っている問題）と各話の元 URL は**別の弾**。
+
+## 6. 実装の順
+
+1. novel_downloader: `_author_url` ＋ `_META_FIELDS` ＋ 各サイト（コミットはサイト群ごと）＋ テスト ＋ ヘルスチェック → 実機（実サイト）確認 → リリース
+2. yomikake: 読み取り ＋ 読了パネル ＋ ヘルプ ＋ i18n ＋ テスト（両ファイル）→ 実機確認 → リリース
