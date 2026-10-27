@@ -2,7 +2,7 @@
 
 - 対象: `novel_downloader.py`（第1段）→ `yomikake.html` / `yomikake_ios.html`（第2段）
 - 関連: yomikake `design_finished_next.md` §7-2（E）・本リポジトリ `design_metadata_expansion.md`（`nd:*` の仕組み）
-- ステータス: **実装済み（2026-10-27・novel_downloader 側）**。yomikake 側も実装済み（2026-10-27・実機確認待ち）
+- ステータス: **実装済み（2026-10-27・novel_downloader 側）**。yomikake 側も実装済み（2026-10-27・PC / Android / iOS で実機確認済み・v2.32.0）
 - 調査日: 2026-10-27。各サイトの作品ページを実取得して確認した（ハーメルンは Playwright 経由）
 
 ---
