@@ -90,7 +90,7 @@ novel_downloader.py
 
 # 版数の単一ソース。リリース時は scripts/release.sh が書き換えるため手動更新は不要。
 # Android(Chaquopy)・Windows(exe)・コピー配布など git の無い環境でも --version で名乗れる。
-__version__ = "2.19.0"
+__version__ = "2.20.0"
 
 import sys
 import time
