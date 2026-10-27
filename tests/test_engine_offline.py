@@ -377,7 +377,7 @@ def main() -> int:
              N._FONT_MEDIUM_PATH, N._FONT_MEDIUM_IDX) = saved
 
     # ── 作者ページの URL（design_author_url.md）──
-    au = N._author_url
+    au = N._site_url
     ck("相対 URL を作品ページから解決する",
        au("/users/abc", "https://kakuyomu.jp/works/1") == "https://kakuyomu.jp/users/abc")
     ck("../ も解決する",
@@ -506,6 +506,41 @@ def main() -> int:
        N._book_uuid("https://ncode.syosetu.com/n0001aa/") == N._book_uuid("https://ncode.syosetu.com/n0001aa/"))
     ck("底本 URL が違えば別の識別子",
        N._book_uuid("https://ncode.syosetu.com/n0001aa/") != N._book_uuid("https://ncode.syosetu.com/n0002aa/"))
+    bu = N._book_uuid
+    ck("書き方の揺れ（末尾 /・http・大文字ホスト・#）は同じ識別子",
+       len({bu("https://ncode.syosetu.com/n0001aa/"), bu("https://ncode.syosetu.com/n0001aa"),
+            bu("http://NCODE.syosetu.com/n0001aa/"), bu("https://ncode.syosetu.com/n0001aa/#top")}) == 1)
+    ck("--start で途中から取った本は別の識別子",
+       bu("https://ncode.syosetu.com/n0001aa/", 500) != bu("https://ncode.syosetu.com/n0001aa/"))
+    ck("--start 1 は全話と同じ",
+       bu("https://ncode.syosetu.com/n0001aa/", 1) == bu("https://ncode.syosetu.com/n0001aa/"))
+
+    # ── 読み戻した値の検査（code-review 指摘）──
+    m = N._parse_meta_lines("作者ページ：javascript:alert(1)\nシリーズページ：http://x.example/s1a/\n")
+    ck("読み戻し: https 以外の作者ページ・シリーズページは捨てる",
+       "author_url" not in m and "series_url" not in m)
+    ck("読み戻し: https の作者ページは残す",
+       N._parse_meta_lines("作者ページ：https://kakuyomu.jp/users/a\n").get("author_url")
+       == "https://kakuyomu.jp/users/a")
+    m = N._parse_meta_lines("配信元：カクヨム\nシリーズ：カドカワBOOKS\n")
+    ck("旧版の「シリーズ：」（カクヨム）は label へ移す", m.get("label") == "カドカワBOOKS" and "series" not in m)
+    m = N._parse_meta_lines("配信元：青空文庫\nシリーズ：太宰治全集3\n")
+    ck("旧版の「シリーズ：」（青空文庫）は base_book へ移す", m.get("base_book") == "太宰治全集3" and "series" not in m)
+    m = N._parse_meta_lines("配信元：小説家になろう\nシリーズ：S\nシリーズページ：https://ncode.syosetu.com/s1a/\n")
+    ck("なろうの本物のシリーズは動かさない", m.get("series") == "S")
+    page = '<div class="p-novel__series js-x"><a class="p-novel__series-link" href="/s12345ab/">名</a></div>'
+    ck("シリーズ: class が増えても・div でも・桁が違っても取れる",
+       N._narou_series_from_html(page, "https://ncode.syosetu.com/n1/")
+       == ("名", "https://ncode.syosetu.com/s12345ab/"))
+    if BeautifulSoup:
+        nd = {"props": {"pageProps": {"__APOLLO_STATE__": {
+            "Work:9": {"id": "9", "title": "T", "author": {"__ref": "UserAccount:1"},
+                       "alternateAuthorName": "作家"},
+            "UserAccount:1": {"name": "label_official", "activityName": "レーベル公式"}}}}}
+        ck("カクヨム: 別名義で掲載している作品は作者ページを出さない",
+           "author_url" not in N.kky_get_work_info(BeautifulSoup("", "html.parser"), nd,
+                                                   "https://kakuyomu.jp/works/9"))
+
     ck("底本 URL の無い本は毎回別（ローカル由来を同一視しない）",
        N._book_uuid("") != N._book_uuid("") and N._book_uuid("/tmp/a.epub") != N._book_uuid("/tmp/a.epub"))
 

@@ -1002,7 +1002,7 @@ _TAG_SEP = "／"
 _META_FIELDS = [
     ("site",          "配信元",         "str"),
     # 作者ページ（サイト上の作品一覧）。yomikake の読了パネル・ヘルプから辿る
-    # （design_author_url.md）。値は _author_url() で検査済みの https URL だけ
+    # （design_author_url.md）。値は _site_url() で検査済みの https URL だけ
     ("author_url",    "作者ページ",     "str"),
     ("catchphrase",   "キャッチコピー", "str"),
     ("genre",         "ジャンル",       "genre"),
@@ -1032,16 +1032,29 @@ _META_FIELDS = [
 ]
 
 
-def _book_uuid(source_url: str) -> str:
-    """ePub の dc:identifier 用 UUID。http(s) の底本 URL があれば uuid5 で固定する。"""
+def _book_uuid(source_url: str, start_offset: int = 0) -> str:
+    """ePub の dc:identifier 用 UUID。http(s) の底本 URL があれば uuid5 で固定する。
+
+    - URL は書き方の揺れを畳んでから使う（http/https・ホストの大小・末尾の /・
+      #fragment）。同じ作品が書き方違いで別の本にならないように
+    - --start で途中から取った本は別の本にする（先頭が欠けているので、全話の本と
+      同一視すると片方が本棚から消える）。--end だけの本は全話の本と同じ
+      （続きを取れば全話になる＝--append と同じ関係）
+    """
     u = str(source_url or "").strip()
-    if re.match(r"https?://", u, re.I):
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, u))
-    return str(uuid.uuid4())
+    if not re.match(r"https?://", u, re.I):
+        return str(uuid.uuid4())
+    p = urlparse(u)
+    path = p.path.rstrip("/") or "/"
+    key = f"https://{(p.hostname or '').lower()}{path}" + (f"?{p.query}" if p.query else "")
+    if start_offset and start_offset > 1:
+        key += f"#start={start_offset}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
 
-def _author_url(href, base_url: str, hosts: tuple = ()) -> str:
-    """作者ページの href を検査して絶対 URL にする。使えなければ ""。
+def _site_url(href, base_url: str, hosts: tuple = ()) -> str:
+    """サイト内リンク（作者ページ・シリーズページ）の href を検査して絶対 URL にする。
+    使えなければ ""。
 
     - base_url（作品ページ）からの相対 URL を解決する
     - https だけを通す（http は上げずに捨てる。推測で URL を組まない）
@@ -1165,6 +1178,29 @@ def _parse_meta_lines(header: str) -> dict:
                 meta["genre_raw"] = raw
         else:
             meta[key] = raw
+    return _clean_read_meta(meta)
+
+
+# 旧版（v2.19.0 以前）は「シリーズ：」にシリーズでないものを入れていた（§8）。
+# 配信元で見分けて正しい欄へ移す。なろうの本物のシリーズは series_url を伴う
+_LEGACY_SERIES_KEY = {"カクヨム": "label", "monogatary.com": "prompt", "青空文庫": "base_book"}
+
+
+def _clean_read_meta(meta: dict) -> dict:
+    """.txt ヘッダー・ePub の nd:* から読み戻した meta を書き出し前の形に揃える。
+
+    - author_url / series_url はファイル由来で検査されていないので、https の URL
+      でなければ捨てる（作り直した ePub の奥付にそのままリンクとして入るため）
+    - 旧版の「シリーズ：」を label / prompt / base_book へ移す
+    """
+    for k in ("author_url", "series_url"):
+        v = str(meta.get(k) or "")
+        if v and not re.fullmatch(r"https://[^\s\"'<>]+", v):
+            del meta[k]
+    dest = _LEGACY_SERIES_KEY.get(str(meta.get("site") or ""))
+    if dest and meta.get("series") and not meta.get("series_url"):
+        meta.setdefault(dest, meta["series"])
+        del meta["series"]
     return meta
 
 
@@ -3584,7 +3620,8 @@ def build_epub(
     # 識別子は底本 URL から決める（同じ作品は何度作り直しても同じ値）。
     # uuid4 だと --append のたびに Calibre・Kobo・Apple Books が別の本として扱い、
     # 本棚で重複していた（design_author_url.md §3-7）。底本 URL の無い本は従来どおり
-    book_id   = _book_uuid(source_url)
+    _so = (meta or {}).get("start_offset") or (_START_OFFSET if _START_OFFSET > 1 else 0)
+    book_id   = _book_uuid(source_url, int(_so or 0))
     # 話タイトルが空の作品がある（monogatary は episodeTitle が空文字のことが
     # ある）。空のままだと nav のアンカーと <title> が空になり epubcheck の
     # RSC-005 で ePub が不正になる（Send to Kindle が通らなくなる）ため、
@@ -3914,7 +3951,7 @@ def narou_get_novel_info_api(ncode: str) -> tuple:
     except (TypeError, ValueError):
         uid = 0
     if uid > 0:
-        meta["author_url"] = _author_url(f"https://mypage.syosetu.com/{uid}/",
+        meta["author_url"] = _site_url(f"https://mypage.syosetu.com/{uid}/",
                                          "https://ncode.syosetu.com/", _NAROU_AUTHOR_HOSTS)
 
     meta["site_id"] = f"narou:{ncode}"
@@ -3947,7 +3984,7 @@ def narou_get_novel_info(ncode: str) -> tuple:
         if m:
             author = m.group(1).strip()
 
-    author_url = _author_url(p.author_href, info_url, _NAROU_AUTHOR_HOSTS)
+    author_url = _site_url(p.author_href, info_url, _NAROU_AUTHOR_HOSTS)
     return title, author, synopsis, author_url
 
 
@@ -4019,16 +4056,17 @@ def _narou_series_from_html(html: str, base_url: str) -> tuple:
     シリーズに属さない作品では ("", "")。URL は /sNNNNx/ の形で作品と同じホスト
     （ncode / novel18）のときだけ返す。
     """
-    m = re.search(r'<p class="p-novel__series">(.*?)</p>', html or "", re.S)
+    m = re.search(r'<(p|div)\b[^>]*\bclass="[^"]*\bp-novel__series\b(?!-)[^"]*"[^>]*>(.*?)</\1>',
+                  html or "", re.S)
     if not m:
         return "", ""
-    a = re.search(r'<a\b[^>]*\bhref="([^"]+)"[^>]*>(.*?)</a>', m.group(1), re.S)
+    a = re.search(r'<a\b[^>]*\bhref="([^"]+)"[^>]*>(.*?)</a>', m.group(2), re.S)
     if not a:
         return "", ""
     import html as _html
     name = _html.unescape(re.sub(r"<[^>]+>", "", a.group(2))).strip()
-    url = _author_url(_html.unescape(a.group(1)), base_url)
-    if not re.fullmatch(r"https://[^/]+/s\d{4}[a-z]+/?", url):
+    url = _site_url(_html.unescape(a.group(1)), base_url)
+    if not re.fullmatch(r"https://[^/]+/s\d+[a-z]+/?", url):
         url = ""
     return name, url
 
@@ -4618,13 +4656,6 @@ def _set_int(meta: dict, key: str, raw: str) -> None:
         meta[key] = int(digits)
 
 
-_STARTS_BASE = {
-    "noichigo": "https://www.no-ichigo.jp/",
-    "berrys":   "https://www.berrys-cafe.jp/",
-    "novema":   "https://novema.jp/",
-}
-
-
 def _starts_meta_from_page(soup, site_name: str, site_id: str) -> dict:
     """野いちご／ノベマ！／berry's cafe（同一プラットフォーム）のメタデータ。
 
@@ -4638,9 +4669,10 @@ def _starts_meta_from_page(soup, site_name: str, site_id: str) -> dict:
     # 著者欄 div.subDetails-02 div.name に限定する（著者名を og:title から取る
     # サイトでも、リンクはここにある）
     a = soup.select_one("div.subDetails-02 div.name a")
-    base = _STARTS_BASE.get(site_id)
+    base = {"noichigo": _NIC_BASE, "berrys": _BERRYS_BASE,
+            "novema": _NOVEMA_BASE}.get(site_id, "")
     if a and base:
-        meta["author_url"] = _author_url(a.get("href"), base)
+        meta["author_url"] = _site_url(a.get("href"), base + "/")
 
     sub = soup.find(class_="subDetails-01")
     if sub:
@@ -4935,11 +4967,15 @@ def kky_get_work_info(soup, next_data: dict, work_url: str) -> dict:
                         activity_name = apollo[akey].get("activityName", "")
                         # 作者ページ。⚠ ページ上の最初の /users/ リンクはレビュー
                         # 投稿者なので、必ず作品の author 参照から組む
-                        uname = str(apollo[akey].get("name") or "")
-                        if re.fullmatch(r"[A-Za-z0-9_\-]+", uname):
-                            info["author_url"] = _author_url(f"/users/{uname}", work_url)
                         # alternateAuthorName が存在する場合は実際の著者名として優先
                         alt_author = work_obj.get("alternateAuthorName", "")
+                        # 別名義で掲載している作品（出版社・レーベルのアカウントが
+                        # 作家の作品を載せる等）は、アカウントのページが作者のページ
+                        # ではないので出さない（yomikake の「この著者の本」が別人へ飛ぶ）
+                        uname = str(apollo[akey].get("name") or "")
+                        if (re.fullmatch(r"[A-Za-z0-9_\-]+", uname)
+                                and (not alt_author or alt_author == activity_name)):
+                            info["author_url"] = _site_url(f"/users/{uname}", work_url)
                         if alt_author and activity_name and alt_author != activity_name:
                             info["author"] = f"{alt_author}／{activity_name}"
                         elif alt_author:
@@ -5352,7 +5388,7 @@ def alp_get_work_info(soup) -> dict:
     if author_a:
         info["author"] = author_a.get_text(strip=True)
         # 作者ページ（下方に他作者の /author/detail/ が多数あるので、この要素から取る）
-        info["author_url"] = _author_url(author_a.get("href"), "https://www.alphapolis.co.jp/")
+        info["author_url"] = _site_url(author_a.get("href"), _ALP_BASE + "/")
 
     # あらすじ: 本文の abstract ブロックを優先する。
     # <meta name="description"> と本文は同じ内容だが、meta 側は <br> が空白に
@@ -5838,7 +5874,7 @@ def est_get_work_info(soup, html: str, work_id: str = "") -> dict:
                     info["author"] = nick
                 uid = _est_resolve(data, user.get("userId"))
                 if isinstance(uid, (str, int)) and re.fullmatch(r"\d+", str(uid)):
-                    info["author_url"] = _author_url(f"/users/{uid}", "https://estar.jp/")
+                    info["author_url"] = _site_url(f"/users/{uid}", _EST_BASE + "/")
         break
 
     # フォールバック: メタタグ類
@@ -5851,10 +5887,6 @@ def est_get_work_info(soup, html: str, work_id: str = "") -> dict:
         og_title = soup.find("meta", property="og:title")
         if og_title and og_title.get("content") and "／" in og_title["content"]:
             info["author"] = og_title["content"].split("／")[-1].strip()
-    if not info.get("author_url"):
-        a = soup.find("a", class_="nickname")
-        if a:
-            info["author_url"] = _author_url(a.get("href"), "https://estar.jp/")
     if not info["description"]:
         meta_desc = soup.find("meta", attrs={"name": "description"})
         if meta_desc and meta_desc.get("content"):
@@ -6132,7 +6164,7 @@ def hameln_get_work_info(soup) -> dict:
             author = author_el.get_text(strip=True)
             a = author_el.find("a", href=True)
             if a:
-                author_url = _author_url(a["href"], "https://syosetu.org/")
+                author_url = _site_url(a["href"], _HAM_BASE + "/")
         # あらすじ: 2番目の div.ss
         ss_divs = maind.find_all("div", class_="ss")
         if len(ss_divs) >= 2:
@@ -6596,7 +6628,7 @@ def neopage_get_work_info(html: str, book_id: str) -> dict:
     author = (author_obj.get("author_name") or "") if isinstance(author_obj, dict) else ""
     # 作者ページ（「○○ の作品一覧」）。www.neopage.com/author/{uid} は 307 なので使わない
     uid = str(author_obj.get("uid") or "") if isinstance(author_obj, dict) else ""
-    author_url = (_author_url(f"https://my.neopage.com/uid/{uid}",
+    author_url = (_site_url(f"https://my.neopage.com/uid/{uid}",
                               "https://www.neopage.com/", ("my.neopage.com",))
                   if re.fullmatch(r"\d+", uid) else "")
 
@@ -6859,7 +6891,7 @@ def solispia_get_work_info(soup) -> dict:
     author_el = soup.find("a", class_="main-user-underline")
     author    = author_el.get_text(strip=True) if author_el else ""
     # 作者ページ（/user/{id}/profile）。著者名と同じ要素から取る
-    author_url = _author_url(author_el.get("href"), _SOLISPIA_BASE + "/") if author_el else ""
+    author_url = _site_url(author_el.get("href"), _SOLISPIA_BASE + "/") if author_el else ""
     syn_el    = soup.find("div", class_="summary")
     synopsis  = syn_el.get_text().strip() if syn_el else ""
     info = {"title": title, "author": author, "description": synopsis,
@@ -7734,7 +7766,7 @@ def run_monogatary(args):
     # 作者ページ（「○○さんの投稿した物語一覧」）。SPA のルート表 USER_PAGE_STORY
     uid = str(story_data.get("userId") or "")
     if re.fullmatch(r"[0-9a-fA-F-]{8,64}", uid):
-        meta["author_url"] = _author_url(f"/user_page/story/{uid}", _MONOGATARY_BASE + "/")
+        meta["author_url"] = _site_url(f"/user_page/story/{uid}", _MONOGATARY_BASE + "/")
 
     start_ep = max(1, args.start or 1)
     end_ep   = min(total_episodes, args.end or total_episodes)
@@ -8110,7 +8142,7 @@ def suteki_get_work_info(soup) -> dict:
     author_a = soup.find("a", href=re.compile(r"^/users/"))
     if author_a:
         author = author_a.get_text(strip=True)
-        author_url = _author_url(author_a["href"], "https://sutekibungei.com/")
+        author_url = _site_url(author_a["href"], _SUTEKI_BASE + "/")
 
     # フォールバック: window.__NUXT__ から "name":"著者名" パターンを抽出
     if not author:
@@ -8340,7 +8372,7 @@ def days_get_work_info(soup) -> dict:
         # 著者名を取った要素の <a> から取る
         a = author_span.find_parent("a")
         if a:
-            author_url = _author_url(a.get("href"), "https://novel.daysneo.com/")
+            author_url = _site_url(a.get("href"), _DAYS_BASE + "/")
 
     # あらすじ: p.readmore（<br> を改行に変換）
     description = ""
@@ -9327,7 +9359,7 @@ def aozora_get_work_info(html: str) -> dict:
     mm = re.search(r"著者名[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", html, re.S)
     pm = re.search(r'href="[^"]*index_pages/(person\d+\.html)"', mm.group(1)) if mm else None
     if pm:
-        meta["author_url"] = _author_url(f"/index_pages/{pm.group(1)}",
+        meta["author_url"] = _site_url(f"/index_pages/{pm.group(1)}",
                                          "https://www.aozora.gr.jp/")
     for key, label in (("title_kana", "作品名読み"), ("author_kana", "作家名読み"),
                        ("orthography", "文字遣い種別")):
@@ -10544,7 +10576,7 @@ def parse_epub(epub_path: str) -> tuple:
     source_url = opf_source_url or source_url
     site_name  = opf_site_name  or site_name
 
-    return title, author, synopsis, source_url, site_name, episodes, opf_meta
+    return title, author, synopsis, source_url, site_name, episodes, _clean_read_meta(opf_meta)
 
 
 def run_from_epub(args):
