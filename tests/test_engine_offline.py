@@ -376,6 +376,85 @@ def main() -> int:
             (N._FONT_BOLD_PATH, N._FONT_BOLD_IDX,
              N._FONT_MEDIUM_PATH, N._FONT_MEDIUM_IDX) = saved
 
+    # ── 作者ページの URL（design_author_url.md）──
+    au = N._author_url
+    ck("相対 URL を作品ページから解決する",
+       au("/users/abc", "https://kakuyomu.jp/works/1") == "https://kakuyomu.jp/users/abc")
+    ck("../ も解決する",
+       au("../../index_pages/person35.html", "https://www.aozora.gr.jp/cards/000035/card1567.html")
+       == "https://www.aozora.gr.jp/index_pages/person35.html")
+    ck("http は捨てる（https に上げない）", au("http://kakuyomu.jp/users/a", "https://kakuyomu.jp/") == "")
+    ck("javascript: は捨てる", au("javascript:alert(1)", "https://kakuyomu.jp/") == "")
+    ck("別ホストは捨てる", au("https://evil.example/users/a", "https://kakuyomu.jp/") == "")
+    ck("空は空", au("", "https://kakuyomu.jp/") == "" and au(None, "https://kakuyomu.jp/") == "")
+    ck("許可ホストを明示すれば別ホストを通す",
+       au("https://mypage.syosetu.com/1/", "https://ncode.syosetu.com/",
+          N._NAROU_AUTHOR_HOSTS) == "https://mypage.syosetu.com/1/")
+    ck("許可ホストを明示したら作品と同じホストでも通さない",
+       au("https://ncode.syosetu.com/x/", "https://ncode.syosetu.com/", N._NAROU_AUTHOR_HOSTS) == "")
+
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        BeautifulSoup = None
+    if BeautifulSoup:
+        # おすすめ欄の他作者を拾わない（実測でどのサイトにもある）
+        html = ('<div class="subDetails-02"><div class="name">'
+                '<a href="https://www.no-ichigo.jp/member/n565522">汐見 夏衛</a></div></div>'
+                '<div class="reco"><a href="https://www.no-ichigo.jp/member/n1">他人</a></div>')
+        m = N._starts_meta_from_page(BeautifulSoup(html, "html.parser"), "野いちご", "noichigo")
+        ck("野いちご系: 著者欄の作者ページ",
+           m.get("author_url") == "https://www.no-ichigo.jp/member/n565522")
+        html = ('<div class="reco"><a class="c-link" href="https://www.alphapolis.co.jp/author/detail/1">他人</a></div>'
+                '<a class="p-content-info__author" href="https://www.alphapolis.co.jp/author/detail/243223524">作者</a>')
+        ck("アルファポリス: 著者要素の作者ページ",
+           N.alp_get_work_info(BeautifulSoup(html, "html.parser")).get("author_url")
+           == "https://www.alphapolis.co.jp/author/detail/243223524")
+        # カクヨム: レビュー投稿者の /users/ が先に並ぶ。作品の author 参照から組む
+        nd = {"props": {"pageProps": {"__APOLLO_STATE__": {
+            "Work:9": {"id": "9", "title": "T", "author": {"__ref": "UserAccount:1"}},
+            "UserAccount:1": {"name": "tea_kaijyu", "activityName": "@tea_kaijyu"},
+            "UserAccount:2": {"name": "reviewer", "activityName": "評者"}}}}}
+        html = '<a href="/users/reviewer">評者</a>'
+        ck("カクヨム: Apollo の作者参照から組む",
+           N.kky_get_work_info(BeautifulSoup(html, "html.parser"), nd,
+                               "https://kakuyomu.jp/works/9").get("author_url")
+           == "https://kakuyomu.jp/users/tea_kaijyu")
+    else:
+        ck.skip("bs4 が無い（作者ページの抽出）")
+    html = ('<a href="../../index_pages/person1.html">作家別作品リスト</a>'
+            '<tr><td class="header">著者名：</td><td><a href="../../index_pages/person35.html">太宰 治</a></td></tr>'
+            '<tr><td class="header">翻訳者名：</td><td><a href="../../index_pages/person9.html">訳者</a></td></tr>')
+    ck("青空文庫: 「著者名」の行だけを見る",
+       N.aozora_get_work_info(html).get("author_url")
+       == "https://www.aozora.gr.jp/index_pages/person35.html")
+
+    with tempfile.TemporaryDirectory() as d:
+        url, aurl = "https://ncode.syosetu.com/n0001aa/", "https://mypage.syosetu.com/1/"
+        meta = {"site": "小説家になろう", "author_url": aurl}
+        hdr = N.aozora_header("作", "者", "", url, meta)
+        ck("ヘッダーに作者ページ", f"作者ページ：{aurl}" in hdr)
+        col = N.aozora_colophon("作", url, "小説家になろう", author="者", author_url=aurl)
+        ck("奥付: 作者ページは底本 URL より後ろ", 0 < col.index(url) < col.index(aurl))
+        ck("奥付: 作者ページが無ければ作者行を出さない",
+           "作者：" not in N.aozora_colophon("作", url, "小説家になろう", author="者"))
+        path = os.path.join(d, "A.txt")
+        N.write_file(path, hdr, [f"{N.aozora_chapter_title('第1話')}\n\n本文\n"], col)
+        ck("底本 URL は作者ページに化けない", N._extract_url_from_txt(path) == url)
+        ck(".txt から読み戻せる", N._extract_meta_from_txt(path).get("author_url") == aurl)
+        ck("OPF の nd:authorUrl", ("authorUrl", aurl) in N._nd_meta_pairs(meta))
+        x = N._make_colophon_xhtml("作", url, "小説家になろう", author="者", author_url=aurl)
+        ck("ePub 奥付: 最初のリンクは底本 URL のまま", N._epub_colophon_to_source(x)[0] == url)
+        ck("ePub 奥付に作者ページのリンク", f'href="{aurl}"' in x)
+
+    # ── 本の識別子（design_author_url.md §3-7）──
+    ck("同じ底本 URL なら同じ識別子",
+       N._book_uuid("https://ncode.syosetu.com/n0001aa/") == N._book_uuid("https://ncode.syosetu.com/n0001aa/"))
+    ck("底本 URL が違えば別の識別子",
+       N._book_uuid("https://ncode.syosetu.com/n0001aa/") != N._book_uuid("https://ncode.syosetu.com/n0002aa/"))
+    ck("底本 URL の無い本は毎回別（ローカル由来を同一視しない）",
+       N._book_uuid("") != N._book_uuid("") and N._book_uuid("/tmp/a.epub") != N._book_uuid("/tmp/a.epub"))
+
     return ck.done()
 
 

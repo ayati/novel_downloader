@@ -1001,6 +1001,9 @@ _TAG_SEP = "／"
 #   genre … 共通ジャンル名（サイト原文があれば「共通名（原文）」）
 _META_FIELDS = [
     ("site",          "配信元",         "str"),
+    # 作者ページ（サイト上の作品一覧）。yomikake の読了パネル・ヘルプから辿る
+    # （design_author_url.md）。値は _author_url() で検査済みの https URL だけ
+    ("author_url",    "作者ページ",     "str"),
     ("catchphrase",   "キャッチコピー", "str"),
     ("genre",         "ジャンル",       "genre"),
     ("tags",          "タグ",           "list"),
@@ -1017,6 +1020,36 @@ _META_FIELDS = [
     # 「既存の節数＝取得済みの話数」という前提が成り立たない
     ("start_offset",  "開始位置",       "int"),
 ]
+
+
+def _book_uuid(source_url: str) -> str:
+    """ePub の dc:identifier 用 UUID。http(s) の底本 URL があれば uuid5 で固定する。"""
+    u = str(source_url or "").strip()
+    if re.match(r"https?://", u, re.I):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, u))
+    return str(uuid.uuid4())
+
+
+def _author_url(href, base_url: str, hosts: tuple = ()) -> str:
+    """作者ページの href を検査して絶対 URL にする。使えなければ ""。
+
+    - base_url（作品ページ）からの相対 URL を解決する
+    - https だけを通す（http は上げずに捨てる。推測で URL を組まない）
+    - ホストは hosts（無ければ base_url と同じホスト）に限る。作品ページには
+      おすすめ欄・レビュー欄に他人の作者ページが並ぶので、取り違えの最後の砦になる
+    """
+    href = str(href or "").strip()
+    if not href:
+        return ""
+    url = urljoin(base_url, href)
+    try:
+        u = urlparse(url)
+    except ValueError:
+        return ""
+    allowed = hosts or (urlparse(base_url).hostname or "",)
+    if u.scheme != "https" or not u.hostname or u.hostname not in allowed:
+        return ""
+    return url
 
 
 def _nd_meta_pairs(meta: dict) -> list[tuple[str, str]]:
@@ -1177,12 +1210,20 @@ def aozora_header(title: str, author: str, synopsis: str = "",
     )
 
 
-def aozora_colophon(title: str, source_url: str, site_name: str) -> str:
-    """青空文庫書式の奥付を生成する。"""
+def aozora_colophon(title: str, source_url: str, site_name: str,
+                    author: str = "", author_url: str = "") -> str:
+    """青空文庫書式の奥付を生成する。
+
+    作者ページは底本 URL の後ろに置く（_extract_url_from_txt と
+    _epub_colophon_to_source は「底本」の直後／最初のリンクを底本 URL とみなす）。
+    """
     today = date.today().strftime("%Y年%m月%d日")
+    author_block = (f"作者：{author}\n　　　{author_url}\n"
+                    if author and author_url else "")
     return (
         f"\n\n底本：「{title}」{site_name}\n"
         f"　　　{source_url}\n"
+        f"{author_block}"
         f"入力：novel_downloader.py\n"
         f"校正：未校正\n"
         f"作成：{today}\n\n"
@@ -2403,17 +2444,28 @@ def _make_episode_xhtml(ep_title: str, body_text: str,
 
 
 def _make_colophon_xhtml(title: str, source_url: str, site_name: str,
-                         horizontal: bool = False) -> str:
-    """奥付XHTMLを生成する。底本URLはハイパーリンクとして出力する。"""
+                         horizontal: bool = False,
+                         author: str = "", author_url: str = "") -> str:
+    """奥付XHTMLを生成する。底本URL・作者ページはハイパーリンクとして出力する。
+
+    ⚠ 作者ページは必ず底本 URL より後ろ。_epub_colophon_to_source() は
+    最初の <a href> を底本 URL とみなす。
+    """
     today = date.today().strftime("%Y年%m月%d日")
     url_link = (
         f'<a href="{_esc(source_url)}">{_esc(source_url)}</a>'
+    )
+    author_lines = (
+        f'<p class="body-line">作者：{_esc(author)}</p>\n'
+        f'<p class="body-line">　　　<a href="{_esc(author_url)}">{_esc(author_url)}</a></p>\n'
+        if author and author_url else ""
     )
     # xmlns:epub を body に付与するため XHTML_TMPL を直接使わず個別生成
     body = (
         f'<div class="colophon">\n'
         f'<p class="body-line">底本：「{_esc(title)}」{_esc(site_name)}</p>\n'
         f'<p class="body-line">　　　{url_link}</p>\n'
+        f'{author_lines}'
         f'<p class="body-line">入力：novel_downloader.py</p>\n'
         f'<p class="body-line">校正：未校正</p>\n'
         f'<p class="body-line">作成：{_esc(today)}</p>\n'
@@ -3505,7 +3557,10 @@ def build_epub(
       OEBPS/ep0001.xhtml … ep{N}.xhtml
       OEBPS/colophon.xhtml
     """
-    book_id   = str(uuid.uuid4())
+    # 識別子は底本 URL から決める（同じ作品は何度作り直しても同じ値）。
+    # uuid4 だと --append のたびに Calibre・Kobo・Apple Books が別の本として扱い、
+    # 本棚で重複していた（design_author_url.md §3-7）。底本 URL の無い本は従来どおり
+    book_id   = _book_uuid(source_url)
     # 話タイトルが空の作品がある（monogatary は episodeTitle が空文字のことが
     # ある）。空のままだと nav のアンカーと <title> が空になり epubcheck の
     # RSC-005 で ePub が不正になる（Send to Kindle が通らなくなる）ため、
@@ -3624,7 +3679,8 @@ def build_epub(
         # 奥付
         zf.writestr("OEBPS/colophon.xhtml",
                     _make_colophon_xhtml(title, source_url, site_name,
-                                         horizontal=horizontal))
+                                         horizontal=horizontal, author=author,
+                                         author_url=(meta or {}).get("author_url", "")))
 
 
 # ══════════════════════════════════════════
@@ -3669,6 +3725,7 @@ class NarouInfoParser(HTMLParser):
         super().__init__()
         self.novel_title  = ""
         self.novel_author = ""
+        self.author_href  = ""   # 「作者名」欄のリンク先（作者ページ）
         self.synopsis     = ""
 
         self._in_h1       = False
@@ -3691,6 +3748,11 @@ class NarouInfoParser(HTMLParser):
 
         if tag == "a" and self._in_h1 and not self.novel_title:
             self._in_title_a = True
+            return
+
+        if (tag == "a" and self._in_dd and self._want_author
+                and not self.author_href):
+            self.author_href = d.get("href", "")
             return
 
         if tag == "dt":
@@ -3766,7 +3828,7 @@ def narou_get_novel_info_api(ncode: str) -> tuple:
     （novel18api）で 0 件になるため、取れなければ呼び出し元が HTML 解析へ
     フォールバックする。取得できなければ (None, None, None, None) を返す。
     """
-    fields = "t-w-s-bg-g-k-nt-e-ga-l-gf-nu-ir"
+    fields = "t-w-s-bg-g-k-nt-e-ga-l-gf-nu-ir-u"   # u = userid（作者ページ）
     api_url = (f"https://api.syosetu.com/novelapi/api/"
                f"?out=json&of={fields}&lim=1&ncode={ncode}")
     try:
@@ -3822,12 +3884,24 @@ def narou_get_novel_info_api(ncode: str) -> tuple:
     if str(rec.get("isr15")) == "1":
         meta["age_rating"] = "R15"
 
+    # 作者ページ。R18（novel18api）は userid を返さないので HTML 経路でしか取れない
+    try:
+        uid = int(rec.get("userid") or 0)
+    except (TypeError, ValueError):
+        uid = 0
+    if uid > 0:
+        meta["author_url"] = _author_url(f"https://mypage.syosetu.com/{uid}/",
+                                         "https://ncode.syosetu.com/", _NAROU_AUTHOR_HOSTS)
+
     meta["site_id"] = f"narou:{ncode}"
     return title, author, synopsis, meta
 
 
+_NAROU_AUTHOR_HOSTS = ("mypage.syosetu.com", "xmypage.syosetu.com")
+
+
 def narou_get_novel_info(ncode: str) -> tuple:
-    """作品情報ページからタイトル・著者・あらすじを取得する。"""
+    """作品情報ページから (タイトル, 著者, あらすじ, 作者ページ URL) を取得する。"""
     info_url = f"https://ncode.syosetu.com/novelview/infotop/ncode/{ncode}/"
     print(f"  作品情報取得: {info_url}")
     html = narou_fetch(info_url)
@@ -3849,7 +3923,8 @@ def narou_get_novel_info(ncode: str) -> tuple:
         if m:
             author = m.group(1).strip()
 
-    return title, author, synopsis
+    author_url = _author_url(p.author_href, info_url, _NAROU_AUTHOR_HOSTS)
+    return title, author, synopsis, author_url
 
 
 # ══════════════════════════════════════════
@@ -3922,8 +3997,10 @@ def narou_get_all_episodes(base_url: str, ncode: str, index_wait: float = 1.0) -
     """
     title, author, synopsis, meta = narou_get_novel_info_api(ncode)
     if title is None:
-        title, author, synopsis = narou_get_novel_info(ncode)
+        title, author, synopsis, author_url = narou_get_novel_info(ncode)
         meta = {"site": "小説家になろう", "site_id": f"narou:{ncode}"}
+        if author_url:
+            meta["author_url"] = author_url
     _sleep(index_wait)
 
     _emit_stage(2, "エピソード一覧を取得中...")
@@ -4217,7 +4294,8 @@ def run_narou(args):
     txt_path = base + ".txt"
     epub_path= base + _epub_ext(args)
     header   = aozora_header(title, author, synopsis, source_url=base_url, meta=meta)
-    colophon = aozora_colophon(title, base_url, "小説家になろう")
+    colophon = aozora_colophon(title, base_url, "小説家になろう",
+                               author=author, author_url=meta.get("author_url", ""))
 
     # 範囲絞り込み
     start_idx = max(0, (args.start or 1) - 1)
@@ -4488,6 +4566,13 @@ def _set_int(meta: dict, key: str, raw: str) -> None:
         meta[key] = int(digits)
 
 
+_STARTS_BASE = {
+    "noichigo": "https://www.no-ichigo.jp/",
+    "berrys":   "https://www.berrys-cafe.jp/",
+    "novema":   "https://novema.jp/",
+}
+
+
 def _starts_meta_from_page(soup, site_name: str, site_id: str) -> dict:
     """野いちご／ノベマ！／berry's cafe（同一プラットフォーム）のメタデータ。
 
@@ -4496,6 +4581,14 @@ def _starts_meta_from_page(soup, site_name: str, site_id: str) -> dict:
     推薦スワイパーがあり `.genre_name` がページ内に60件以上出現する。
     """
     meta: dict = {"site": site_name}
+
+    # 作者ページ（/member/nNNNN）。おすすめ欄にも他作者の /member/ が並ぶので、
+    # 著者欄 div.subDetails-02 div.name に限定する（著者名を og:title から取る
+    # サイトでも、リンクはここにある）
+    a = soup.select_one("div.subDetails-02 div.name a")
+    base = _STARTS_BASE.get(site_id)
+    if a and base:
+        meta["author_url"] = _author_url(a.get("href"), base)
 
     sub = soup.find(class_="subDetails-01")
     if sub:
@@ -4788,6 +4881,11 @@ def kky_get_work_info(soup, next_data: dict, work_url: str) -> dict:
                     akey = author_ref.get("__ref", "")
                     if akey and akey in apollo:
                         activity_name = apollo[akey].get("activityName", "")
+                        # 作者ページ。⚠ ページ上の最初の /users/ リンクはレビュー
+                        # 投稿者なので、必ず作品の author 参照から組む
+                        uname = str(apollo[akey].get("name") or "")
+                        if re.fullmatch(r"[A-Za-z0-9_\-]+", uname):
+                            info["author_url"] = _author_url(f"/users/{uname}", work_url)
                         # alternateAuthorName が存在する場合は実際の著者名として優先
                         alt_author = work_obj.get("alternateAuthorName", "")
                         if alt_author and activity_name and alt_author != activity_name:
@@ -5083,7 +5181,8 @@ def run_kakuyomu(args):
 
     header   = aozora_header(info["title"], info["author"], info.get("description", ""),
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "カクヨム")
+    colophon = aozora_colophon(info["title"], work_url, "カクヨム",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "kakuyomu_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -5200,6 +5299,8 @@ def alp_get_work_info(soup) -> dict:
             author_a = author_div.find("a")
     if author_a:
         info["author"] = author_a.get_text(strip=True)
+        # 作者ページ（下方に他作者の /author/detail/ が多数あるので、この要素から取る）
+        info["author_url"] = _author_url(author_a.get("href"), "https://www.alphapolis.co.jp/")
 
     # あらすじ: 本文の abstract ブロックを優先する。
     # <meta name="description"> と本文は同じ内容だが、meta 側は <br> が空白に
@@ -5527,7 +5628,8 @@ def run_alphapolis(args):
 
     header   = aozora_header(info["title"], info["author"], info.get("description", ""),
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "アルファポリス")
+    colophon = aozora_colophon(info["title"], work_url, "アルファポリス",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "alphapolis_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -5682,6 +5784,9 @@ def est_get_work_info(soup, html: str, work_id: str = "") -> dict:
                 nick = _est_resolve(data, user.get("nickname"))
                 if isinstance(nick, str):
                     info["author"] = nick
+                uid = _est_resolve(data, user.get("userId"))
+                if isinstance(uid, (str, int)) and re.fullmatch(r"\d+", str(uid)):
+                    info["author_url"] = _author_url(f"/users/{uid}", "https://estar.jp/")
         break
 
     # フォールバック: メタタグ類
@@ -5694,6 +5799,10 @@ def est_get_work_info(soup, html: str, work_id: str = "") -> dict:
         og_title = soup.find("meta", property="og:title")
         if og_title and og_title.get("content") and "／" in og_title["content"]:
             info["author"] = og_title["content"].split("／")[-1].strip()
+    if not info.get("author_url"):
+        a = soup.find("a", class_="nickname")
+        if a:
+            info["author_url"] = _author_url(a.get("href"), "https://estar.jp/")
     if not info["description"]:
         meta_desc = soup.find("meta", attrs={"name": "description"})
         if meta_desc and meta_desc.get("content"):
@@ -5875,7 +5984,8 @@ def run_estar(args):
     _print_stage(3, "テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "エブリスタ")
+    colophon = aozora_colophon(info["title"], work_url, "エブリスタ",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "estar_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -5960,7 +6070,7 @@ _HAM_CF_WAIT = 5  # Cloudflareチャレンジ解決待機秒数
 def hameln_get_work_info(soup) -> dict:
     """トップページから作品情報（タイトル・著者・あらすじ）を返す。"""
     maind = soup.find("div", id="maind")
-    title, author, synopsis = "", "", ""
+    title, author, synopsis, author_url = "", "", "", ""
     if maind:
         title_el = maind.find(attrs={"itemprop": "name"})
         if title_el:
@@ -5968,13 +6078,17 @@ def hameln_get_work_info(soup) -> dict:
         author_el = maind.find(attrs={"itemprop": "author"})
         if author_el:
             author = author_el.get_text(strip=True)
+            a = author_el.find("a", href=True)
+            if a:
+                author_url = _author_url(a["href"], "https://syosetu.org/")
         # あらすじ: 2番目の div.ss
         ss_divs = maind.find_all("div", class_="ss")
         if len(ss_divs) >= 2:
             syp = ss_divs[1]
             _br_to_newline(syp)
             synopsis = syp.get_text().strip()
-    info = {"title": title, "author": author, "description": synopsis}
+    info = {"title": title, "author": author, "description": synopsis,
+            "author_url": author_url}
     info.update(_hameln_meta_from_page(soup))
     return info
 
@@ -6197,7 +6311,8 @@ def run_hameln(args):
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "ハーメルン")
+    colophon = aozora_colophon(info["title"], work_url, "ハーメルン",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "hameln_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -6427,6 +6542,11 @@ def neopage_get_work_info(html: str, book_id: str) -> dict:
 
     author_obj = book_obj.get("author") or {}
     author = (author_obj.get("author_name") or "") if isinstance(author_obj, dict) else ""
+    # 作者ページ（「○○ の作品一覧」）。www.neopage.com/author/{uid} は 307 なので使わない
+    uid = str(author_obj.get("uid") or "") if isinstance(author_obj, dict) else ""
+    author_url = (_author_url(f"https://my.neopage.com/uid/{uid}",
+                              "https://www.neopage.com/", ("my.neopage.com",))
+                  if re.fullmatch(r"\d+", uid) else "")
 
     info = {
         "title":            title,
@@ -6436,6 +6556,7 @@ def neopage_get_work_info(html: str, book_id: str) -> dict:
         "description":      synopsis,
         "first_chapter_id": first_chapter_id,
         "total_chapter":    total_chapter,
+        "author_url":       author_url,
     }
     info.update(_neopage_meta_from_book(book_obj))
     return info
@@ -6592,7 +6713,8 @@ def run_neopage(args):
 
     header   = aozora_header(info["title"], info["author"],
                              info["synopsis"], source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "ネオページ")
+    colophon = aozora_colophon(info["title"], work_url, "ネオページ",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(
         args, args.output or safe_filename(info["title"], "neopage_novel"))
     txt_path  = base + ".txt"
@@ -6873,7 +6995,8 @@ def run_solispia(args):
 
     header   = aozora_header(info["title"], info["author"],
                              info["description"], source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "ソリスピア")
+    colophon = aozora_colophon(info["title"], work_url, "ソリスピア",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base     = _apply_output_dir(
         args, args.output or safe_filename(info["title"], "solispia_novel"))
     txt_path  = base + ".txt"
@@ -7135,7 +7258,8 @@ def run_noichigo(args):
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "野いちご")
+    colophon = aozora_colophon(info["title"], work_url, "野いちご",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "noichigo_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -7343,7 +7467,8 @@ def run_berrys(args):
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "berry's cafe")
+    colophon = aozora_colophon(info["title"], work_url, "berry's cafe",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "berrys_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -7551,6 +7676,10 @@ def run_monogatary(args):
     _print_field("エピソード数", f"{total_episodes}", indent=6, width=12)
 
     meta = _mono_meta_from_story(story_data, total_episodes)
+    # 作者ページ（「○○さんの投稿した物語一覧」）。SPA のルート表 USER_PAGE_STORY
+    uid = str(story_data.get("userId") or "")
+    if re.fullmatch(r"[0-9a-fA-F-]{8,64}", uid):
+        meta["author_url"] = _author_url(f"/user_page/story/{uid}", _MONOGATARY_BASE + "/")
 
     start_ep = max(1, args.start or 1)
     end_ep   = min(total_episodes, args.end or total_episodes)
@@ -7564,7 +7693,8 @@ def run_monogatary(args):
 
     header   = aozora_header(story_title, author, synopsis,
                              source_url=story_url, meta=meta)
-    colophon = aozora_colophon(story_title, story_url, "monogatary.com")
+    colophon = aozora_colophon(story_title, story_url, "monogatary.com",
+                               author=author, author_url=meta.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(story_title, "monogatary_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -7807,7 +7937,8 @@ def run_novema(args):
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "ノベマ！")
+    colophon = aozora_colophon(info["title"], work_url, "ノベマ！",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "novema_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -7920,9 +8051,11 @@ def suteki_get_work_info(soup) -> dict:
 
     # 著者: /users/{username} へのリンクテキスト（SSR レンダリング済み）
     author = ""
+    author_url = ""
     author_a = soup.find("a", href=re.compile(r"^/users/"))
     if author_a:
         author = author_a.get_text(strip=True)
+        author_url = _author_url(author_a["href"], "https://sutekibungei.com/")
 
     # フォールバック: window.__NUXT__ から "name":"著者名" パターンを抽出
     if not author:
@@ -7932,7 +8065,8 @@ def suteki_get_work_info(soup) -> dict:
             if m:
                 author = m.group(1)
 
-    info = {"title": title, "author": author, "description": description}
+    info = {"title": title, "author": author, "description": description,
+            "author_url": author_url}
     info.update(_suteki_meta_from_page(soup))
     return info
 
@@ -8044,7 +8178,8 @@ def run_sutekibungei(args):
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "ステキブンゲイ")
+    colophon = aozora_colophon(info["title"], work_url, "ステキブンゲイ",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "suteki_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -8142,9 +8277,15 @@ def days_get_work_info(soup) -> dict:
 
     # 著者: div.author a span.f18px
     author = ""
+    author_url = ""
     author_span = soup.select_one("div.author a span.f18px")
     if author_span:
         author = author_span.get_text(strip=True)
+        # 作者ページ（/author/{name}/）。おすすめ欄にも他作者の /author/ があるので
+        # 著者名を取った要素の <a> から取る
+        a = author_span.find_parent("a")
+        if a:
+            author_url = _author_url(a.get("href"), "https://novel.daysneo.com/")
 
     # あらすじ: p.readmore（<br> を改行に変換）
     description = ""
@@ -8153,7 +8294,8 @@ def days_get_work_info(soup) -> dict:
         _br_to_newline(synopsis_p)
         description = synopsis_p.get_text().strip()
 
-    info = {"title": title, "author": author, "description": description}
+    info = {"title": title, "author": author, "description": description,
+            "author_url": author_url}
     info.update(_days_meta_from_page(soup))
     return info
 
@@ -8354,7 +8496,8 @@ def run_days(args):
 
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "NOVEL DAYS")
+    colophon = aozora_colophon(info["title"], work_url, "NOVEL DAYS",
+                               author=info["author"], author_url=info.get("author_url", ""))
     base      = _apply_output_dir(args, args.output or safe_filename(info["title"], "days_novel"))
     txt_path  = base + ".txt"
     epub_path = base + _epub_ext(args)
@@ -8664,7 +8807,8 @@ def run_genpaku(args):
     _print_stage(3, "テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "プロジェクト杉田玄白")
+    colophon = aozora_colophon(info["title"], work_url, "プロジェクト杉田玄白",
+                               author=info["author"], author_url=info.get("author_url", ""))
 
     sections = []
     for ep in episodes:
@@ -9003,7 +9147,8 @@ def run_hyuki(args):
     _print_stage(3, "テキスト・ePub を生成中...")
     header   = aozora_header(info["title"], info["author"], info["description"],
                              source_url=work_url, meta=info)
-    colophon = aozora_colophon(info["title"], work_url, "結城浩翻訳の部屋")
+    colophon = aozora_colophon(info["title"], work_url, "結城浩翻訳の部屋",
+                               author=info["author"], author_url=info.get("author_url", ""))
 
     sections = []
     for ep in episodes:
@@ -9121,6 +9266,14 @@ def aozora_get_work_info(html: str) -> dict:
     # 読み（file-as 用）・NDC 分類・文字遣い・底本・入力者/校正者・登録日。
     # 「入力」「校正」は MARC relator の trc（transcriber）/ pfr（proofreader）。
     meta: dict = {"site": "青空文庫"}
+
+    # 作者ページ（作家別作品リスト）。「著者名：」の行のリンクだけを見る —— ページ冒頭の
+    # ナビにも index_pages/person へのリンクがあり、翻訳作品には「翻訳者名」の行もある
+    mm = re.search(r"著者名[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", html, re.S)
+    pm = re.search(r'href="[^"]*index_pages/(person\d+\.html)"', mm.group(1)) if mm else None
+    if pm:
+        meta["author_url"] = _author_url(f"/index_pages/{pm.group(1)}",
+                                         "https://www.aozora.gr.jp/")
     for key, label in (("title_kana", "作品名読み"), ("author_kana", "作家名読み"),
                        ("orthography", "文字遣い種別")):
         v = _cell(label)
@@ -10383,7 +10536,8 @@ def run_from_epub(args):
     colophon = aozora_colophon(
         title,
         source_url or epub_path,
-        site_name or "ローカルePub3"
+        site_name or "ローカルePub3",
+        author=author, author_url=(meta or {}).get("author_url", ""),
     )
 
     write_file(txt_path, header, sections, colophon,
