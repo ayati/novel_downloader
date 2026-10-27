@@ -74,6 +74,8 @@ Please keep at least a 1-second gap between requests. Generated EPUBs include a 
 
 The Android app's download history can open the work page, check for new episodes, and append only the new ones in place (v2.17.0). Since v2.19.0 its settings can put the table of contents at the end of the book (same as `--toc-at-end`).
 
+Since v2.20.0 the header, colophon and OPF carry the author's page on the posting site (`nd:authorUrl`), Narou series are written as the standard `belongs-to-collection`, and the EPUB `dc:identifier` is derived from the source URL, so readers such as Calibre, Kobo and Apple Books keep treating an updated (`--append`) book as the same book.
+
 See the [Japanese README](README.md) for the full option table, watch mode, cover rules, and Windows / Android packages.
 
 ## Licence
