@@ -885,3 +885,26 @@ yomikake の読了パネル →「novel_downloader で更新を確認」（`navi
 
 SHARP に入っていたのは**この PC の debug 鍵で署名した開発用ビルド**（版の表示 2.15.0）で、
 リリース鍵の APK は署名不一致で上書きできない。履歴を消さないため debug ビルドで上書きした。
+
+### 19.5 【レビュー】`find_work` / `detect` がダウンロードのログの出力先を壊しうる（2026-10-28）
+
+`bridge.find_work()` は `normalize_url()` の `[情報]` 表示を `contextlib.redirect_stdout` で
+消していたが、これは**プロセス全体の `sys.stdout` を差し替える**。`find_work` はロックを
+取らずに呼ばれる（ダウンロードが終わるまで共有を待たせないため）ので、ダウンロード中
+（`run()` が `sys.stdout` を自分の `_LineWriter` に差し替えている）に共有を受けると、
+
+- 差し替えている間のダウンロードのログが消える
+- その間にダウンロードが終わると、`find_work` が抜けるときに `sys.stdout` を
+  **終わったダウンロードの `_LineWriter` に戻してしまい**、以後の出力が古いリスナーへ流れる
+
+既存の `bridge.detect()` も同じ書き方だった。
+
+- 本体の `normalize_url(url, site, quiet=False)` に `quiet` を足し、`detect()` と
+  `find_work()` は `quiet=True` で呼ぶ。**`sys.stdout` に一切触らない**
+- ついでに `find_work` は `#` 以降を落としてから正規化する（`normalize_url` は `#` 付きの
+  話の URL を作品トップに寄せない。yomikake は作品トップを渡すので実害は無かった）
+- `check()` / `check_url()` の `redirect_stdout` はそのまま（`PyBridge.engine` のロックの内側で呼ぶ）
+- テストは `tests/test_engine_offline.py`（`redirect_stdout` の呼び出しを記録して、
+  `find_work` / `detect` が 1 度も使わないこと・何も出力しないこと・揺れを越えて一致すること）
+- 実機（SHARP・debug ビルド）で `http://kakuyomu.jp/works/<id>/episodes/<id>#end` を共有 →
+  履歴のその作品へ移り「🆕 新着 22話」

@@ -34,9 +34,10 @@ def detect(url: str) -> str:
             # サポートを終えたサイト。site は null のまま（＝押せない）
             res.update(display_name=nd._RETIRED_SITES[site][0], retired=True)
         elif site != "unknown" and site in nd._SITE_DISPATCH:
-            # normalize_url は話数URLで [情報]… を print するため stdout を抑制
-            with contextlib.redirect_stdout(io.StringIO()):
-                norm = nd.normalize_url(url, site)
+            # normalize_url は話数URLで [情報]… を print するので quiet で止める。
+            # redirect_stdout は使わない（プロセス全体の sys.stdout を差し替えるので、
+            # 実行中のダウンロード＝run() のログを奪う・find_work と同じ）
+            norm = nd.normalize_url(url, site, quiet=True)
             res.update(site=site,
                        display_name=nd._SITE_DISPATCH[site][0],
                        needs_playwright=(site == "hameln"),
@@ -202,15 +203,17 @@ def find_work(url: str, urls_json: str) -> int:
 
     比べるのは本体の `_work_url_key`（ePub の識別子 `_book_uuid` と同じ畳み方）。
     話の URL を共有されても作品として突き合わせられるよう、先に `normalize_url` で
-    作品トップに寄せる。オフライン・即時で、本体のグローバルに触らないのでロック不要。
+    作品トップに寄せる。オフライン・即時で、本体のグローバルに触らないのでロック不要
+    （**`sys.stdout` も触らない**。`normalize_url` の表示は quiet で止める。
+    redirect_stdout で消すと、ダウンロード中に共有されたとき run() のログの出力先を壊す）。
     """
     def key(u):
-        u = str(u or "").strip()
+        # normalize_url は # 付きの話の URL を作品トップに寄せないので先に落とす
+        u = str(u or "").strip().split("#", 1)[0]
         try:
             site = nd.detect_site(u)
             if site in nd._SITE_DISPATCH:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    u = nd.normalize_url(u, site)
+                u = nd.normalize_url(u, site, quiet=True)
         except Exception:
             pass
         return nd._work_url_key(u)

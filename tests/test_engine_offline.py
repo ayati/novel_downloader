@@ -576,6 +576,54 @@ def main() -> int:
     ck("底本 URL の無い本は毎回別（ローカル由来を同一視しない）",
        N._book_uuid("") != N._book_uuid("") and N._book_uuid("/tmp/a.epub") != N._book_uuid("/tmp/a.epub"))
 
+    # ── normalize_url の quiet・Android の bridge は sys.stdout に触らない ──
+    redirect_stdout = contextlib.redirect_stdout
+    ep = "https://ncode.syosetu.com/n9623lp/1/"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        loud = N.normalize_url(ep, "narou")
+    ck("normalize_url: 既定では正規化を知らせる", "[情報]" in buf.getvalue())
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        q = N.normalize_url(ep, "narou", quiet=True)
+    ck("normalize_url: quiet なら何も出さず結果は同じ",
+       buf.getvalue() == "" and q == loud == "https://ncode.syosetu.com/n9623lp/", q)
+
+    # bridge は Android 用だが純 Python。ダウンロード中（run が sys.stdout を
+    # 差し替えている）に呼ばれても出力先を奪わないことを確かめる。redirect_stdout は
+    # 抜けるときに元へ戻すので、前後の sys.stdout を比べても分からない。呼ばれたこと自体を記録する
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    "android", "app", "src", "main", "python"))
+    sys.modules.setdefault("novel_downloader", N)
+    try:
+        import bridge
+    except Exception as e:
+        bridge = None
+        ck("bridge を import できる", False, str(e))
+    if bridge:
+        swaps = []
+        real = bridge.contextlib.redirect_stdout
+
+        def spy(target):
+            swaps.append(target)
+            return real(target)
+        bridge.contextlib.redirect_stdout = spy
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                i = bridge.find_work("http://NCODE.syosetu.com/n9623lp/5/#x",
+                                     json.dumps(["https://ncode.syosetu.com/n0001aa/",
+                                                 "https://ncode.syosetu.com/n9623lp"]))
+                d = json.loads(bridge.detect(ep))
+        finally:
+            bridge.contextlib.redirect_stdout = real
+        ck("bridge.find_work: 話の URL・http・大小・# の揺れを越えて同じ作品を見つける", i == 1, str(i))
+        ck("bridge.detect: 作品トップへ正規化する",
+           d.get("normalized_url") == "https://ncode.syosetu.com/n9623lp/", str(d))
+        ck("bridge.find_work / detect: sys.stdout を差し替えない（ダウンロードのログを奪わない）",
+           swaps == [], str(swaps))
+        ck("bridge.find_work / detect: 何も出力しない", buf.getvalue() == "", repr(buf.getvalue()))
+
     return ck.done()
 
 

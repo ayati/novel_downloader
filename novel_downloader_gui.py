@@ -16,6 +16,7 @@ CLI ツール novel_downloader.py を、コマンドラインを使わない一�
 依存: customtkinter（必須）, Pillow（任意・表紙プレビュー用）
 """
 
+import html
 import io
 import os
 import re
@@ -784,6 +785,35 @@ def inbox_ignored(name: str, path: str = "") -> bool:
         # FILE_ATTRIBUTE_HIDDEN (0x2) | FILE_ATTRIBUTE_SYSTEM (0x4)
         return bool(attrs & 0x6)
     return False
+
+
+_RE_HTML_HEAD = re.compile(r"\s*(?:<!doctype\s+html|<html[\s>])", re.I)
+# ページ自身が名乗る URL。属性の並びはサイトによって違うので順不同で拾う
+_RE_HTML_SELF_URL = [
+    re.compile(r"<link\b(?=[^>]*\brel=[\"']?canonical\b)[^>]*\bhref=[\"']([^\"'\s>]+)", re.I),
+    re.compile(r"<meta\b(?=[^>]*\bproperty=[\"']?og:url\b)[^>]*\bcontent=[\"']([^\"'\s>]+)", re.I),
+]
+
+
+def inbox_html_url(text: str):
+    """受信箱のファイルが HTML なら、そのページ自身の URL（無ければ ""）を返す。
+    HTML でなければ None（§8.23）。
+
+    iOS の Safari は「共有 → Drive に保存」で、URL ではなく**ページの HTML を丸ごと**
+    （URL の末尾を名前にした拡張子なしのファイルで）保存する。本文から URL を全部拾うと、
+    画像・ヘルプ・SVG の名前空間、サイトによっては**別作品へのリンク**まで取得候補になり、
+    自動取得が関係のない作品を落としかねない。`<link rel="canonical">` → `og:url` の順に
+    1 本だけ採り、どちらも無ければ URL の無いファイルとして扱う（推測で拾わない）。
+    """
+    if not _RE_HTML_HEAD.match(text[:512] if text else ""):
+        return None
+    for rx in _RE_HTML_SELF_URL:
+        m = rx.search(text)
+        if m:
+            u = html.unescape(m.group(1)).strip()
+            if u.lower().startswith(("http://", "https://")):
+                return u
+    return ""
 
 
 def read_text_any(path: str) -> str:
@@ -2399,7 +2429,9 @@ class NovelDownloaderApp(ctk.CTk):
             # 受信箱は共有フォルダでありうる（§8.11）
             if inbox_ignored(name, path) or os.path.islink(path) or os.path.isdir(path):
                 continue      # done\ はここで自然に外れる
-            urls = self._extract_urls(read_text_any(path))
+            text = read_text_any(path)
+            page = inbox_html_url(text)             # 保存されたページなら自身の URL だけ（§8.23）
+            urls = ([page] if page else []) if page is not None else self._extract_urls(text)
             if not urls:
                 items.append({"path": path, "file": name, "url": "",
                               "error": "nourl"})

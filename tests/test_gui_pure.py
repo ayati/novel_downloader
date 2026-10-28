@@ -40,6 +40,27 @@ def main() -> int:
     for n in ("memo.txt", "desktop.ini.txt", "share.url", "Icon"):
         ck(f"受信箱で無視しない: {n!r}", ig(n) is False)
 
+    # ── 受信箱に保存されたページ（iOS Safari の「Drive に保存」・§8.23）──
+    h = G.inbox_html_url
+    W = "https://kakuyomu.jp/works/1105"
+    page = ('<!DOCTYPE html><html lang="ja"><head><meta charSet="utf-8"/>'
+            f'<link rel="canonical" href="{W}"/><meta property="og:url" content="{W}/x"/>'
+            '</head><body><a href="https://kakuyomu.jp/works/9999">別作品</a>'
+            '<img src="https://cdn-static.kakuyomu.jp/works/1105/ogimage.png"></body></html>')
+    ck("HTML なら canonical の 1 本だけ（別作品・画像のリンクは拾わない）", h(page) == W, str(h(page)))
+    ck("属性の順が逆でも拾う",
+       h(f'<html><link href="{W}" rel="canonical"></html>') == W)
+    ck("canonical が無ければ og:url",
+       h(f'<!doctype html><meta content="{W}" property="og:url">') == W)
+    ck("&amp; を戻す", h('<html><link rel="canonical" href="https://x.jp/a?b=1&amp;c=2">')
+       == "https://x.jp/a?b=1&c=2")
+    ck("どちらも無い HTML は URL 無し（本文のリンクから推測しない）",
+       h('<html><body><a href="https://kakuyomu.jp/works/9">x</a></body></html>') == "")
+    ck("http(s) でない canonical は採らない",
+       h('<html><link rel="canonical" href="javascript:alert(1)"></html>') == "")
+    ck("HTML でなければ None（従来どおり本文の URL を全部拾う）",
+       h(f"あとで読む {W}\n<html> と書いたメモ") is None)
+
     # ── 未対応の判定（§8.8）──
     ck("短縮URLを『未対応』と決めつけない",
        G.is_unsupported({"site": None, "short_url": True}) is False)

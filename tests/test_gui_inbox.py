@@ -29,6 +29,10 @@ def main() -> int:
     make_work_txt(shelf, "A.txt", "作品A", NCODE, episodes=2)
     make_memo(inbox, "memo.txt", f"出先メモ {URL} あとで読む\n")
     make_memo(inbox, "nourl.txt", "URL の無いただのメモ\n")
+    # iOS Safari の「Drive に保存」はページの HTML を拡張子なしで置く（§8.23）
+    make_memo(inbox, "1105", f'<!DOCTYPE html><html><head><link rel="canonical" href="{URL}"/>'
+              '</head><body><a href="https://ncode.syosetu.com/n7777zz/">別作品</a>'
+              '<a href="https://ncode.syosetu.com/rank/">ランキング</a></body></html>')
     make_memo(inbox, "desktop.ini", "[.ShellClassInfo]\nIconResource=C:\\x.ico,0\n")   # §8.22
     with open(os.path.join(inbox, "shot.png"), "wb") as f:
         f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
@@ -43,7 +47,9 @@ def main() -> int:
 
             urls = [it for it in app._inbox if it["url"]]
             nourl = [it for it in app._inbox if not it["url"]]
-            ck("URL を拾う", len(urls) == 1, str([it["url"] for it in urls]))
+            ck("URL を拾う（保存されたページからは canonical の 1 本だけ）",
+               len(urls) == 2 and {it["file"] for it in urls} == {"memo.txt", "1105"}
+               and all(it["url"] == URL for it in urls), str([(it["file"], it["url"]) for it in urls]))
             ck("URL の無いファイルは消さずに残す（PNG とメモの 2 件）",
                len(nourl) == 2, str(sorted(it["file"] for it in nourl)))
             ck("desktop.ini は一覧に出さない（§8.22）",
@@ -62,7 +68,7 @@ def main() -> int:
             ck("_inbox_can_list が取得済みを弾く",
                app._inbox_can_list(row0["row"]) is False)
             ck("URL の無い行には一覧ボタンを出さない",
-               len(app._inbox_rows) == 1 and len(app._inbox) == 3)
+               len(app._inbox_rows) == 2 and len(app._inbox) == 4)
 
             base = dict(row0["row"])
             for flag, want in (("have", False), ("unsupported", False),

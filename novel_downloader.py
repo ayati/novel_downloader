@@ -11141,7 +11141,7 @@ def detect_site(url: str) -> str:
     return "unknown"
 
 
-def normalize_url(url: str, site: str) -> str:
+def normalize_url(url: str, site: str, quiet: bool = False) -> str:
     """
     話数ページURLが指定された場合に作品トップページURLへ正規化する。
 
@@ -11152,7 +11152,13 @@ def normalize_url(url: str, site: str) -> str:
       https://kakuyomu.jp/works/16817330661134507300/episodes/16817330661143545431
                                               → https://kakuyomu.jp/works/16817330661134507300
     トップページURLはそのまま返す。
+
+    quiet=True なら正規化の [情報] を出さない。**表示を消すために呼び出し側で
+    `redirect_stdout` を使ってはいけない** — `sys.stdout` はプロセス全体の値なので、
+    Android でダウンロード（bridge.run が stdout を差し替えている）と同時に呼ぶと、
+    ログが消えたり出力先が終わったダウンロードのものに戻ったりする。
     """
+    _say = (lambda *a, **k: None) if quiet else _print_normalized
     if site == "narou":
         # パスが /{ncode}/{数字}/ または /{ncode}/{数字} の形式なら話数ページ
         m = re.match(
@@ -11161,7 +11167,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1).rstrip("/") + "/"
-            _print_normalized(url, top_url)
+            _say(url, top_url)
             return top_url
 
     elif site == "kakuyomu":
@@ -11172,7 +11178,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            _print_normalized(url, top_url)
+            _say(url, top_url)
             return top_url
 
     elif site == "alphapolis":
@@ -11183,7 +11189,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            _print_normalized(url, top_url)
+            _say(url, top_url)
             return top_url
 
     elif site == "estar":
@@ -11194,7 +11200,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            _print_normalized(url, top_url, what="作品ページのURL")
+            _say(url, top_url, what="作品ページのURL")
             return top_url
 
     elif site == "noichigo":
@@ -11205,7 +11211,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            _print_normalized(url, top_url)
+            _say(url, top_url)
             return top_url
 
     elif site == "berrys":
@@ -11216,7 +11222,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            _print_normalized(url, top_url)
+            _say(url, top_url)
             return top_url
 
     elif site == "hameln":
@@ -11227,7 +11233,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1) + "/"
-            _print_normalized(url, top_url)
+            _say(url, top_url)
             return top_url
 
     elif site == "novema":
@@ -11238,7 +11244,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            _print_normalized(url, top_url)
+            _say(url, top_url)
             return top_url
 
     elif site == "sutekibungei":
@@ -11249,7 +11255,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = m.group(1)
-            _print_normalized(url, top_url)
+            _say(url, top_url)
             return top_url
 
     # NOVEL DAYS はエピソードURLと作品URLで ID が異なるため run_days 内で解決する
@@ -11262,7 +11268,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = f"{m.group(1)}/book/{m.group(2)}"
-            _print_normalized(url, top_url, what="章ページURL")
+            _say(url, top_url, what="章ページURL")
             return top_url
 
     elif site == "monogatary":
@@ -11277,7 +11283,7 @@ def normalize_url(url: str, site: str) -> str:
         )
         if m:
             top_url = f"{m.group(1)}/card{m.group(2)}.html"
-            _print_normalized(url, top_url, what="テキストページURL", to="図書カードページ")
+            _say(url, top_url, what="テキストページURL", to="図書カードページ")
             return top_url
 
     return url
