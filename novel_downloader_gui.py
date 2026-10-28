@@ -53,6 +53,7 @@ ICON_FILENAME = "novel_downloader.ico"
 SETTINGS_SCHEMA = 1
 
 IS_WINDOWS = (os.name == "nt")
+IS_MAC = (sys.platform == "darwin")
 # 子プロセスに黒いコンソール窓を出さない（Windows のみ）
 _CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
 
@@ -3676,6 +3677,12 @@ class NovelDownloaderApp(ctk.CTk):
         try:
             if IS_WINDOWS:
                 os.startfile(path)       # type: ignore[attr-defined]
+            elif IS_MAC:
+                # macOS に xdg-open は無い（以前はここで FileNotFoundError を握りつぶし、
+                # フォルダ表示も同じ理由で失敗して何も起きなかった）。open は関連付けが
+                # 無いと例外ではなく終了コード 1 を返すので、そこで呼び出し側へ退避させる。
+                # .app を Finder から起動すると PATH が最小限なので絶対パスで呼ぶ
+                return subprocess.run(["/usr/bin/open", path]).returncode == 0
             else:
                 subprocess.run(["xdg-open", path])
             return True
@@ -3724,6 +3731,11 @@ class NovelDownloaderApp(ctk.CTk):
                 subprocess.run(["explorer", "/select,", os.path.normpath(path)])
             elif IS_WINDOWS:
                 os.startfile(self.settings["output_dir"])  # type: ignore[attr-defined]
+            elif IS_MAC and path and os.path.isfile(path):
+                # Finder で ePub を選択した状態で開く（explorer /select, と同じ）
+                subprocess.run(["/usr/bin/open", "-R", path])
+            elif IS_MAC:
+                subprocess.run(["/usr/bin/open", self.settings["output_dir"]])
             else:
                 target = os.path.dirname(path) if path else self.settings["output_dir"]
                 subprocess.run(["xdg-open", target])

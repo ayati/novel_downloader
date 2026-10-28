@@ -1443,6 +1443,24 @@ def _load_existing_txt(txt_path: str) -> tuple[list[str], list[dict]]:
     return sections, epub_episodes
 
 
+def _existing_episodes(txt_path: str, site: str | None) -> list[dict]:
+    """手元の .txt が持っている話を `{title, body}` のリストで返す（新着チェック・本棚用）。
+
+    **サイト側の話数と同じ物差しで数えること。** 青空文庫の .txt は本ツールの
+    書式ではなく ZIP 原文のまま保存しているので、`_load_existing_txt`（見出し
+    ごとの節を数える）では見出しの無い作品が 0 話、中見出しの作品が 1 話になり、
+    サイト側（`aozora_text_to_episodes`）との差が「新着」に化けていた。
+    青空文庫だけはサイト側と同じ関数で数える。
+    """
+    if site == "aozora":
+        try:
+            with open(txt_path, "r", encoding="utf-8", errors="replace") as f:
+                return aozora_text_to_episodes(f.read())[2]
+        except OSError:
+            return []
+    return _load_existing_txt(txt_path)[1]
+
+
 def _extract_url_from_txt(txt_path: str) -> str:
     """青空文庫書式 .txt から底本 URL を抽出して返す。
 
@@ -11402,8 +11420,9 @@ def shelf_scan(dir_path: str) -> list[dict]:
             elif sid in _RETIRED_SITES:
                 # 本棚には配信元を出す。site は null（＝続きを取得できない）
                 display = _RETIRED_SITES[sid][0]
-        # 話数と最終話の題を 1 回の読み込みから取る（4MB 級の .txt を二度読まない）
-        secs, eps = _safe(lambda: _load_existing_txt(path), ([], []))
+        # 話数と最終話の題を 1 回の読み込みから取る（4MB 級の .txt を二度読まない）。
+        # 新着チェックと同じ物差しで数える（青空文庫は ZIP 原文の書式・_existing_episodes）
+        eps = _safe(lambda: _existing_episodes(path, site), [])
         out.append({
             "path":     path,
             "file":     tf.name,
@@ -11412,7 +11431,7 @@ def shelf_scan(dir_path: str) -> list[dict]:
             "url":      url,
             "site":     site,
             "display_name": display,
-            "episodes": len(secs),
+            "episodes": len(eps),
             # **手元で最後まで取れている話の題**。件数だけでは「どこまで持っているか」
             # が分からない（design_gui_v2.md §8.15）
             "last_title": (eps[-1].get("title", "") if eps else ""),
@@ -11520,11 +11539,6 @@ def _check_update_one_impl(txt_path: str, delay: float = 1.5) -> dict:
         result["error"] = "底本URL が見つかりません"
         return result
 
-    # 既存話数カウント
-    existing_sections, _ = _load_existing_txt(txt_path)
-    n_existing = len(existing_sections)
-    result["existing"] = n_existing
-
     # サイト判定
     try:
         url = expand_short_url(url)
@@ -11533,6 +11547,10 @@ def _check_update_one_impl(txt_path: str, delay: float = 1.5) -> dict:
     except Exception as e:
         result["error"] = f"URL 解析失敗: {e}"
         return result
+
+    # 既存話数カウント（サイト側と同じ物差しで数えるためサイト判定の後）
+    n_existing = len(_existing_episodes(txt_path, site))
+    result["existing"] = n_existing
 
     if site in _RETIRED_SITES:
         result["error"] = _retired_site_short(site)
@@ -12683,8 +12701,7 @@ def _main(argv=None):
                 parser.error(
                     T("--check-update: テキストファイルから底本 URL を取得できませんでした: {path}\n  novel_downloader.py が生成した「底本URL：」行を含むファイルを指定してください。").format(path=args.check_update_file)
                 )
-            existing_sections, _ = _load_existing_txt(str(cu_txt))
-            _cu_n_existing = len(existing_sections)
+            _cu_txt_path = str(cu_txt)
             args.url      = cu_url
             args.list_only = True
             args.no_epub  = True
@@ -12702,6 +12719,9 @@ def _main(argv=None):
         args.url = expand_short_url(args.url)
         site = detect_site(args.url)
         args.url = normalize_url(args.url, site)
+        if getattr(args, "check_update_file", None):
+            # サイト側と同じ物差しで数えるためサイト判定の後（_existing_episodes）
+            _cu_n_existing = len(_existing_episodes(_cu_txt_path, site))
         # 表紙色は build_epub 側で解決する（--cover-bg 明示 > meta["theme_color"] >
         # サイト既定色）。ここで既定色を代入すると「明示された色」と区別できなくなる。
 

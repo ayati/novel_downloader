@@ -124,6 +124,7 @@ python3 novel_downloader_gui.py
 - GUI は同じフォルダの `novel_downloader.py` を呼び出して動きます。**2 つは必ず同じフォルダに置く**
 - 既定の保存先: `~/Downloads/小説`
 - 設定ファイル: `~/.config/novel_downloader_gui/settings.json`
+- 「ePub を開く」は既定のアプリ（ブック）で開き、「フォルダを開く」と完了時の自動オープンは Finder で ePub を選んだ状態で開きます。ePub を開くアプリが決まっていないときは Finder 表示に切り替わります（v2.20.0 までは Mac ではどちらも何も起きませんでした）
 
 ---
 

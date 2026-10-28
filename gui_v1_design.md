@@ -329,7 +329,7 @@ URLが正しいか、対応しているサイトかをご確認ください。
 | 進捗バー | `CTkProgressBar` | stdout `N/M`→`set(N/M)`。準備中は `mode="indeterminate"`+`start()`（§9） |
 | 進捗テキスト | `CTkLabel` | 「第 N 話 / 全 M 話 を取得中…」（§9.2） |
 | 完了表示 | `CTkLabel` | returncode==0 で「✅ 完了しました！」（§9.2） |
-| フォルダを開く | `CTkButton` | `explorer /select,<epub>`（完了時に自動実行＋保険ボタン） |
+| フォルダを開く | `CTkButton` | `explorer /select,<epub>`（macOS は `open -R <epub>`・design_gui_v2.md §6.4）（完了時に自動実行＋保険ボタン） |
 | エラー表示 | `CTkLabel`（必要なら枠 `CTkFrame`） | §8 ①②③ の文言 |
 | 詳細を表示（生ログ） | `CTkButton`（トグル）→ `CTkTextbox` | 取得した stdout/stderr 全文。既定は隠す |
 | 詳細設定（折りたたみ） | `CTkButton`（▸/▾）→ `CTkFrame` 表示切替 | §10.2 を開閉（`grid()` / `grid_remove()`） |

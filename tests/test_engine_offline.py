@@ -123,6 +123,38 @@ def main() -> int:
             ck("path は絶対パス", os.path.isabs(w["path"]))
         ck("壊れたディレクトリでも落ちない", N.shelf_scan("/no/such/dir") == [])
 
+    # ── 青空文庫は ZIP 原文の書式なのでサイト側と同じ物差しで数える ──
+    # 以前は _load_existing_txt（は大見出し の節を数える）で数えていたため、
+    # 見出しの無い作品が 0 話・中見出しの作品が 1 話になり「新着あり」に化けた
+    sep = "-" * 55
+    card = "https://www.aozora.gr.jp/cards/000001/card1.html"
+    head = f"題名\n著者\n\n底本URL：{card}\n配信元：青空文庫\n\n{sep}\n記号の説明\n{sep}\n\n"
+    tail = "\n\n底本：「全集」出版社\n入力：誰か\n"
+    chap = "".join(f"\n［＃５字下げ］{n}［＃「{n}」は中見出し］\n\n本文{n}。\n"
+                   for n in ("一", "二", "三"))
+    for name, body, want in (("見出しなし", "　本文だけの短い作品。\n", 1),
+                             ("中見出し3つ", chap, 3)):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "a.txt")
+            with open(p, "w", encoding="utf-8") as fp:
+                fp.write(head + body + tail)
+            ck(f"青空文庫（{name}）: 本棚の話数がサイト側と一致",
+               N.shelf_scan(d)[0]["episodes"] == want, str(N.shelf_scan(d)[0]["episodes"]))
+
+            def fake_runner(args, _p=p):
+                with open(_p, encoding="utf-8") as fp:
+                    eps = N.aozora_text_to_episodes(fp.read())[2]
+                N._show_episode_list("題名", "著者", [e["title"] for e in eps])
+            saved = N._SITE_DISPATCH["aozora"]
+            N._SITE_DISPATCH["aozora"] = (saved[0], saved[1], fake_runner)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    r = N._check_update_one(p, 0)
+            finally:
+                N._SITE_DISPATCH["aozora"] = saved
+            ck(f"青空文庫（{name}）: 新着チェックで新着ありにならない",
+               r["status"] == "uptodate" and r["new"] == 0 and r["existing"] == want, str(r))
+
     # ── 手元の話一覧（§8.15）──
     with tempfile.TemporaryDirectory() as d:
         path = make_work_txt(d, "A.txt", "作品A", "n0001aa", episodes=3)

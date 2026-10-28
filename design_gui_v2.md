@@ -601,7 +601,9 @@ if not (path and os.path.isfile(path) and path.lower().endswith(_EPUB_EXTS)):
     return
 ```
 
-**規約: `os.startfile()` / `xdg-open` にパスを渡す前に、必ず拡張子を確かめる。**
+**規約: `os.startfile()` / `open` / `xdg-open` にパスを渡す前に、必ず拡張子を確かめる。**
+
+**OS ごとの呼び分け**（2026-10-28・MacBook 実機確認済み）: Windows は `os.startfile` / `explorer /select,`、macOS は `/usr/bin/open` / `/usr/bin/open -R`（Finder で選択表示）、それ以外は `xdg-open`。以前は Windows 以外をすべて `xdg-open` にしていたため、**macOS では `FileNotFoundError` を握りつぶして 「ePub を開く」「フォルダを開く」・完了時の自動オープンがすべて無反応**だった。`.app` を Finder から起動すると PATH が最小限なので絶対パスで呼ぶ。`open` は関連付けが無いと例外ではなく終了コード 1 を返すので、終了コードを見てフォルダ表示へ退避する。
 
 ---
 
