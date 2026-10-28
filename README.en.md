@@ -45,6 +45,7 @@ Two panels were added in v2.14.0:
 
 - **Inbox** — watches a folder you share from your phone (OneDrive, Google Drive, a network share). It pulls every URL out of the dropped text files, expands short links, and shows the title, author and episode count *before* you download, so you can decide once you remember what the work was. Files that downloaded successfully move to `done\`; files with no URL are left alone. It rescans on launch, on a timer (5 minutes by default, 0 disables it), when the window regains focus, and on demand.
 - **Bookshelf** — lists the `.txt` files in your output folder, checks them all for new episodes, and appends the ones that have any. There is no separate database; the `底本URL：` header line in each `.txt` is the index.
+- **A URL that is already on the bookshelf** — whether typed into the URL box or found in the inbox — is not downloaded again from episode 1. The badge reads “Already on your shelf”, the main button becomes **Check for new episodes**, and pressing it (or the inbox row's 🔄) jumps to that work on the bookshelf and checks just that one. If there are new episodes, use **Get new episodes** on that row.
 
 ## Requirements
 

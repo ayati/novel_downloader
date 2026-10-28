@@ -29,6 +29,7 @@ def main() -> int:
     make_work_txt(shelf, "A.txt", "作品A", NCODE, episodes=2)
     make_memo(inbox, "memo.txt", f"出先メモ {URL} あとで読む\n")
     make_memo(inbox, "nourl.txt", "URL の無いただのメモ\n")
+    make_memo(inbox, "desktop.ini", "[.ShellClassInfo]\nIconResource=C:\\x.ico,0\n")   # §8.22
     with open(os.path.join(inbox, "shot.png"), "wb") as f:
         f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
 
@@ -45,6 +46,8 @@ def main() -> int:
             ck("URL を拾う", len(urls) == 1, str([it["url"] for it in urls]))
             ck("URL の無いファイルは消さずに残す（PNG とメモの 2 件）",
                len(nourl) == 2, str(sorted(it["file"] for it in nourl)))
+            ck("desktop.ini は一覧に出さない（§8.22）",
+               not any(it["file"] == "desktop.ini" for it in app._inbox))
             ck("本棚にある作品は『取得済み』になる", urls[0]["have"] is True)
             ck("取得済みは選択が外れる", urls[0]["sel"].get() is False)
             ck("選択ゼロなら取得ボタンを押せない",
@@ -54,8 +57,8 @@ def main() -> int:
 
             # ── 話の一覧（§8.15）──
             row0 = app._inbox_rows[0]
-            ck("取得済みの行では一覧ボタンを押せない（本棚から見られる）",
-               row0["list"].cget("state") == "disabled")
+            ck("取得済みの行のボタンは一覧ではなく新着の確認（§8.21）",
+               row0["list"].cget("text") == "🔄" and row0["list"].cget("state") == "normal")
             ck("_inbox_can_list が取得済みを弾く",
                app._inbox_can_list(row0["row"]) is False)
             ck("URL の無い行には一覧ボタンを出さない",

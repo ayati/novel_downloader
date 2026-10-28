@@ -25,8 +25,20 @@ def main() -> int:
        c("https://ncode.syosetu.com/n9623lp") == c("https://ncode.syosetu.com/n9623lp/"))
     ck("ncode の大文字を吸収",
        c("https://ncode.syosetu.com/N9623LP/") == c("https://ncode.syosetu.com/n9623lp/"))
+    ck("http と https を同じに扱う（§8.21）",
+       c("http://kakuyomu.jp/works/1") == c("https://kakuyomu.jp/works/1"))
+    ck("# 以降を落とす", c("https://kakuyomu.jp/works/1#top") == c("https://kakuyomu.jp/works/1"))
+    ck("http の大文字も畳む", c("HTTP://kakuyomu.jp/works/1/") == c("https://kakuyomu.jp/works/1"))
     ck("別作品は一致しない",
        c("https://ncode.syosetu.com/n0022gd/") != c("https://ncode.syosetu.com/n9623lp/"))
+
+    # ── 受信箱で無視する OS のファイル（§8.22）──
+    ig = G.inbox_ignored
+    for n in ("desktop.ini", "Desktop.ini", "Thumbs.db", "ehthumbs.db", "Icon\r",
+              ".DS_Store", "~$memo.docx"):
+        ck(f"受信箱で無視: {n!r}", ig(n) is True)
+    for n in ("memo.txt", "desktop.ini.txt", "share.url", "Icon"):
+        ck(f"受信箱で無視しない: {n!r}", ig(n) is False)
 
     # ── 未対応の判定（§8.8）──
     ck("短縮URLを『未対応』と決めつけない",
