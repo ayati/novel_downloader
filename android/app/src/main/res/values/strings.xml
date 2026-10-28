@@ -95,6 +95,7 @@
     <string name="history_btn_redo">⬇ 取り直す</string>
     <string name="history_toast_no_browser">ブラウザが見つかりません</string>
     <string name="history_toast_busy">ダウンロード中はチェック・取得できません</string>
+    <string name="history_toast_shared_check">履歴にある作品です。新着を確認しています: %1$s</string>
     <string name="history_full_title">まるごと取り直します</string>
     <string name="history_full_message_notxt">手元のテキスト (.txt) が見つからないため、新着だけを追記することができません。最初からダウンロードし直して、今のファイルを置き換えます。話数が多いと時間がかかります。</string>
     <string name="history_full_message_redo">最初からダウンロードし直して、今のファイルを置き換えます。話数が多いと時間がかかります。</string>

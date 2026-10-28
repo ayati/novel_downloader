@@ -94,6 +94,7 @@
     <string name="history_btn_redo">⬇ Re-download</string>
     <string name="history_toast_no_browser">No browser found</string>
     <string name="history_toast_busy">Can\'t check or download while a download is running</string>
+    <string name="history_toast_shared_check">Already in your history. Checking for new episodes: %1$s</string>
     <string name="history_full_title">Download everything again</string>
     <string name="history_full_message_notxt">The local text file (.txt) is missing, so new episodes can\'t be appended. The whole work will be downloaded again and replace the current files. Long works take a while.</string>
     <string name="history_full_message_redo">The whole work will be downloaded again and replace the current files. Long works take a while.</string>

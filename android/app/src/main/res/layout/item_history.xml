@@ -83,7 +83,9 @@
             android:src="@android:drawable/ic_menu_more" />
     </LinearLayout>
 
-    <!-- 作品ページ / 新着チェック / 新着を取得（sourceUrl のある行だけ） -->
+    <!-- 作品ページ / 新着チェック / 新着を取得（sourceUrl のある行だけ）
+         ボタンの高さは固定しない。3 つ並ぶと狭い端末・大きな文字で「新着を取得」が
+         2 行に折れ、40dp 固定だと下の行が切れていた（最低 40dp で文字に合わせて伸ばす） -->
     <LinearLayout
         android:id="@+id/item_actions"
         android:layout_width="match_parent"
@@ -95,7 +97,8 @@
             android:id="@+id/item_web"
             style="?attr/borderlessButtonStyle"
             android:layout_width="wrap_content"
-            android:layout_height="40dp"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
             android:minWidth="0dp"
             android:paddingStart="4dp"
             android:paddingEnd="8dp"
@@ -106,7 +109,8 @@
             android:id="@+id/item_check_btn"
             style="?attr/borderlessButtonStyle"
             android:layout_width="wrap_content"
-            android:layout_height="40dp"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
             android:minWidth="0dp"
             android:paddingStart="8dp"
             android:paddingEnd="8dp"
@@ -125,7 +129,8 @@
             android:id="@+id/item_update"
             style="?attr/borderlessButtonStyle"
             android:layout_width="wrap_content"
-            android:layout_height="40dp"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
             android:minWidth="0dp"
             android:paddingStart="8dp"
             android:paddingEnd="8dp"

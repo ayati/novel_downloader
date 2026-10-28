@@ -1,7 +1,7 @@
 """Android アプリと novel_downloader.py の橋渡し層。
 
 Kotlin 側からは Chaquopy 経由で detect() / run() / append() / check() /
-check_url() / count() / cancel() を呼ぶ。detect() 以外は本体のグローバル
+check_url() / count() / find_work() / cancel() を呼ぶ。detect()・find_work() 以外は本体のグローバル
 （stdout・PROGRESS_CALLBACK・_CHECK_UPDATE_MODE 等）を触るので、Kotlin 側の
 PyBridge.engine ロックの内側で1つずつ呼ぶこと（design_history.md §11.6）。
 本体（novel_downloader.py）の GUI 連携 API（ABORT_EVENT / PROGRESS_CALLBACK /
@@ -185,11 +185,47 @@ def append(txt_path: str, options_json: str, listener) -> str:
 
 
 def count(txt_path: str) -> int:
-    """.txt の節の数（＝取得済みの話数。サイトによっては章・ページ）。読めなければ 0。"""
+    """.txt の話の数（＝取得済みの話数。サイトによっては章・ページ）。読めなければ 0。
+
+    新着チェックと同じ物差しで数える（青空文庫は ZIP 原文の書式なので
+    `_load_existing_txt` では 0 話や 1 話になる・本体の `_existing_episodes`）。
+    """
     try:
-        return len(nd._load_existing_txt(txt_path)[0])
+        site = nd.detect_site(nd._extract_url_from_txt(txt_path) or "")
+        return len(nd._existing_episodes(txt_path, site))
     except Exception:
         return 0
+
+
+def find_work(url: str, urls_json: str) -> int:
+    """共有された URL が urls（履歴の sourceUrl の配列）の何番目と同じ作品かを返す。無ければ -1。
+
+    比べるのは本体の `_work_url_key`（ePub の識別子 `_book_uuid` と同じ畳み方）。
+    話の URL を共有されても作品として突き合わせられるよう、先に `normalize_url` で
+    作品トップに寄せる。オフライン・即時で、本体のグローバルに触らないのでロック不要。
+    """
+    def key(u):
+        u = str(u or "").strip()
+        try:
+            site = nd.detect_site(u)
+            if site in nd._SITE_DISPATCH:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    u = nd.normalize_url(u, site)
+        except Exception:
+            pass
+        return nd._work_url_key(u)
+
+    want = key(url)
+    if not want:
+        return -1
+    try:
+        urls = json.loads(urls_json or "[]")
+    except Exception:
+        return -1
+    for i, u in enumerate(urls):
+        if key(u) == want:
+            return i
+    return -1
 
 
 def check(txt_path: str) -> str:

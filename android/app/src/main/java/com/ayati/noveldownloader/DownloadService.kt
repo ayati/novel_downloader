@@ -178,10 +178,15 @@ class DownloadService : Service() {
                 }
                 DownloadState.ui.value = DownloadState.ui.value.copy(savedFiles = saved)
                 val site = siteName.ifEmpty { resolvedSiteName }
+                // 履歴の URL は .txt の「底本URL：」（短縮URL を展開・作品トップへ正規化した後の
+                // 値）を優先する。入力された URL のままだと、yomikake が共有してくる ePub の
+                // dc:source と突き合わなくなる（yomikake/design_update_check.md §4-2）
+                val source = saved.firstOrNull { it.name.endsWith(".txt") }
+                    ?.let { DownloadHistory.readSourceUrl(this, it.uri) } ?: url
                 if (entry != null) {
                     DownloadHistory.update(this, entry.copy(
                         savedAt = System.currentTimeMillis(),
-                        sourceUrl = entry.sourceUrl.ifEmpty { url },
+                        sourceUrl = entry.sourceUrl.ifEmpty { source },
                         siteName = entry.siteName.ifEmpty { site },
                         episodeCount = episodes,
                         files = saved,
@@ -192,7 +197,7 @@ class DownloadService : Service() {
                         id = DownloadHistory.newId(),
                         savedAt = System.currentTimeMillis(),
                         title = DownloadHistory.titleOf(saved.first().name),
-                        sourceUrl = url,
+                        sourceUrl = source,
                         siteName = site,
                         episodeCount = episodes,
                         files = saved,

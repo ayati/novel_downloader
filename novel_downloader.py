@@ -1032,6 +1032,21 @@ _META_FIELDS = [
 ]
 
 
+def _work_url_key(url: str) -> str:
+    """作品 URL の書き方の揺れ（http/https・ホストの大小・末尾の /・#fragment）を
+    畳んだ比較用のキー。http(s) でなければ ""。
+
+    `_book_uuid` の識別子と、Android アプリの「共有された URL が履歴のどの作品か」の
+    突き合わせ（bridge.find_work）が**同じ物差し**を使うために切り出した。
+    """
+    u = str(url or "").strip()
+    if not re.match(r"https?://", u, re.I):
+        return ""
+    p = urlparse(u)
+    path = p.path.rstrip("/") or "/"
+    return f"https://{(p.hostname or '').lower()}{path}" + (f"?{p.query}" if p.query else "")
+
+
 def _book_uuid(source_url: str, start_offset: int = 0) -> str:
     """ePub の dc:identifier 用 UUID。http(s) の底本 URL があれば uuid5 で固定する。
 
@@ -1041,12 +1056,9 @@ def _book_uuid(source_url: str, start_offset: int = 0) -> str:
       同一視すると片方が本棚から消える）。--end だけの本は全話の本と同じ
       （続きを取れば全話になる＝--append と同じ関係）
     """
-    u = str(source_url or "").strip()
-    if not re.match(r"https?://", u, re.I):
+    key = _work_url_key(source_url)
+    if not key:
         return str(uuid.uuid4())
-    p = urlparse(u)
-    path = p.path.rstrip("/") or "/"
-    key = f"https://{(p.hostname or '').lower()}{path}" + (f"?{p.query}" if p.query else "")
     if start_offset and start_offset > 1:
         key += f"#start={start_offset}"
     return str(uuid.uuid5(uuid.NAMESPACE_URL, key))

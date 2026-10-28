@@ -242,7 +242,48 @@ class MainActivity : AppCompatActivity() {
         val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
         // ページタイトル等が混ざるため最初の URL だけを抽出する
         val url = Regex("""https?://\S+""").find(text)?.value ?: return
-        urlInput.setText(url)
+        intent.removeExtra(Intent.EXTRA_TEXT)   // onNewIntent の後の画面回転で再び履歴へ飛ばない
+        lifecycleScope.launch {
+            val entry = withContext(Dispatchers.IO) { findInHistory(url) }
+            if (entry == null) {
+                urlInput.setText(url)               // 履歴に無い作品は従来どおり（新規ダウンロード）
+                return@launch
+            }
+            // 履歴にある作品（yomikake の読了パネルから送られた等）は、取り直しにせず
+            // 履歴のその行へ移って新着を確かめる（yomikake/design_update_check.md §4-2）。
+            // 渡すのは履歴の id だけ。URL は履歴の行のものを使う（セキュリティレビュー #1 と同じ）
+            startActivity(Intent(this@MainActivity, HistoryActivity::class.java)
+                .putExtra(HistoryActivity.EXTRA_FOCUS_ENTRY_ID, entry.id)
+                .putExtra(HistoryActivity.EXTRA_AUTO_CHECK, true))
+        }
+    }
+
+    /**
+     * 共有された URL と同じ作品の履歴を探す（無ければ null）。IO スレッドから呼ぶ。
+     * 突き合わせは本体の物差し（bridge.find_work）で行い、.txt のある行を優先する
+     * （追記の材料になるのは .txt。同じ作品を取り直すと履歴に行が増えることがある）。
+     */
+    private fun findInHistory(url: String): DownloadHistory.Entry? {
+        val all = DownloadHistory.load(this).filter { it.sourceUrl.isNotEmpty() }
+        if (all.isEmpty()) return null
+        PyBridge.ensureStarted(applicationContext)
+        val (withTxt, rest) = all.partition { it.txt != null }
+        fun find(group: List<DownloadHistory.Entry>, urlOf: (DownloadHistory.Entry) -> String): DownloadHistory.Entry? {
+            if (group.isEmpty()) return null
+            val urls = org.json.JSONArray(group.map(urlOf)).toString()
+            val i = try {
+                PyBridge.module.callAttr("find_work", url, urls).toInt()
+            } catch (e: Exception) {
+                -1
+            }
+            return group.getOrNull(i)
+        }
+        // load() は新しい順なので先頭が最新
+        return find(withTxt) { it.sourceUrl }
+            ?: find(rest) { it.sourceUrl }
+            // 以前の版は入力された URL（短縮URL のことがある）を履歴に残していた。
+            // 見つからなければ .txt の「底本URL：」（展開・正規化後）でもう一度探す
+            ?: find(withTxt) { e -> e.txt?.let { DownloadHistory.readSourceUrl(this, it.uri) }.orEmpty() }
     }
 
     // ── 設定メニュー（⋮） ────────────────────────────────────────

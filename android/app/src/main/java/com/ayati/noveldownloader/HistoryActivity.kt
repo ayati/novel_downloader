@@ -43,6 +43,17 @@ import java.util.Locale
  */
 class HistoryActivity : AppCompatActivity() {
 
+    companion object {
+        /**
+         * 共有で受け取った URL が履歴の作品だったとき、その行へ移る（MainActivity から）。
+         * yomikake の読了パネル →「novel_downloader で更新を確認」の受け口
+         * （yomikake/design_update_check.md §4-2）。
+         */
+        const val EXTRA_FOCUS_ENTRY_ID = "focus_entry_id"
+        /** 移った行の新着チェックを自動で始める。 */
+        const val EXTRA_AUTO_CHECK = "auto_check"
+    }
+
     private lateinit var list: RecyclerView
     private lateinit var emptyView: TextView
     private val adapter = Adapter()
@@ -51,6 +62,8 @@ class HistoryActivity : AppCompatActivity() {
     private var invalid: Set<String> = emptySet()
     /** 新着チェック中の行 id。 */
     private val checking = mutableSetOf<String>()
+    /** 共有から来たときに目立たせる行 id（別の行を操作するまで）。 */
+    private var focusId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -70,16 +83,34 @@ class HistoryActivity : AppCompatActivity() {
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = adapter
 
-        reload()
+        // 復元（回転等）では元の Intent がもう一度届くので、移動と自動チェックは初回だけ
+        val focus = if (savedInstanceState == null) intent.getStringExtra(EXTRA_FOCUS_ENTRY_ID) else null
+        val autoCheck = intent.getBooleanExtra(EXTRA_AUTO_CHECK, false)
+        reload(onLoaded = focus?.let { id -> { focusEntry(id, autoCheck) } })
+    }
+
+    /** 共有から来た作品の行へ移り、必要なら新着チェックを始める。 */
+    private fun focusEntry(id: String, autoCheck: Boolean) {
+        val pos = entries.indexOfFirst { it.id == id }
+        if (pos < 0) return                    // 共有の直後に消された等。一覧だけ見せる
+        focusId = id
+        adapter.notifyItemChanged(pos)
+        list.scrollToPosition(pos)
+        if (autoCheck) {
+            Toast.makeText(this, getString(R.string.history_toast_shared_check, entries[pos].title),
+                Toast.LENGTH_SHORT).show()
+            runCheck(entries[pos])
+        }
     }
 
     /** 履歴を読み直し、実体の存在確認まで済ませて描画する。 */
-    private fun reload() {
+    private fun reload(onLoaded: (() -> Unit)? = null) {
         lifecycleScope.launch {
             val loaded = withContext(Dispatchers.IO) { DownloadHistory.load(this@HistoryActivity) }
             entries = loaded
             adapter.notifyDataSetChanged()
             render()
+            onLoaded?.invoke()
             // 存在確認は件数に比例するので描画の後で行う
             val bad = withContext(Dispatchers.IO) {
                 DownloadHistory.validate(this@HistoryActivity, loaded)
@@ -388,6 +419,13 @@ class HistoryActivity : AppCompatActivity() {
             val e = entries[position]
             val missing = e.id in invalid
 
+            // 共有から来た行は背景をうっすら強調色に（どの作品の結果かを見失わない）
+            // （背景はタップの波紋が使っているので前景に重ねる）
+            h.itemView.foreground =
+                if (e.id == focusId) android.graphics.drawable.ColorDrawable(
+                    androidx.core.graphics.ColorUtils.setAlphaComponent(
+                        themeColor(androidx.appcompat.R.attr.colorPrimary), 0x2E))
+                else null
             h.title.text = e.title
             h.meta.text = metaLine(e)
             h.file.text = if (missing) getString(R.string.history_file_missing)

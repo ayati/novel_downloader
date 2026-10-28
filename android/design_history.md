@@ -827,3 +827,61 @@ private fun overwrite(file: File, uri: Uri): Boolean = try {
 1〜3 の修正後の APK（本番と同じリリース鍵）で、2026-09-26 に実機の動作確認済み。v2.17.0 でリリース。
 
 **実機での確認（§16）: 2026-09-25 に確認済み**（本番と同じリリース鍵で署名した APK を既存アプリの上に入れて検証）。
+
+## 19. 共有で受け取った URL が履歴の作品なら新着チェックへ（2026-10-28）
+
+yomikake の読了パネル →「novel_downloader で更新を確認」（`navigator.share({url})`）の受け口
+（`yomikake/design_update_check.md` §4-2）。ブラウザ等から共有した場合も同じ。
+
+**以前は共有された URL を URL 欄に入れるだけ**で、履歴にある作品でもダウンロードを押すと
+全話の取り直しになり、履歴に同じ作品の行が増えていた（Xiaomi 実機で確認）。
+
+### 19.1 流れ
+
+1. `MainActivity.handleIncomingIntent`（`ACTION_SEND`）が最初の URL を取り出し、
+   `findInHistory()` で履歴を探す（IO スレッド）
+2. 見つかれば `HistoryActivity` を `EXTRA_FOCUS_ENTRY_ID`（履歴の id だけ）＋
+   `EXTRA_AUTO_CHECK` で開く。**URL は Intent から渡さない**（§18 セキュリティレビュー #1
+   と同じ。チェックと取得は履歴の行の `sourceUrl` で行う）
+3. `HistoryActivity.focusEntry()` がその行へスクロールし、前景にうっすら強調色を重ねて
+   （背景はタップの波紋が使っている）トーストを出し、`runCheck()` を自動で始める
+4. 結果は既存の行 UI（§13.1）。「新着を取得」を押すかは人が決める
+5. 見つからなければ従来どおり URL 欄に入れる（新規ダウンロード）
+
+移動と自動チェックは `savedInstanceState == null` のときだけ（回転で繰り返さない）。
+
+### 19.2 突き合わせ — 本体の物差しを使う
+
+- `bridge.find_work(url, urls_json)` → 一致した添字（無ければ -1）。比べるのは本体の
+  `_work_url_key()`（ePub の識別子 `_book_uuid` と同じ畳み方：http/https・ホストの大小・
+  末尾 `/`・`#fragment`）。先に `normalize_url` で作品トップへ寄せるので、話の URL を
+  共有されても作品として一致する。オフライン・即時でグローバルに触らないためロック不要
+- 探す順: `.txt` のある行 → `.txt` の無い行 → `.txt` の `底本URL：` で照合し直し。
+  同じ作品の行が複数あるときは新しい行が勝つ（`load()` は新しい順）
+- **照合し直しが要る理由**: 以前の版は入力された URL をそのまま `sourceUrl` に残していた。
+  短縮 URL から取った作品は `share.google/…` のままで、yomikake が渡す `dc:source`
+  （展開・正規化後）と一致しない（実機の履歴で確認）。
+- **これからの行**: `DownloadService` が `.txt` の `底本URL：`（展開・正規化後）を
+  `sourceUrl` に記録する（読めなければ従来どおり入力された URL）
+
+### 19.3 併せて直したもの
+
+- `bridge.count()` を本体の `_existing_episodes()` で数えるように。青空文庫の `.txt` は
+  ZIP 原文の書式で、`_load_existing_txt` では 0 話や 1 話になっていた。**既存の行の
+  `episodeCount` は記録した値なので、取り直すまで古いまま**（新着の判定には影響しない）
+- 履歴の行の 3 つのボタンの高さを「40dp 固定」→「最低 40dp・文字に合わせて伸びる」へ。
+  「新着を取得」が 2 行に折れると下の行が切れていた
+
+### 19.4 実機確認（2026-10-28・Xiaomi 25098RA98G / SHARP SH-M28・Android 16）
+
+`adb shell am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT <URL>`
+で共有を模した。
+
+| 送った URL | 結果 |
+|---|---|
+| 山月記 `http://www.aozora.gr.jp/…/card624.html` | 揺れを吸収して一致。同じ作品の 3 行のうちファイルの残っている行へ移り「新着なし」 |
+| カクヨム作品（履歴は `share.google/…`） | `底本URL：` の照合し直しで一致 →「🆕 新着 15話」→ 新着を取得 →「✅ 15話追加しました」（48→63 話） |
+| なろう（履歴に無い） | 従来どおり URL 欄へ |
+
+SHARP に入っていたのは**この PC の debug 鍵で署名した開発用ビルド**（版の表示 2.15.0）で、
+リリース鍵の APK は署名不一致で上書きできない。履歴を消さないため debug ビルドで上書きした。
